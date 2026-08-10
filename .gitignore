@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+
+# Virtual environments
+.venv/
+.venv_clean/
+venv/
+env/
+
+# Test and build output
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.spec.bak
+
+# Runtime data
+logs/
+output/
+runtime/
+service_data/
+*.log
+img2video_config.json
+img2video_qt_config_*.json
+img2video_qt_ui_state.json
+config/user.yaml
+
+# Local media/tool binaries (GitHub has a 100 MB per-file limit)
+tools/ffmpeg/
+ffmpeg/
+ffmpeg.exe
+ffprobe.exe
+ffplay.exe
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

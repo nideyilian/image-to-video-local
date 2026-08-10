@@ -1,0 +1,40 @@
+{
+  "project_root": ".",
+  "output_dir": "docs/api",
+  "formats": ["markdown", "html", "json"],
+  "include_patterns": [
+    "src/**/*.py",
+    "*.py"
+  ],
+  "exclude_patterns": [
+    "**/__pycache__/**",
+    "**/.*/**",
+    "**/tests/**",
+    "**/test_*.py",
+    "**/backup_*/**",
+    "**/tools/**",
+    "**/examples/**"
+  ],
+  "template_settings": {
+    "title": "图片转视频工具 API 文档",
+    "description": "自动生成的API文档，包含所有核心模块和类的详细说明",
+    "version": "2.1.0",
+    "author": "开发团队"
+  },
+  "output_options": {
+    "markdown": {
+      "include_toc": true,
+      "include_source_links": true,
+      "max_depth": 3
+    },
+    "html": {
+      "theme": "default",
+      "include_search": true,
+      "sidebar_navigation": true
+    },
+    "json": {
+      "pretty_print": true,
+      "include_metadata": true
+    }
+  }
+}

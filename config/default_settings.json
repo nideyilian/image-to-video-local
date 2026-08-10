@@ -1,0 +1,66 @@
+{
+  "version": "2.0.0",
+  "video": {
+    "fps": 30,
+    "duration": 3,
+    "transition_duration": 1,
+    "bitrate": "5000k",
+    "resolution": "1920x1080",
+    "format": "mp4",
+    "codec": "libx264"
+  },
+  "transitions": {
+    "enabled": [
+      "淡入淡出",
+      "左右滑动", 
+      "交叉溶解",
+      "缩放过渡",
+      "圆形扩展",
+      "交错效果"
+    ],
+    "available": [
+      "淡入淡出",
+      "左右滑动",
+      "上下滑动", 
+      "交叉溶解",
+      "缩放过渡",
+      "方块过渡",
+      "圆形扩展",
+      "交错效果",
+      "像素化",
+      "旋转变换",
+      "百叶窗垂直",
+      "棋盘格",
+      "流水扩散",
+      "颜色混合",
+      "波浪"
+    ]
+  },
+  "paths": {
+    "temp_dir": "output/temp",
+    "output_dir": "output/videos",
+    "ffmpeg_path": "tools/ffmpeg/bin/ffmpeg.exe",
+    "presets_dir": "config/presets"
+  },
+  "ui": {
+    "window_title": "图片转视频工具 v2.0",
+    "window_size": "1200x800",
+    "min_window_size": [800, 600],
+    "theme": "default"
+  },
+  "performance": {
+    "enable_optimization": true,
+    "image_cache_size": 100,
+    "image_cache_memory_mb": 500,
+    "video_max_workers": 4,
+    "enable_system_monitoring": true,
+    "monitoring_interval": 10.0,
+    "auto_optimization": true
+  },
+  "advanced": {
+    "debug_mode": false,
+    "log_level": "INFO",
+    "backup_configs": true,
+    "auto_save_interval": 300
+  }
+}
