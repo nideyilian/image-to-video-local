@@ -18,18 +18,20 @@ export type BgmPreviewState = {
 
 const OFF_STATE: BgmPreviewState = { status: "off", url: null, name: "", message: "BGM 已关闭" };
 
-export function useBgmPreview(workspace: Workspace): BgmPreviewState {
+export function useBgmPreview(workspace: Workspace, previewSequence = 0): BgmPreviewState {
   const [state, setState] = useState<BgmPreviewState>(OFF_STATE);
   const identity = useMemo(() => JSON.stringify({
     enabled: workspace.config.use_bgm,
     directory: workspace.config.bgm_dir,
     random: workspace.config.random_bgm,
     strategy: workspace.config.watermark_audio,
+    previewSequence,
   }), [
     workspace.config.bgm_dir,
     workspace.config.random_bgm,
     workspace.config.use_bgm,
     workspace.config.watermark_audio,
+    previewSequence,
   ]);
   const requestConfig = useMemo(() => workspace.config, [identity]);
 
@@ -54,7 +56,10 @@ export function useBgmPreview(workspace: Workspace): BgmPreviewState {
     let cancelled = false;
     setState({ status: "loading", url: null, name: "", message: "正在读取 BGM" });
     const timer = window.setTimeout(() => {
-      void engine.call<BgmPreviewResponse>("preview_bgm", { config: requestConfig }, 30_000).then((result) => {
+      void engine.call<BgmPreviewResponse>("preview_bgm", {
+        config: requestConfig,
+        preview_sequence: previewSequence,
+      }, 130_000).then((result) => {
         if (cancelled) return;
         if (!result.enabled || !result.preview_path) {
           setState({ status: "off", url: null, name: "", message: result.reason || "BGM 未启用" });
@@ -81,7 +86,7 @@ export function useBgmPreview(workspace: Workspace): BgmPreviewState {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [identity, requestConfig]);
+  }, [identity, previewSequence, requestConfig]);
 
   return state;
 }

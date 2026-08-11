@@ -7,7 +7,7 @@ import gc
 import hashlib
 import json
 import os
-import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -19,6 +19,7 @@ from PIL import Image
 from ..utils.ffmpeg_runtime import configure_ffmpeg_environment, probe_ffmpeg
 from .config import build_default_config, normalize_config, scan_audio_files, scan_images, validate_config
 from .effect_preview import render_effect_preview
+from .preview_random import preview_choice, preview_sample
 from .runner import JobManager
 
 
@@ -90,9 +91,17 @@ class EngineServer:
             errors = validate_config(params.get("config"), check_files=bool(params.get("check_files", True)))
             return {"valid": not errors, "errors": errors}
         if method == "scan_images":
-            images = scan_images(str(params.get("input_dir", "")), params.get("limit"))
+            all_images = scan_images(str(params.get("input_dir", "")))
+            preview_sequence = int(params.get("preview_sequence", 0) or 0)
+            limit = params.get("limit")
+            images = (
+                preview_sample(all_images, len(all_images) if limit is None else limit, preview_sequence, "images")
+                if preview_sequence > 0
+                else all_images if limit is None
+                else all_images[: max(0, int(limit or 0))]
+            )
             return {
-                "count": len(scan_images(str(params.get("input_dir", "")))),
+                "count": len(all_images),
                 "images": [
                     {"path": path, "name": Path(path).name}
                     for path in images
@@ -183,8 +192,7 @@ class EngineServer:
             "height": height,
         }
 
-    @staticmethod
-    def _preview_bgm(params: dict[str, Any]) -> dict[str, Any]:
+    def _preview_bgm(self, params: dict[str, Any]) -> dict[str, Any]:
         config = normalize_config(params.get("config"))
         if not bool(config.get("use_bgm")):
             return {"enabled": False, "reason": "BGM 已关闭"}
@@ -199,23 +207,83 @@ class EngineServer:
         if not candidates:
             raise ValueError("BGM目录中没有可用音频")
 
+        preview_sequence = int(params.get("preview_sequence", 0) or 0)
         source = Path(candidates[0])
-        if bool(config.get("random_bgm")) and len(candidates) > 1:
+        if preview_sequence > 0:
+            source = Path(preview_choice(candidates, preview_sequence, "bgm") or candidates[0])
+        elif bool(config.get("random_bgm")) and len(candidates) > 1:
             seed = hashlib.sha1(str(Path(bgm_dir).resolve()).encode("utf-8")).digest()
             source = Path(candidates[int.from_bytes(seed[:4], "big") % len(candidates)])
 
         stat = source.stat()
-        cache_key = f"{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+        cache_key = f"mp3-v1:{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
         preview_dir = Path(tempfile.gettempdir()) / "image-to-video-engine" / "audio-previews"
         preview_dir.mkdir(parents=True, exist_ok=True)
-        preview_path = preview_dir / f"{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()}{source.suffix.lower()}"
+        preview_path = preview_dir / f"{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()}.mp3"
         if not preview_path.exists():
-            shutil.copy2(source, preview_path)
+            if not self.ffmpeg_path:
+                raise ValueError("未找到 FFmpeg，无法读取 BGM 预览")
+            temporary_path = preview_path.with_name(
+                f".{preview_path.stem}-{os.getpid()}-{threading.get_ident()}.tmp.mp3"
+            )
+            startupinfo = None
+            creationflags = 0
+            if sys.platform == "win32":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                creationflags = subprocess.CREATE_NO_WINDOW
+            try:
+                result = subprocess.run(
+                    [
+                        self.ffmpeg_path,
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-nostdin",
+                        "-y",
+                        "-i",
+                        str(source),
+                        "-map",
+                        "0:a:0",
+                        "-vn",
+                        "-c:a",
+                        "libmp3lame",
+                        "-q:a",
+                        "4",
+                        "-ar",
+                        "44100",
+                        "-ac",
+                        "2",
+                        str(temporary_path),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=120,
+                    check=False,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                )
+                if result.returncode != 0 or not temporary_path.is_file():
+                    detail = next(
+                        (line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()),
+                        source.name,
+                    )
+                    raise ValueError(f"BGM预览转换失败：{detail}")
+                os.replace(temporary_path, preview_path)
+            except subprocess.TimeoutExpired as exc:
+                raise ValueError("BGM预览转换超时，请检查音频文件") from exc
+            finally:
+                temporary_path.unlink(missing_ok=True)
         return {
             "enabled": True,
             "source": str(source.resolve()),
             "preview_path": str(preview_path.resolve()),
             "name": source.name,
+            "mime_type": "audio/mpeg",
             "random": bool(config.get("random_bgm")),
         }
 

@@ -35,7 +35,7 @@ import "./App.css";
 
 const STORAGE_KEY = "image-to-video.workspaces.v1";
 const THEME_KEY = "image-to-video.theme";
-const LAYOUT_KEY = "image-to-video.layout.v2";
+const LAYOUT_KEY = "image-to-video.layout.v3";
 
 type LayoutState = {
   railWidth: number;
@@ -49,7 +49,7 @@ type LayoutSizeKey = "railWidth" | "inspectorWidth" | "manifestHeight";
 
 const DEFAULT_LAYOUT: LayoutState = {
   railWidth: 216,
-  inspectorWidth: 340,
+  inspectorWidth: 440,
   manifestHeight: 267,
   railCollapsed: false,
   inspectorCollapsed: false,
@@ -57,7 +57,7 @@ const DEFAULT_LAYOUT: LayoutState = {
 
 const LAYOUT_LIMITS: Record<LayoutSizeKey, [number, number]> = {
   railWidth: [168, 360],
-  inspectorWidth: [280, 520],
+  inspectorWidth: [400, 580],
   manifestHeight: [267, 420],
 };
 
@@ -157,12 +157,13 @@ function makeWorkspace(config: VideoConfig, name = "新建工作区"): Workspace
   };
 }
 
-function previewSyncKey(workspace: Workspace) {
+function previewSyncKey(workspace: Workspace, previewSequence = 0) {
   return JSON.stringify([
     workspace.id,
     workspace.config.input_dir.trim(),
     Math.max(0, Math.trunc(Number(workspace.config.num_images) || 0)),
     workspace.config.image_selection_mode,
+    previewSequence,
   ]);
 }
 
@@ -260,12 +261,16 @@ export default function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() => localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light");
   const [layout, setLayout] = useState<LayoutState>(loadLayout);
   const [previewFocused, setPreviewFocused] = useState(false);
+  const [previewSequences, setPreviewSequences] = useState<Record<string, number>>({});
+  const [previewReadySequences, setPreviewReadySequences] = useState<Record<string, number>>({});
 
   const jobsRef = useRef(jobs);
   const queuedWorkspaces = useRef(new Map<string, Workspace>());
   const pumpQueueRef = useRef<() => void>(() => undefined);
   const latestPreviewKey = useRef("");
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeId) ?? workspaces[0];
+  const activePreviewSequence = activeWorkspace ? previewSequences[activeWorkspace.id] ?? 0 : 0;
+  const activePreviewReadySequence = activeWorkspace ? previewReadySequences[activeWorkspace.id] ?? 0 : 0;
 
   useEffect(() => {
     jobsRef.current = jobs;
@@ -427,6 +432,10 @@ export default function App() {
   }, []);
 
   const updateConfig = useCallback(<K extends keyof VideoConfig>(key: K, value: VideoConfig[K]) => {
+    if (key === "input_dir") {
+      setPreviewSequences((current) => ({ ...current, [activeId]: 0 }));
+      setPreviewReadySequences((current) => ({ ...current, [activeId]: 0 }));
+    }
     setWorkspaces((current) => current.map((workspace) => {
       if (workspace.id !== activeId) return workspace;
       let preview = workspace.preview;
@@ -448,8 +457,8 @@ export default function App() {
     }));
   }, [activeId]);
 
-  const refreshPreview = useCallback(async (workspace: Workspace, announce = true) => {
-    const requestKey = previewSyncKey(workspace);
+  const refreshPreview = useCallback(async (workspace: Workspace, announce = true, previewSequence = 0) => {
+    const requestKey = previewSyncKey(workspace, previewSequence);
     latestPreviewKey.current = requestKey;
     if (!workspace.config.input_dir) {
       patchWorkspace(workspace.id, { validationErrors: ["请先选择输入目录"] });
@@ -464,7 +473,11 @@ export default function App() {
     }
     setPreviewLoading(true);
     try {
-      const scan = await engine.call<{ count: number; images: Array<{ path: string; name: string }> }>("scan_images", { input_dir: workspace.config.input_dir, limit: previewLimit }, 30_000);
+      const scan = await engine.call<{ count: number; images: Array<{ path: string; name: string }> }>("scan_images", {
+        input_dir: workspace.config.input_dir,
+        limit: previewLimit,
+        preview_sequence: previewSequence,
+      }, 30_000);
       let preview: Workspace["preview"] = null;
       if (scan.count > 0) {
         const results = await Promise.all(scan.images.map(({ path }) => engine.call<{ source: string; preview_path: string; width: number; height: number }>("preview_thumbnail", { path }, 30_000)));
@@ -479,6 +492,9 @@ export default function App() {
       }
       if (latestPreviewKey.current !== requestKey) return;
       patchWorkspace(workspace.id, { imageCount: scan.count, preview, validationErrors: scan.count ? [] : ["输入目录里没有可用图片"] });
+      if (scan.count > 0) {
+        setPreviewReadySequences((current) => ({ ...current, [workspace.id]: previewSequence }));
+      }
       if (announce) showNotice(scan.count ? "success" : "error", scan.count ? `已读取 ${scan.count} 张图片` : "目录中没有可用图片");
     } catch (error) {
       if (latestPreviewKey.current !== requestKey) return;
@@ -492,20 +508,21 @@ export default function App() {
 
   useEffect(() => {
     if (!activeWorkspace) return;
-    const requestKey = previewSyncKey(activeWorkspace);
+    const requestKey = previewSyncKey(activeWorkspace, activePreviewSequence);
     latestPreviewKey.current = requestKey;
     if (!ready || demoMode || !engineState.connected || !activeWorkspace.config.input_dir || activeWorkspace.config.num_images <= 0) {
       setPreviewLoading(false);
       return;
     }
     const workspace = activeWorkspace;
-    const timer = window.setTimeout(() => void refreshPreview(workspace, false), 280);
+    const timer = window.setTimeout(() => void refreshPreview(workspace, false, activePreviewSequence), 280);
     return () => window.clearTimeout(timer);
   }, [
     activeWorkspace?.id,
     activeWorkspace?.config.input_dir,
     activeWorkspace?.config.num_images,
     activeWorkspace?.config.image_selection_mode,
+    activePreviewSequence,
     demoMode,
     engineState.connected,
     ready,
@@ -656,6 +673,8 @@ export default function App() {
       const contents = await invoke<string>("read_text_file", { path });
       const normalized = await engine.call<VideoConfig>("normalize_config", { config: JSON.parse(contents) });
       const name = path.split(/[\\/]/).pop()?.replace(/\.json$/i, "") || "加载的工作区";
+      setPreviewSequences((current) => ({ ...current, [activeId]: 0 }));
+      setPreviewReadySequences((current) => ({ ...current, [activeId]: 0 }));
       patchWorkspace(activeId, { name, config: normalized, imageCount: null, preview: null, validationErrors: [], dirty: false });
       showNotice("success", "配置已加载");
     } catch (error) {
@@ -685,6 +704,13 @@ export default function App() {
   const activeHasRunningJob = jobs.some((job) => job.workspaceId === activeWorkspace?.id && ["queued", "running", "paused", "cancelling"].includes(job.status));
   const hasRunningJobs = jobs.some((job) => ["queued", "running", "paused", "cancelling"].includes(job.status));
   const canRun = engineState.connected || demoMode;
+  const randomPreview = () => {
+    setPreviewSequences((current) => ({
+      ...current,
+      [activeWorkspace.id]: (current[activeWorkspace.id] ?? 0) + 1,
+    }));
+    showNotice("info", "已换一组临时预览，不会修改保存配置或导出参数");
+  };
   const runCurrent = () => demoMode
     ? showNotice("info", "这是标注过的界面演示数据；请在 Tauri 桌面窗口中选择真实素材后导出。")
     : void queueWorkspaces([activeWorkspace]);
@@ -784,7 +810,10 @@ export default function App() {
           railCollapsed={layout.railCollapsed}
           inspectorCollapsed={layout.inspectorCollapsed}
           focused={previewFocused}
-          onRefresh={() => void refreshPreview(activeWorkspace)}
+          onRefresh={() => void refreshPreview(activeWorkspace, true, activePreviewSequence)}
+          onRandomPreview={randomPreview}
+          previewSequence={activePreviewSequence}
+          previewReadySequence={activePreviewReadySequence}
           onToggleRail={() => setLayout((current) => ({ ...current, railCollapsed: !current.railCollapsed }))}
           onToggleInspector={() => setLayout((current) => ({ ...current, inspectorCollapsed: !current.inspectorCollapsed }))}
           onToggleFocus={() => setPreviewFocused((current) => !current)}

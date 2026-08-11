@@ -64,31 +64,6 @@ export function PathField({
   );
 }
 
-export function Toggle({
-  label,
-  checked,
-  onChange,
-  disabled = false,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <label className="toggle-control">
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.checked)}
-      />
-      <span aria-hidden="true" className="toggle-track"><span /></span>
-      <span>{label}</span>
-    </label>
-  );
-}
-
 export function PoolEditor({
   label,
   values,

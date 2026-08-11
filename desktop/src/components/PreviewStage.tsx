@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import {
   Image,
   Maximize2,
@@ -11,6 +11,7 @@ import {
   Play,
   RefreshCw,
   ScanLine,
+  Shuffle,
   SkipBack,
   SkipForward,
   Volume2,
@@ -42,6 +43,9 @@ export function PreviewStage({
   inspectorCollapsed,
   focused,
   onRefresh,
+  onRandomPreview,
+  previewSequence,
+  previewReadySequence,
   onToggleRail,
   onToggleInspector,
   onToggleFocus,
@@ -53,6 +57,9 @@ export function PreviewStage({
   inspectorCollapsed: boolean;
   focused: boolean;
   onRefresh: () => void;
+  onRandomPreview: () => void;
+  previewSequence: number;
+  previewReadySequence: number;
   onToggleRail: () => void;
   onToggleInspector: () => void;
   onToggleFocus: () => void;
@@ -64,6 +71,7 @@ export function PreviewStage({
   const previewCanvasRef = useRef<HTMLDivElement>(null);
   const bgmAudioRef = useRef<HTMLAudioElement>(null);
   const timeRef = useRef(0);
+  const lastAutoPlayedRef = useRef({ workspaceId: workspace.id, sequence: previewReadySequence });
   const sourceFrames = useMemo(
     () => workspace.preview?.frames?.length ? workspace.preview.frames : workspace.preview ? [workspace.preview] : [],
     [workspace.preview],
@@ -81,28 +89,43 @@ export function PreviewStage({
     ? Math.max(0.1, workspace.config.total_duration > 0 ? workspace.config.total_duration : automaticTotal)
     : 0;
   const frameSourcesKey = useMemo(() => frames.map((frame) => frame.source).join("\u0001"), [frames]);
-  const bgmPreview = useBgmPreview(workspace);
+  const bgmPreview = useBgmPreview(workspace, previewSequence);
 
-  const syncAudioTime = (targetTime: number) => {
+  const syncAudioTime = (targetTime: number, force = true) => {
     const audio = bgmAudioRef.current;
-    if (!audio || !bgmPreview.url) return;
+    if (!audio || !bgmPreview.url || audio.readyState < HTMLMediaElement.HAVE_METADATA) return false;
     try {
       const duration = audio.duration;
       if (Number.isFinite(duration) && duration > 0) {
-        audio.currentTime = workspace.config.loop_bgm
+        if (!workspace.config.loop_bgm && targetTime >= duration) {
+          audio.pause();
+          return true;
+        }
+        const desiredTime = workspace.config.loop_bgm
           ? targetTime % duration
-          : Math.min(targetTime, Math.max(0, duration - 0.05));
-      } else {
-        audio.currentTime = Math.max(0, targetTime);
+          : Math.min(targetTime, Math.max(0, duration - 0.01));
+        if (force || Math.abs(audio.currentTime - desiredTime) > 0.2) {
+          audio.currentTime = desiredTime;
+        }
       }
+      return true;
     } catch {
       setAudioPlaybackError("BGM 时间轴同步失败");
+      return false;
     }
   };
 
   const playAudio = () => {
     const audio = bgmAudioRef.current;
     if (!audio || !bgmPreview.url) return;
+    if (
+      !workspace.config.loop_bgm
+      && Number.isFinite(audio.duration)
+      && timeRef.current >= audio.duration
+    ) {
+      audio.pause();
+      return;
+    }
     void audio.play().then(() => setAudioPlaybackError("")).catch(() => {
       setAudioPlaybackError("系统阻止了声音播放，请再次点击播放");
     });
@@ -127,26 +150,66 @@ export function PreviewStage({
     }
   };
 
+  const handlePreviewKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!hasFrames || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    togglePlayback();
+  };
+
   useEffect(() => {
     if (!playing || total <= 0) return;
-    const timer = window.setInterval(() => {
-      const wrapped = timeRef.current + 0.1 >= total;
-      const next = wrapped ? 0 : timeRef.current + 0.1;
+    let animationFrame = 0;
+    let previousTime = performance.now();
+    let lastPaintTime = previousTime;
+    let lastAudioSyncTime = previousTime;
+    const paintInterval = 1000 / Math.min(30, Math.max(1, Number(workspace.config.fps) || 1));
+    const tick = (now: number) => {
+      const elapsed = Math.max(0, (now - previousTime) / 1000);
+      previousTime = now;
+      const unwrappedTime = timeRef.current + elapsed;
+      const wrapped = unwrappedTime >= total;
+      const next = unwrappedTime % total;
       timeRef.current = next;
-      setTime(next);
-      if (wrapped && bgmPreview.url) {
-        syncAudioTime(0);
-        playAudio();
+      if (wrapped || now - lastPaintTime >= paintInterval) {
+        setTime(next);
+        lastPaintTime = now;
       }
-    }, 100);
-    return () => window.clearInterval(timer);
-  }, [bgmPreview.url, playing, total, workspace.config.loop_bgm]);
+      if (wrapped && bgmPreview.url) {
+        syncAudioTime(next);
+        playAudio();
+        lastAudioSyncTime = now;
+      } else if (bgmPreview.url && now - lastAudioSyncTime >= 500) {
+        syncAudioTime(next, false);
+        lastAudioSyncTime = now;
+      }
+      animationFrame = window.requestAnimationFrame(tick);
+    };
+    animationFrame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [bgmPreview.url, playing, total, workspace.config.fps, workspace.config.loop_bgm]);
 
   useEffect(() => {
     setTime(0);
     timeRef.current = 0;
     setPlaying(false);
   }, [frameSourcesKey, workspace.id]);
+
+  useEffect(() => {
+    const lastAutoPlayed = lastAutoPlayedRef.current;
+    if (lastAutoPlayed.workspaceId !== workspace.id) {
+      lastAutoPlayedRef.current = { workspaceId: workspace.id, sequence: previewReadySequence };
+      return;
+    }
+    if (previewReadySequence < lastAutoPlayed.sequence) {
+      lastAutoPlayedRef.current = { workspaceId: workspace.id, sequence: previewReadySequence };
+      return;
+    }
+    if (!hasFrames || previewReadySequence <= lastAutoPlayed.sequence) return;
+    lastAutoPlayedRef.current = { workspaceId: workspace.id, sequence: previewReadySequence };
+    timeRef.current = 0;
+    setTime(0);
+    setPlaying(true);
+  }, [frameSourcesKey, hasFrames, previewReadySequence, workspace.id]);
 
   useEffect(() => {
     if (!hasFrames) {
@@ -181,7 +244,7 @@ export function PreviewStage({
   const frameIndex = hasFrames ? Math.floor(time / frameDuration) % markerCount : 0;
   const navigableFrameCount = markerCount;
   const currentFrame = frames[frameIndex] ?? null;
-  const nextFrame = frames.length > 1 ? frames[(frameIndex + 1) % frames.length] : null;
+  const nextFrame = frames.length > 1 && frameIndex < frames.length - 1 ? frames[frameIndex + 1] : null;
   const previewUrl = currentFrame?.previewUrl;
   const sourceAspectRatio = currentFrame?.width && currentFrame.height ? currentFrame.width / currentFrame.height : 4 / 3;
   const outputAspectRatio = resolutionAspectRatio(workspace.config.resolution_preset, sourceAspectRatio);
@@ -190,7 +253,6 @@ export function PreviewStage({
     height: fittedFrame?.height,
     aspectRatio: String(outputAspectRatio),
   };
-  const markers = useMemo(() => Array.from({ length: markerCount }, (_, index) => index), [markerCount]);
   const effectEnabled = isEffectEnabled(workspace.config);
   const effectPreset = EFFECT_PRESETS[previewEffectType(workspace.config)] ?? { motion: "breathe" as const };
   const effectStyle = useMemo(
@@ -198,9 +260,10 @@ export function PreviewStage({
     [workspace.config.video_effect_intensity, workspace.config.video_effect_speed],
   );
   const effectClassName = effectClassNameFor(workspace.config);
-  const engineEffect = useEngineEffectPreview(workspace, currentFrame, time, true, nextFrame);
+  const engineEffect = useEngineEffectPreview(workspace, currentFrame, time, true, nextFrame, previewSequence);
   const renderedPreviewUrl = engineEffect.url ?? previewUrl;
   const renderedByEngine = Boolean(engineEffect.url);
+  const useCssEffectFallback = demoMode && !renderedByEngine && effectEnabled;
   const previewTransitionName = workspace.config.random_transition
     ? engineEffect.transitionType || "随机预览"
     : workspace.config.transition_type;
@@ -261,18 +324,34 @@ export function PreviewStage({
             <RefreshCw size={15} className={loading ? "is-spinning" : ""} />
             {loading ? "正在读取" : "刷新预览"}
           </button>
+          <button type="button" className="quiet-button" onClick={onRandomPreview} disabled={loading || !workspace.config.input_dir} title="临时换一组预览，不影响导出配置">
+            <Shuffle size={15} />
+            换一组看看
+          </button>
         </div>
       </div>
 
       <div className="preview-workspace">
-      <div ref={previewCanvasRef} className={`preview-canvas ${previewUrl || demoMode ? "has-preview" : "is-empty"}`}>
+      <div
+        ref={previewCanvasRef}
+        className={`preview-canvas ${previewUrl || demoMode ? "has-preview" : "is-empty"}${hasFrames ? " is-playable" : ""}${playing ? " is-playing" : ""}`}
+        role={hasFrames ? "button" : undefined}
+        tabIndex={hasFrames ? 0 : undefined}
+        aria-label={hasFrames ? (playing ? "暂停预览" : "播放预览") : undefined}
+        aria-pressed={hasFrames ? playing : undefined}
+        title={hasFrames ? "单击播放或暂停预览" : undefined}
+        onClick={(event) => {
+          if ((event.target as HTMLElement).closest("button, input, select, a")) return;
+          togglePlayback();
+        }}
+        onKeyDown={handlePreviewKeyDown}
+      >
         {previewUrl ? (
           <figure className="preview-specimen" style={previewSpecimenStyle}>
-            <div key={`${currentFrame?.source}-${workspace.config.video_effect_type}`} className={renderedByEngine ? "preview-media" : effectClassName} style={effectStyle}>
+            <div key={`${currentFrame?.source}-${workspace.config.video_effect_type}`} className={useCssEffectFallback ? effectClassName : "preview-media"} style={useCssEffectFallback ? effectStyle : undefined}>
               <img className="effect-frame" src={renderedPreviewUrl} alt="原版流程中的当前预览图片" style={{ objectFit: renderedByEngine ? "fill" : outputFit }} />
               {!renderedByEngine && effectEnabled && effectPreset.motion === "soul" ? <img className="preview-ghost" src={previewUrl} alt="" aria-hidden="true" style={{ objectFit: outputFit }} /> : null}
             </div>
-            <figcaption>第 {frameIndex + 1}/{frames.length} 张 · {currentFrame?.width}×{currentFrame?.height}</figcaption>
           </figure>
         ) : demoMode ? (
           <figure className="demo-specimen" style={previewSpecimenStyle}>
@@ -300,9 +379,10 @@ export function PreviewStage({
           <span className="stage-ruler ruler-side"><i>00</i><i>50</i><i>100</i></span>
         </div>
         <div className="preview-badges">
+          {hasFrames ? <span>图片：第 {frameIndex + 1}/{frames.length} 张</span> : null}
           <span>转场：{workspace.config.use_transition ? previewTransitionName : "关闭"}</span>
-          <span>特效：{workspace.config.use_video_effect ? previewEffectName : "关闭"}{renderedByEngine ? " · 引擎实时" : effectEnabled && engineEffect.loading ? " · 引擎载入" : effectEnabled ? " · 预览降级" : ""}</span>
-          <span>水印：{Number(workspace.config.use_watermark) + configuredLayers} 层</span>
+          <span title={engineEffect.error || undefined}>特效：{workspace.config.use_video_effect ? previewEffectName : "关闭"}{renderedByEngine ? " · 引擎实时" : effectEnabled && engineEffect.loading ? " · 引擎载入" : engineEffect.error ? " · 引擎错误" : effectEnabled ? " · 等待引擎" : ""}</span>
+          <span title={engineEffect.videoWatermarkName || undefined}>水印：{engineEffect.videoWatermarkName || `${Number(workspace.config.use_watermark) + configuredLayers} 层`}</span>
           <span
             className={`preview-audio-status is-${bgmPreview.status}`}
             title={bgmPreview.name || audioPlaybackError || bgmPreview.message}
@@ -319,10 +399,13 @@ export function PreviewStage({
         src={bgmPreview.url ?? undefined}
         preload="auto"
         aria-hidden="true"
-        onCanPlay={() => {
+        onLoadedMetadata={() => {
           setAudioPlaybackError("");
           syncAudioTime(timeRef.current);
           if (playing) playAudio();
+        }}
+        onCanPlay={() => {
+          if (playing && bgmAudioRef.current?.paused) playAudio();
         }}
         onError={() => setAudioPlaybackError("当前 BGM 格式无法播放")}
       />
@@ -349,34 +432,6 @@ export function PreviewStage({
         />
       </div>
 
-      {hasFrames ? (
-        <div className="filmstrip-viewport">
-          <div
-            className="filmstrip"
-            aria-label={`视频轨道，共 ${markerCount} 个图片片段`}
-            style={{
-              gridTemplateColumns: `repeat(${markerCount}, minmax(0, 1fr))`,
-              width: markerCount > 7 ? `${(markerCount / 7) * 100}%` : "100%",
-            }}
-          >
-            {markers.map((marker) => (
-              <button
-                key={marker}
-                type="button"
-                className={marker === frameIndex ? "is-current" : ""}
-                onClick={() => seekPreview(marker * frameDuration)}
-                aria-label={`跳到序列 ${marker + 1}`}
-              >
-                <img src={frames[marker].previewUrl} alt="" />
-                <small>{String(marker + 1).padStart(2, "0")}</small>
-              </button>
-            ))}
-            <span className="playhead" style={{ left: `${Math.min(100, (time / total) * 100)}%` }} />
-          </div>
-        </div>
-      ) : (
-        <div className="filmstrip-empty" role="status">没有可播放的图片，轨道已停止。</div>
-      )}
       <p className="preview-disclaimer">效果仅供预览，成片以导出结果为准。</p>
 
     </section>

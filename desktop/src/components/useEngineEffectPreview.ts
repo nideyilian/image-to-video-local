@@ -9,6 +9,7 @@ type EffectPreviewResponse = {
   height: number;
   effect_type: string;
   transition_type: string;
+  video_watermark_name?: string;
 };
 
 type PreviewRequest = {
@@ -17,7 +18,17 @@ type PreviewRequest = {
   nextPath: string;
   config: Workspace["config"];
   timeSec: number;
+  previewSequence: number;
 };
+
+export function quantizeEffectPreviewTime(time: number, duration: number, fps: number) {
+  const safeDuration = Math.max(0.1, Number(duration) || 0.1);
+  const safeFps = Math.max(1, Math.floor(Number(fps) || 1));
+  const wrapped = ((Number(time) % safeDuration) + safeDuration) % safeDuration;
+  const totalFrames = Math.max(1, Math.floor(safeDuration * safeFps));
+  const frameIndex = Math.min(totalFrames - 1, Math.floor(wrapped * safeFps + 1e-7));
+  return Number((frameIndex / safeFps).toFixed(6));
+}
 
 export function useEngineEffectPreview(
   workspace: Workspace,
@@ -25,11 +36,14 @@ export function useEngineEffectPreview(
   time: number,
   active = true,
   nextFrame?: PreviewFrame | null,
+  previewSequence = 0,
 ) {
   const [url, setUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   const [effectType, setEffectType] = useState("");
   const [transitionType, setTransitionType] = useState("");
+  const [videoWatermarkName, setVideoWatermarkName] = useState("");
   const pendingRef = useRef<PreviewRequest | null>(null);
   const runningRef = useRef(false);
   const mountedRef = useRef(true);
@@ -57,8 +71,9 @@ export function useEngineEffectPreview(
             next_path: request.nextPath,
             config: request.config,
             time_sec: request.timeSec,
-            max_width: 960,
-            max_height: 540,
+            preview_sequence: request.previewSequence,
+            max_width: 640,
+            max_height: 360,
           },
           30_000,
         );
@@ -66,12 +81,16 @@ export function useEngineEffectPreview(
           setUrl(engine.toAssetUrl(result.preview_path));
           setEffectType(result.effect_type);
           setTransitionType(result.transition_type);
+          setVideoWatermarkName(result.video_watermark_name || "");
+          setError("");
         }
-      } catch {
+      } catch (requestError) {
         if (mountedRef.current && latestKeyRef.current === request.key) {
           setUrl(null);
           setEffectType("");
           setTransitionType("");
+          setVideoWatermarkName("");
+          setError(requestError instanceof Error ? requestError.message : "特效预览失败");
         }
       }
     }
@@ -83,16 +102,20 @@ export function useEngineEffectPreview(
     source: frame?.source ?? "",
     nextSource: nextFrame?.source ?? "",
     config: workspace.config,
+    previewSequence,
   }), [
     frame?.source,
     nextFrame?.source,
     workspace.config,
+    previewSequence,
   ]);
 
   useEffect(() => {
     setUrl(null);
     setEffectType("");
     setTransitionType("");
+    setVideoWatermarkName("");
+    setError("");
   }, [identity]);
 
   useEffect(() => {
@@ -109,10 +132,12 @@ export function useEngineEffectPreview(
       setLoading(false);
       setEffectType("");
       setTransitionType("");
+      setVideoWatermarkName("");
+      setError("");
       return;
     }
     const duration = Math.max(0.1, Number(workspace.config.duration) || 0.1);
-    const localTime = Number((((time % duration) + duration) % duration).toFixed(3));
+    const localTime = quantizeEffectPreviewTime(time, duration, workspace.config.fps);
     const key = `${identity}:${localTime}`;
     latestKeyRef.current = key;
     pendingRef.current = {
@@ -121,9 +146,10 @@ export function useEngineEffectPreview(
       nextPath: nextFrame?.source ?? "",
       config: workspace.config,
       timeSec: localTime,
+      previewSequence,
     };
     void pump();
-  }, [active, frame?.source, identity, nextFrame?.source, pump, time, workspace.config]);
+  }, [active, frame?.source, identity, nextFrame?.source, previewSequence, pump, time, workspace.config]);
 
-  return { url, loading, effectType, transitionType };
+  return { url, loading, error, effectType, transitionType, videoWatermarkName };
 }

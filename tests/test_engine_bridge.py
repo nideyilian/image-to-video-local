@@ -9,7 +9,8 @@ import numpy as np
 from PIL import Image
 
 from src.engine.config import DEFAULT_VIDEO_EFFECTS, build_default_config, normalize_config, scan_images, validate_config
-from src.engine.effect_preview import render_effect_frame, render_effect_preview
+from src.engine.effect_preview import _resolve_video_watermark, preview_phase_timing, render_effect_frame, render_effect_preview
+from src.engine.preview_random import preview_choice, preview_sample
 from src.engine.server import EngineServer
 from src.utils.ffmpeg_runtime import configure_ffmpeg_environment, probe_ffmpeg
 from src.utils.timeline import cycle_images_to_duration, timeline_slot_count
@@ -39,6 +40,55 @@ def test_scan_images_is_recursive_and_naturally_sorted(tmp_path):
         "image10.png",
         "image1.png",
     ]
+
+
+def test_preview_sequence_cycles_through_different_assets():
+    assets = ["a", "b", "c", "d"]
+
+    first_choice = preview_choice(assets, 1, "effect")
+    second_choice = preview_choice(assets, 2, "effect")
+    first_sample = preview_sample(assets, 3, 1, "images")
+    second_sample = preview_sample(assets, 3, 2, "images")
+
+    assert first_choice != second_choice
+    assert first_sample[0] != second_sample[0]
+    assert len(first_sample) == len(set(first_sample)) == 3
+
+
+def test_preview_sequence_cycles_video_watermark_folder(tmp_path):
+    watermark_dir = tmp_path / "视频水印"
+    watermark_dir.mkdir()
+    (watermark_dir / "a.mp4").write_bytes(b"")
+    (watermark_dir / "b.mov").write_bytes(b"")
+    config = build_default_config()
+    config.update({"use_watermark": True, "watermark_path": str(watermark_dir)})
+
+    first = _resolve_video_watermark(config, 1)
+    second = _resolve_video_watermark(config, 2)
+
+    assert first is not None and second is not None
+    assert first != second
+
+
+def test_scan_images_preview_sequence_changes_only_preview_order(tmp_path):
+    for index in range(4):
+        Image.new("RGB", (4, 4), "white").save(tmp_path / f"image{index}.png")
+    server = EngineServer(ROOT)
+
+    first = server._dispatch("scan_images", {
+        "input_dir": str(tmp_path),
+        "limit": 2,
+        "preview_sequence": 1,
+    })
+    second = server._dispatch("scan_images", {
+        "input_dir": str(tmp_path),
+        "limit": 2,
+        "preview_sequence": 2,
+    })
+
+    assert first["count"] == second["count"] == 4
+    assert first["images"][0]["path"] != second["images"][0]["path"]
+    assert "preview_sequence" not in build_default_config()
 
 
 def test_validate_config_reports_missing_paths():
@@ -144,7 +194,7 @@ def test_engine_snapshot_reports_real_ffmpeg():
     assert Path(snapshot["ffmpeg_path"]).is_file()
 
 
-def test_bgm_preview_copies_supported_audio_to_asset_scope(tmp_path):
+def test_bgm_preview_transcodes_audio_for_webview_playback(tmp_path):
     bgm_dir = tmp_path / "背景音乐"
     bgm_dir.mkdir()
     audio = bgm_dir / "预览音乐.wav"
@@ -160,12 +210,42 @@ def test_bgm_preview_copies_supported_audio_to_asset_scope(tmp_path):
         "watermark_audio": "使用BGM",
     })
 
-    result = EngineServer._preview_bgm({"config": config})
+    server = EngineServer(ROOT)
+    result = server._preview_bgm({"config": config})
+    cached_result = server._preview_bgm({"config": config})
 
     assert result["enabled"] is True
     assert result["name"] == audio.name
     assert Path(result["preview_path"]).is_file()
+    assert Path(result["preview_path"]).suffix == ".mp3"
+    assert result["mime_type"] == "audio/mpeg"
+    assert cached_result["preview_path"] == result["preview_path"]
     assert "image-to-video-engine" in Path(result["preview_path"]).parts
+
+
+def test_bgm_random_preview_cycles_without_changing_config(tmp_path):
+    bgm_dir = tmp_path / "随机试听"
+    bgm_dir.mkdir()
+    for name in ("a.wav", "b.wav"):
+        with wave.open(str(bgm_dir / name), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(8000)
+            output.writeframes(b"\x00\x00" * 800)
+    config = build_default_config()
+    config.update({
+        "use_bgm": True,
+        "bgm_dir": str(bgm_dir),
+        "random_bgm": False,
+        "watermark_audio": "使用BGM",
+    })
+    server = EngineServer(ROOT)
+
+    first = server._preview_bgm({"config": config, "preview_sequence": 1})
+    second = server._preview_bgm({"config": config, "preview_sequence": 2})
+
+    assert first["source"] != second["source"]
+    assert config["random_bgm"] is False
 
 
 def test_all_configured_effects_use_legacy_renderer():
@@ -181,6 +261,25 @@ def test_all_configured_effects_use_legacy_renderer():
     soul = render_effect_frame(source.copy(), "灵魂出窍", 0.2, 1.0, 100.0, 1.3)
     assert not np.array_equal(heartbeat, source)
     assert not np.array_equal(soul, source)
+
+
+def test_effect_speed_uses_export_time_scale():
+    yy, xx = np.mgrid[:54, :96]
+    source = np.stack((xx * 2, yy * 4, (xx + yy) * 2), axis=-1).astype(np.uint8)
+
+    normal = render_effect_frame(source.copy(), "镜头呼吸", 0.5, 2.0, 100.0, 1.0)
+    double_speed = render_effect_frame(source.copy(), "镜头呼吸", 0.25, 2.0, 100.0, 2.0)
+
+    assert np.array_equal(normal, double_speed)
+
+
+def test_preview_phase_timing_matches_export_frame_allocation():
+    config = build_default_config()
+    config.update({"fps": 30, "use_transition": True})
+
+    assert preview_phase_timing(config, 8.0, True) == (7.5, 0.5)
+    assert preview_phase_timing(config, 0.3, True) == (0.3, 0.0)
+    assert preview_phase_timing(config, 8.0, False) == (8.0, 0.0)
 
 
 def test_effect_preview_endpoint_writes_output_frame(tmp_path):
@@ -211,13 +310,24 @@ def test_effect_preview_uses_enabled_random_effect_pool(tmp_path):
         "use_video_effect": True,
         "video_effect_type": "无特效",
         "random_video_effect": True,
-        "enabled_video_effects": ["镜头呼吸"],
+        "enabled_video_effects": ["镜头呼吸", "左右晃动"],
         "resolution_preset": "160x90",
     })
 
-    result = render_effect_preview({"path": str(source), "config": config, "time_sec": 0.2})
+    first = render_effect_preview({
+        "path": str(source),
+        "config": config,
+        "time_sec": 0.2,
+        "preview_sequence": 1,
+    })
+    second = render_effect_preview({
+        "path": str(source),
+        "config": config,
+        "time_sec": 0.2,
+        "preview_sequence": 2,
+    })
 
-    assert result["effect_type"] == "镜头呼吸"
+    assert {first["effect_type"], second["effect_type"]} == {"镜头呼吸", "左右晃动"}
 
 
 def test_effect_preview_applies_enabled_image_watermark(tmp_path):

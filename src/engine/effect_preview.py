@@ -13,6 +13,7 @@ import numpy as np
 
 from ..utils.opencv_silent import import_cv2_silent
 from .config import normalize_config, scan_images
+from .preview_random import preview_choice
 
 
 cv2 = import_cv2_silent()
@@ -162,7 +163,7 @@ def _prepare_image_watermark_layers(
     return prepared, signatures
 
 
-def _resolve_video_watermark(config: dict[str, Any]) -> Path | None:
+def _resolve_video_watermark(config: dict[str, Any], preview_sequence: int = 0) -> Path | None:
     if not bool(config.get("use_watermark")):
         return None
     path_value = str(config.get("watermark_path", "") or "").strip()
@@ -172,14 +173,14 @@ def _resolve_video_watermark(config: dict[str, Any]) -> Path | None:
     if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
         return path
     if path.is_dir():
-        return next(
-            (
-                candidate
-                for candidate in sorted(path.iterdir())
-                if candidate.is_file() and candidate.suffix.lower() in VIDEO_EXTENSIONS
-            ),
-            None,
-        )
+        candidates = [
+            candidate
+            for candidate in sorted(path.iterdir())
+            if candidate.is_file() and candidate.suffix.lower() in VIDEO_EXTENSIONS
+        ]
+        if preview_sequence > 0:
+            return preview_choice(candidates, preview_sequence, "video-watermark")
+        return candidates[0] if candidates else None
     return None
 
 
@@ -211,27 +212,55 @@ def _read_video_watermark_frame(
         capture.release()
 
 
+def preview_phase_timing(
+    config: dict[str, Any],
+    duration_sec: float,
+    has_next_image: bool,
+) -> tuple[float, float]:
+    """Match the exporter's static/effect and transition frame allocation."""
+    fps = max(1, int(config.get("fps", 30) or 30))
+    total_frames = max(1, int(max(0.001, duration_sec) * fps))
+    transition_frames = 0
+    if has_next_image and bool(config.get("use_transition")):
+        transition_frames = min(15, total_frames // 3)
+        display_frames = total_frames - transition_frames
+        minimum_display_frames = min(total_frames, max(1, fps // 2))
+        if display_frames < minimum_display_frames:
+            display_frames = minimum_display_frames
+            transition_frames = max(0, total_frames - display_frames)
+    display_frames = total_frames - transition_frames
+    return display_frames / fps, transition_frames / fps
+
+
 def _apply_transition_preview(
     image: np.ndarray,
     next_image: np.ndarray | None,
     config: dict[str, Any],
     time_sec: float,
-    duration_sec: float,
+    static_duration: float,
+    transition_duration: float,
+    preview_sequence: int = 0,
 ) -> tuple[np.ndarray, bool, str]:
-    if next_image is None or not bool(config.get("use_transition")):
+    if (
+        next_image is None
+        or not bool(config.get("use_transition"))
+        or transition_duration <= 0
+    ):
         return image, False, "无转场"
     transition_type = str(config.get("transition_type", "淡入淡出") or "淡入淡出")
     if bool(config.get("random_transition")):
         enabled = config.get("enabled_transitions") or []
         if enabled:
-            transition_type = str(enabled[0])
+            transition_type = str(
+                preview_choice(enabled, preview_sequence, "transition")
+                if preview_sequence > 0
+                else enabled[0]
+            )
     fps = max(1, int(config.get("fps", 30) or 30))
-    frame_count = 15
-    transition_duration = min(duration_sec, frame_count / fps)
-    transition_start = max(0.0, duration_sec - transition_duration)
-    if time_sec < transition_start:
+    frame_count = max(1, int(round(transition_duration * fps)))
+    if time_sec < static_duration:
         return image, False, transition_type
-    progress = min(1.0, max(0.0, (time_sec - transition_start) / max(0.001, transition_duration)))
+    progress = min(1.0, max(0.0, (time_sec - static_duration) / transition_duration))
     try:
         from ..core.transition_engine import get_turbo_transition_engine
 
@@ -259,12 +288,17 @@ def render_effect_preview(params: dict[str, Any]) -> dict[str, Any]:
     max_height = max(64, min(1080, int(params.get("max_height", 540) or 540)))
     width, height = _target_size(config, max_width, max_height)
     time_sec = max(0.0, float(params.get("time_sec", 0.0) or 0.0))
+    preview_sequence = max(0, int(params.get("preview_sequence", 0) or 0))
     duration_sec = max(0.001, float(config.get("duration", 1.0) or 1.0))
     effect_type = str(config.get("video_effect_type", "无特效"))
     if bool(config.get("random_video_effect")):
         enabled_effects = config.get("enabled_video_effects") or []
         if enabled_effects:
-            effect_type = str(enabled_effects[0])
+            effect_type = str(
+                preview_choice(enabled_effects, preview_sequence, "effect")
+                if preview_sequence > 0
+                else enabled_effects[0]
+            )
     enabled = bool(config.get("use_video_effect")) and effect_type != "无特效"
 
     image = _resize_for_export(
@@ -277,6 +311,9 @@ def render_effect_preview(params: dict[str, Any]) -> dict[str, Any]:
         next_image = _resize_for_export(
             _read_image(next_path), width, height, bool(config.get("keep_aspect_ratio", True))
         )
+    static_duration, transition_duration = preview_phase_timing(
+        config, duration_sec, next_image is not None
+    )
 
     adapter = _legacy_watermark_adapter(config)
     image_layers, watermark_signatures = _prepare_image_watermark_layers(adapter, config)
@@ -286,19 +323,19 @@ def render_effect_preview(params: dict[str, Any]) -> dict[str, Any]:
             next_image = adapter.apply_image_watermark_layers(next_image, image_layers, image_index=1)
 
     image, transition_active, transition_type = _apply_transition_preview(
-        image, next_image, config, time_sec, duration_sec
+        image, next_image, config, time_sec, static_duration, transition_duration, preview_sequence
     )
     if enabled and not transition_active:
         image = render_effect_frame(
             image,
             effect_type,
             time_sec,
-            duration_sec,
+            static_duration,
             float(config.get("video_effect_intensity", 100.0) or 100.0),
             float(config.get("video_effect_speed", 1.0) or 1.0),
         )
 
-    video_watermark = _resolve_video_watermark(config)
+    video_watermark = _resolve_video_watermark(config, preview_sequence)
     if video_watermark is not None:
         watermark_frame = _read_video_watermark_frame(
             video_watermark,
@@ -331,6 +368,8 @@ def render_effect_preview(params: dict[str, Any]) -> dict[str, Any]:
         "effect": effect_type,
         "time": round(time_sec, 3),
         "duration": duration_sec,
+        "static_duration": static_duration,
+        "transition_duration": transition_duration,
         "intensity": config.get("video_effect_intensity"),
         "speed": config.get("video_effect_speed"),
         "keep_aspect": config.get("keep_aspect_ratio"),
@@ -375,4 +414,7 @@ def render_effect_preview(params: dict[str, Any]) -> dict[str, Any]:
         "transition_type": transition_type if bool(config.get("use_transition")) else "无转场",
         "transition_active": transition_active,
         "time_sec": time_sec,
+        "static_duration": static_duration,
+        "transition_duration": transition_duration,
+        "video_watermark_name": video_watermark.name if video_watermark is not None else "",
     }
