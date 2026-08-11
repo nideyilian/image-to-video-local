@@ -11,6 +11,8 @@ import sys
 import subprocess
 from typing import Optional, List, Any
 
+from .ffmpeg_runtime import resolve_ffmpeg_path
+
 class FFmpegSilentRunner:
     """FFmpeg静默运行器"""
     
@@ -72,30 +74,7 @@ class FFmpegSilentRunner:
         Returns:
             FFmpeg路径或None
         """
-        # 检查本地FFmpeg路径
-        local_paths = [
-            "tools/ffmpeg/bin/ffmpeg.exe",
-            "ffmpeg/bin/ffmpeg.exe", 
-            "ffmpeg.exe"
-        ]
-        
-        for path in local_paths:
-            if os.path.exists(path):
-                return os.path.abspath(path)
-        
-        # 查找系统PATH中的FFmpeg
-        try:
-            if sys.platform == "win32":
-                result = self.run_command(['where', 'ffmpeg'], shell=True)
-            else:
-                result = self.run_command(['which', 'ffmpeg'])
-            
-            if result.returncode == 0:
-                return result.stdout.strip().split('\n')[0]
-        except:
-            pass
-        
-        return None
+        return resolve_ffmpeg_path()
     
     def test_ffmpeg(self, ffmpeg_path: str) -> bool:
         """

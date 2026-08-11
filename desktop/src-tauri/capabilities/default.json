@@ -1,0 +1,36 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "opener:default",
+    "process:default",
+    "updater:default",
+    "shell:allow-stdin-write",
+    "shell:allow-kill",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/image-to-video-engine",
+          "sidecar": true,
+          "args": true
+        },
+        {
+          "name": "python-engine",
+          "cmd": "python",
+          "args": [
+            "-m",
+            "src.engine.server",
+            "--project-root",
+            { "validator": "^[^\\r\\n]+$" }
+          ],
+          "sidecar": false
+        }
+      ]
+    }
+  ]
+}

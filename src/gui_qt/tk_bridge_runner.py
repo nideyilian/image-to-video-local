@@ -38,7 +38,7 @@ def main() -> int:
         sys.path.insert(0, current_dir)
 
     try:
-        from gui.main_window import ImageToVideoTab
+        from src.gui.main_window import ImageToVideoTab
     except Exception as exc:
         _emit({"type": "status", "message": f"桥接导入失败: {exc}"})
         return 2

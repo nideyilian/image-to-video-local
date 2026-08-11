@@ -11,7 +11,9 @@ from tkinter import ttk, filedialog
 from tkinter import messagebox as tk_messagebox
 from tkinter import simpledialog as tk_simpledialog
 from ..utils.opencv_silent import import_cv2_silent
+from ..utils.ffmpeg_runtime import configure_ffmpeg_environment, probe_ffmpeg, resolve_ffprobe_path
 cv2 = import_cv2_silent()
+configure_ffmpeg_environment(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import numpy as np
 from pathlib import Path
 # 修复moviepy导入问题
@@ -39,6 +41,7 @@ from ..utils.transition_constants import (
     DEFAULT_ENABLED_TRANSITIONS,
     TRANSITION_DESCRIPTIONS
 )
+from ..utils.timeline import cycle_images_to_duration, timeline_slot_count
 
 # 导入主题和对话框
 from .styles.ios_light_theme import apply_ios_light_theme, IOSLightTheme
@@ -853,6 +856,7 @@ class ImageToVideoTab:
         self.output_dir = tk.StringVar(value=os.path.join(os.getcwd(), "output"))
         self.num_images = tk.IntVar(value=10)
         self.duration = tk.DoubleVar(value=2.0)
+        self.total_duration = tk.DoubleVar(value=0.0)
         self.fps = tk.IntVar(value=30)
         self.video_count = tk.IntVar(value=1)
         self.video_format = tk.StringVar(value="avi")
@@ -1016,6 +1020,7 @@ class ImageToVideoTab:
                 "output_dir": self.output_dir.get(),
                 "num_images": self.num_images.get(),
                 "duration": self.duration.get(),
+                "total_duration": self.total_duration.get(),
                 "fps": self.fps.get(),
                 "video_count": self.video_count.get(),
                 "video_format": self.video_format.get(),
@@ -1094,6 +1099,8 @@ class ImageToVideoTab:
                     self.num_images.set(value)
                 elif key == "duration" and hasattr(self, "duration"):
                     self.duration.set(value)
+                elif key == "total_duration" and hasattr(self, "total_duration"):
+                    self.total_duration.set(value)
                 elif key == "fps" and hasattr(self, "fps"):
                     self.fps.set(value)
                 elif key == "video_count" and hasattr(self, "video_count"):
@@ -1749,83 +1756,14 @@ class ImageToVideoTab:
     def check_ffmpeg(self):
         """检查ffmpeg是否可用"""
         try:
-            base_dirs = []
-            # 运行目录（开发态）
-            base_dirs.append(os.getcwd())
-            # exe 所在目录（打包后双击/快捷方式场景）
-            try:
-                base_dirs.append(os.path.dirname(os.path.abspath(sys.executable)))
-            except Exception:
-                pass
-            # PyInstaller onefile 解包目录
-            try:
-                meipass = getattr(sys, "_MEIPASS", "")
-                if meipass:
-                    base_dirs.append(str(meipass))
-            except Exception:
-                pass
-            # 源码目录回溯到项目根
-            try:
-                project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                base_dirs.append(project_root)
-            except Exception:
-                pass
-
-            # 去重并保持顺序
-            unique_bases = []
-            seen = set()
-            for d in base_dirs:
-                norm = os.path.normpath(str(d))
-                if not norm or norm in seen:
-                    continue
-                seen.add(norm)
-                unique_bases.append(norm)
-
-            local_paths = []
-            for root in unique_bases:
-                local_paths.extend([
-                    os.path.join(root, 'tools', 'ffmpeg', 'bin', 'ffmpeg.exe'),
-                    os.path.join(root, 'tools', 'ffmpeg', 'ffmpeg.exe'),
-                    os.path.join(root, 'ffmpeg', 'bin', 'ffmpeg.exe'),
-                    os.path.join(root, 'ffmpeg.exe'),
-                ])
-            
-            for local_path in local_paths:
-                if os.path.exists(local_path):
-                    # 测试FFmpeg是否可用
-                    try:
-                        result = subprocess.run([local_path, '-version'], 
-                                            stdout=subprocess.PIPE, 
-                                            stderr=subprocess.PIPE, 
-                                            check=False,
-                                            startupinfo=self.startupinfo)
-                        if result.returncode == 0:
-                            # 添加到PATH
-                            path_dir = os.path.dirname(local_path)
-                            os.environ['PATH'] = path_dir + os.pathsep + os.environ.get('PATH', '')
-                            # 统一给依赖库传递 ffmpeg 可执行文件
-                            os.environ['FFMPEG_BINARY'] = local_path
-                            os.environ['IMAGEIO_FFMPEG_EXE'] = local_path
-                            self.ffmpeg_executable = local_path
-                            self.update_status(f"[OK] 使用本地FFmpeg: {local_path}")
-                            return True
-                    except Exception as e:
-                        self.update_status(f"测试FFmpeg时出错: {str(e)}")
-            
-            # 尝试在系统PATH中查找
-            try:
-                result = subprocess.run(['ffmpeg', '-version'], 
-                                    stdout=subprocess.PIPE, 
-                                    stderr=subprocess.PIPE, 
-                                    check=False,
-                                    startupinfo=self.startupinfo)
-                if result.returncode == 0:
-                    self.ffmpeg_executable = 'ffmpeg'
-                    self.update_status("[OK] 使用系统PATH中的FFmpeg")
-                    return True
-            except Exception as e:
-                self.update_status(f"检测PATH中的FFmpeg时出错: {str(e)}")
-                
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            ffmpeg_path = configure_ffmpeg_environment(project_root)
+            available, _version = probe_ffmpeg(ffmpeg_path)
+            if available and ffmpeg_path:
+                self.ffmpeg_executable = ffmpeg_path
+                self.ffprobe_executable = resolve_ffprobe_path(project_root, ffmpeg_path)
+                self.update_status(f"[OK] 使用FFmpeg: {ffmpeg_path}")
+                return True
             self.update_status("[WARN] 未找到FFmpeg，某些功能可能不可用")
             return False
         except Exception as e:
@@ -2121,7 +2059,7 @@ class ImageToVideoTab:
         # 左侧边栏：视频参数
         ttk.Label(left_panel, text="图片数:").grid(row=3, column=0, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
         ttk.Spinbox(left_panel, from_=1, to=1000, textvariable=self.num_images, width=7).grid(row=3, column=1, sticky="w", padx=(0, pad_x), pady=pad_y)
-        ttk.Label(left_panel, text="持续:").grid(row=3, column=2, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
+        ttk.Label(left_panel, text="每图时长:").grid(row=3, column=2, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
         ttk.Spinbox(left_panel, from_=0.1, to=60.0, increment=0.1, textvariable=self.duration, width=7).grid(row=3, column=3, sticky="w", padx=(0, pad_x), pady=pad_y)
         ttk.Label(left_panel, text="FPS:").grid(row=3, column=4, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
         ttk.Spinbox(left_panel, from_=1, to=120, textvariable=self.fps, width=7).grid(row=3, column=5, sticky="w", padx=(0, pad_x), pady=pad_y)
@@ -2159,7 +2097,9 @@ class ImageToVideoTab:
         ttk.Label(left_panel, text="图片:").grid(row=6, column=2, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
         ttk.Combobox(left_panel, textvariable=self.image_selection_mode, values=["随机选择", "按名称排序"], width=10, state="readonly").grid(
             row=6, column=3, sticky="w", padx=(0, pad_x), pady=pad_y)
-        ttk.Label(left_panel, text="", foreground="gray").grid(row=6, column=4, columnspan=2, sticky="w", padx=(0, pad_x), pady=pad_y)
+        ttk.Label(left_panel, text="总时长:").grid(row=6, column=4, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
+        ttk.Spinbox(left_panel, from_=0.0, to=86400.0, increment=0.1, textvariable=self.total_duration, width=7).grid(
+            row=6, column=5, sticky="w", padx=(0, pad_x), pady=pad_y)
 
         ttk.Separator(left_panel, orient=tk.HORIZONTAL).grid(row=7, column=0, columnspan=6, sticky="ew", pady=(4, 4))
 
@@ -3710,6 +3650,7 @@ class ImageToVideoTab:
 
             # 兼容旧配置：将已移除的“单次运动”特效映射到循环复合特效
             legacy_effect_alias = {
+                "心跳跃动": "心跳跳动",
                 "轻微放大": "镜头呼吸",
                 "轻微缩小": "脉冲放大",
                 "左右平移": "左右晃动",
@@ -3922,7 +3863,7 @@ class ImageToVideoTab:
                 max_x = max(resized.shape[1] - w, 0)
                 t = 0.5 - 0.5 * np.cos(2 * np.pi * 2.0 * speed * time_sec)
                 x = int(max_x * t)
-                return resized[:, x:x + w]
+                return self._center_crop(resized[:, x:x + w], w, h)
 
             if effect_type == "上下浮动":
                 # 垂直往返移动
@@ -3931,7 +3872,7 @@ class ImageToVideoTab:
                 max_y = max(resized.shape[0] - h, 0)
                 t = 0.5 - 0.5 * np.cos(2 * np.pi * 2.0 * speed * time_sec)
                 y = int(max_y * t)
-                return resized[y:y + h, :]
+                return self._center_crop(resized[y:y + h, :], w, h)
 
             if effect_type == "缓慢推近":
                 # 缓慢推近
@@ -4118,7 +4059,7 @@ class ImageToVideoTab:
                 return frame
 
             if effect_type == "灵魂出窍":
-                from core.video_effect_engine import apply_soul_out
+                from ..core.video_effect_engine import apply_soul_out
                 return apply_soul_out(img, time_sec, speed=speed, intensity=intensity_scale)
 
             return img
@@ -4543,7 +4484,7 @@ class ImageToVideoTab:
             pass
 
         cmd = [
-            "ffmpeg", "-y",
+            getattr(self, "ffmpeg_executable", None) or "ffmpeg", "-y",
             "-i", src_path,
             "-map", "0:v:0",
             "-map", "0:a?",
@@ -4584,9 +4525,22 @@ class ImageToVideoTab:
             else:
                 print(msg)
 
+        ffprobe_path = getattr(self, "ffprobe_executable", None) or resolve_ffprobe_path(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            getattr(self, "ffmpeg_executable", None),
+        )
+        if not ffprobe_path:
+            meta = self._probe_video_meta(output_path)
+            if meta:
+                _log(
+                    f"[PROBE] 输出校验: size={meta['width']}x{meta['height']}, "
+                    f"fps={meta['fps']:.3f}, duration={meta['duration']:.3f}s"
+                )
+            return
+
         try:
             cmd = [
-                "ffprobe",
+                ffprobe_path,
                 "-v", "error",
                 "-show_entries", "format=format_name:stream=codec_name,pix_fmt,width,height,avg_frame_rate",
                 "-select_streams", "v:0",
@@ -5312,7 +5266,7 @@ Turbo图片预处理 - 并行优化版本
             if hasattr(self, "loop_bgm"):
                 loop_audio = bool(self.loop_bgm.get())
             cmd = [
-                "ffmpeg", "-y",  # 覆盖输出文件
+                getattr(self, "ffmpeg_executable", None) or "ffmpeg", "-y",  # 覆盖输出文件
                 "-i", video_path,  # 输入视频
             ]
             if loop_audio:
@@ -5428,7 +5382,7 @@ Turbo图片预处理 - 并行优化版本
         
         try:
             for file in os.listdir(directory):
-                if file.lower().endswith(('.mp3', '.wav', '.m4a', '.ogg', '.flac')):
+                if file.lower().endswith(('.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac')):
                     audio_files.append(os.path.join(directory, file))
         except Exception as e:
             self.update_status(f"获取音频文件列表时出错: {str(e)}")
@@ -5464,6 +5418,7 @@ Turbo图片预处理 - 并行优化版本
             self.output_dir.set(config_dict.get("output_dir", ""))
             self.num_images.set(str(config_dict.get("num_images", 10)))
             self.duration.set(str(config_dict.get("duration", 2.0)))
+            self.total_duration.set(str(config_dict.get("total_duration", 0.0)))
             self.fps.set(str(config_dict.get("fps", 30)))
             self.video_count.set(str(config_dict.get("video_count", 1)))
             self.video_format.set(config_dict.get("video_format", "mp4"))
@@ -5783,9 +5738,15 @@ Turbo图片预处理 - 并行优化版本
             return _safe_float(text, 0.0)
 
         # 1) 优先用 ffprobe，避免 OpenCV 在部分编码/容器上返回异常 FPS（常见导致时长异常）
+        ffprobe_path = getattr(self, "ffprobe_executable", None) or resolve_ffprobe_path(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            getattr(self, "ffmpeg_executable", None),
+        )
         try:
+            if not ffprobe_path:
+                raise FileNotFoundError("ffprobe unavailable")
             cmd = [
-                "ffprobe",
+                ffprobe_path,
                 "-v", "error",
                 "-show_entries", "format=duration:stream=width,height,avg_frame_rate,r_frame_rate,nb_frames",
                 "-select_streams", "v:0",
@@ -5920,16 +5881,13 @@ Turbo图片预处理 - 并行优化版本
         """获取本次应使用的BGM文件。"""
         if not self.use_bgm.get():
             return None
+        audio_strategy = self.watermark_audio.get() if hasattr(self, "watermark_audio") else "使用BGM"
+        if audio_strategy not in ("使用BGM", "两者混合"):
+            return None
         bgm_dir = self.bgm_dir.get()
         if not bgm_dir or not os.path.exists(bgm_dir):
             return None
-        bgm_files = []
-        for ext in ['.mp3', '.wav', '.m4a', '.aac']:
-            bgm_files.extend([
-                os.path.join(bgm_dir, f)
-                for f in os.listdir(bgm_dir)
-                if f.lower().endswith(ext)
-            ])
+        bgm_files = sorted(self.get_audio_files(bgm_dir))
         if not bgm_files:
             return None
         if self.random_bgm.get():
@@ -6068,7 +6026,7 @@ Turbo图片预处理 - 并行优化版本
             log_func,
         )
 
-        base_cmd = ["ffmpeg", "-y", "-i", output_path]
+        base_cmd = [getattr(self, "ffmpeg_executable", None) or "ffmpeg", "-y", "-i", output_path]
         filter_parts = []
         current_label = "[0:v]"
         input_idx = 1
@@ -6273,7 +6231,7 @@ Turbo图片预处理 - 并行优化版本
             _log("固定图层包含高级混合模式，跳过FFmpeg固定图层加速")
             return False
 
-        base_cmd = ["ffmpeg", "-y", "-i", output_path]
+        base_cmd = [getattr(self, "ffmpeg_executable", None) or "ffmpeg", "-y", "-i", output_path]
         filter_parts = []
         current_label = "[0:v]"
         input_idx = 1
@@ -6501,17 +6459,12 @@ Turbo图片预处理 - 并行优化版本
         _post_progress(0.80, "水印中")
 
         # 背景音乐
-        if self.use_bgm.get():
+        audio_strategy = self.watermark_audio.get() if hasattr(self, "watermark_audio") else "使用BGM"
+        if self.use_bgm.get() and audio_strategy in ("使用BGM", "两者混合"):
             bgm_dir = self.bgm_dir.get()
             if bgm_dir and os.path.exists(bgm_dir):
                 _log(f"开始添加背景音乐: {bgm_dir}")
-                bgm_files = []
-                for ext in ['.mp3', '.wav', '.m4a', '.aac']:
-                    bgm_files.extend([
-                        os.path.join(bgm_dir, f)
-                        for f in os.listdir(bgm_dir)
-                        if f.lower().endswith(ext)
-                    ])
+                bgm_files = sorted(self.get_audio_files(bgm_dir))
                 if bgm_files:
                     if self.random_bgm.get():
                         import random
@@ -7052,7 +7005,7 @@ Turbo图片预处理 - 并行优化版本
                 if strict_vcodec:
                     muxer = self._get_ffmpeg_muxer_for_output(output_path)
                     ffmpeg_cmd = [
-                        "ffmpeg", "-y",
+                        getattr(self, "ffmpeg_executable", None) or "ffmpeg", "-y",
                         "-f", "rawvideo",
                         "-pix_fmt", "bgr24",
                         "-s", f"{main_width}x{main_height}",
@@ -7751,7 +7704,7 @@ Turbo图片预处理 - 并行优化版本
 
                 for vcodec in codec_candidates:
                     ffmpeg_cmd = [
-                        "ffmpeg", "-y",  # 覆盖输出文件
+                        getattr(self, "ffmpeg_executable", None) or "ffmpeg", "-y",  # 覆盖输出文件
                         "-framerate", str(watermark_fps),  # 输入帧率
                         "-i", os.path.join(temp_dir, "frame_%06d.png"),  # 输入图片序列
                         "-c:v", vcodec,
@@ -7851,7 +7804,7 @@ Turbo图片预处理 - 并行优化版本
                 return False
             muxer = self._get_ffmpeg_muxer_for_output(output_path)
             ffmpeg_cmd = [
-                "ffmpeg", "-y",
+                getattr(self, "ffmpeg_executable", None) or "ffmpeg", "-y",
                 "-f", "rawvideo",
                 "-pix_fmt", "bgr24",
                 "-s", f"{width}x{height}",
@@ -8091,6 +8044,12 @@ Turbo图片预处理 - 并行优化版本
             num_images = self.num_images.get()
             video_count = self.video_count.get()
             selection_mode = self.image_selection_mode.get()  # 获取图片选择方式
+
+            try:
+                timeline_slot_count(self.duration.get(), self.total_duration.get())
+            except ValueError as exc:
+                self.update_status(str(exc))
+                return False
             
             # 参数验证
             if not input_dir:
@@ -8196,6 +8155,17 @@ Turbo图片预处理 - 并行优化版本
                     remain_images = random.sample(remain_pool, min(remain_need, len(remain_pool)))
                     selected_images = [first_image] + remain_images
                     self.update_status(f"第{video_index + 1}个视频随机选择图片: {[os.path.basename(img) for img in selected_images]}")
+
+                source_image_count = len(selected_images)
+                selected_images = cycle_images_to_duration(
+                    selected_images,
+                    self.duration.get(),
+                    self.total_duration.get(),
+                )
+                if len(selected_images) != source_image_count:
+                    self.update_status(
+                        f"第{video_index + 1}个视频按总时长循环为 {len(selected_images)} 个图片片段"
+                    )
                 
                 if hasattr(self, 'progress_info_var'):
                     self.progress_info_var.set(f"视频进度: {video_index + 1}/{video_count}")

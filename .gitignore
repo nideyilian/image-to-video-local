@@ -16,7 +16,19 @@ env/
 htmlcov/
 build/
 dist/
+node_modules/
+target/
+desktop/src-tauri/binaries/*.exe
+desktop/src-tauri/*.key
 *.spec.bak
+
+# Local design review output
+.impeccable/
+.impeccable-comp.json
+.impeccable-direction.json
+desktop/_verify*.mjs
+desktop/_verify_shots/
+desktop/watermark-panel.png
 
 # Runtime data
 logs/

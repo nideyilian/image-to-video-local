@@ -58,6 +58,7 @@ from src.utils.transition_constants import (
     DEFAULT_ENABLED_TRANSITIONS,
     TRANSITION_DESCRIPTIONS,
 )
+from src.utils.timeline import timeline_slot_count
 from src.core.transition_engine import get_turbo_transition_engine
 
 try:
@@ -599,6 +600,11 @@ class QtMainWindow(QMainWindow):
         self.duration_spin = QDoubleSpinBox()
         self.duration_spin.setRange(0.1, 120.0)
         self.duration_spin.setSingleStep(0.1)
+        self.total_duration_spin = QDoubleSpinBox()
+        self.total_duration_spin.setRange(0.0, 86400.0)
+        self.total_duration_spin.setSingleStep(0.1)
+        self.total_duration_spin.setSpecialValueText("自动")
+        self.total_duration_spin.setToolTip("0 表示按图片数自动计算；设置后会循环图片直到达到总时长")
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 120)
         self.video_count_spin = QSpinBox()
@@ -626,7 +632,7 @@ class QtMainWindow(QMainWindow):
 
         grid.addWidget(QLabel("图片数"), 0, 0)
         grid.addWidget(self.num_images_spin, 0, 1)
-        grid.addWidget(QLabel("持续"), 0, 2)
+        grid.addWidget(QLabel("每图时长"), 0, 2)
         grid.addWidget(self.duration_spin, 0, 3)
         grid.addWidget(QLabel("FPS"), 0, 4)
         grid.addWidget(self.fps_spin, 0, 5)
@@ -649,6 +655,8 @@ class QtMainWindow(QMainWindow):
         grid.addWidget(self.image_selection_combo, 3, 1)
         grid.addWidget(QLabel("码率"), 3, 2)
         grid.addWidget(self.bitrate_spin, 3, 3)
+        grid.addWidget(QLabel("总时长"), 3, 4)
+        grid.addWidget(self.total_duration_spin, 3, 5)
         for col in (1, 3, 5):
             grid.setColumnStretch(col, 1)
         return box
@@ -1024,7 +1032,7 @@ class QtMainWindow(QMainWindow):
 
     def _capture_widget_refs(self) -> Dict[str, Any]:
         keys = [
-            "input_dir_edit", "output_dir_edit", "num_images_spin", "duration_spin", "fps_spin",
+            "input_dir_edit", "output_dir_edit", "num_images_spin", "duration_spin", "total_duration_spin", "fps_spin",
             "video_count_spin", "resolution_combo", "keep_ratio_check", "video_format_combo", "codec_combo",
             "add_resolution_btn", "remove_resolution_btn",
             "bitrate_spin", "image_selection_combo", "use_effect_check", "random_effect_check", "effect_combo",
@@ -1355,6 +1363,7 @@ class QtMainWindow(QMainWindow):
             "output_dir": "",
             "num_images": 1,
             "duration": 8.0,
+            "total_duration": 0.0,
             "fps": 30,
             "video_count": 1,
             "video_format": "mp4",
@@ -1417,6 +1426,7 @@ class QtMainWindow(QMainWindow):
             "output_dir": self.output_dir_edit.text().strip(),
             "num_images": int(self.num_images_spin.value()),
             "duration": float(self.duration_spin.value()),
+            "total_duration": float(self.total_duration_spin.value()),
             "fps": int(self.fps_spin.value()),
             "video_count": int(self.video_count_spin.value()),
             "video_format": self.video_format_combo.currentText(),
@@ -1471,6 +1481,7 @@ class QtMainWindow(QMainWindow):
         self.output_dir_edit.setText(str(cfg.get("output_dir", "")))
         self.num_images_spin.setValue(int(cfg.get("num_images", 1)))
         self.duration_spin.setValue(float(cfg.get("duration", 8.0)))
+        self.total_duration_spin.setValue(float(cfg.get("total_duration", 0.0)))
         self.fps_spin.setValue(int(cfg.get("fps", 30)))
         self.video_count_spin.setValue(int(cfg.get("video_count", 1)))
         self.video_format_combo.setCurrentText(str(cfg.get("video_format", "mp4")))
@@ -2309,6 +2320,12 @@ class QtMainWindow(QMainWindow):
             video_count = int(cfg.get("video_count", 1))
         except Exception:
             video_count = 0
+        try:
+            duration = float(cfg.get("duration", 0))
+            total_duration = float(cfg.get("total_duration", 0))
+            timeline_slot_count(duration, total_duration)
+        except (TypeError, ValueError) as exc:
+            return str(exc)
 
         if not input_dir:
             return "请输入输入目录"
@@ -3313,7 +3330,7 @@ class QtMainWindow(QMainWindow):
             return _warp(scale=1.02 + 0.04 * intensity_scale, tx=tx, ty=ty)
 
         if effect == "灵魂出窍":
-            from core.video_effect_engine import apply_soul_out
+            from ..core.video_effect_engine import apply_soul_out
             return apply_soul_out(src, time_sec, speed=speed, intensity=intensity_scale)
 
         # 通用回退：轻微呼吸，保证“有动效可见”。
