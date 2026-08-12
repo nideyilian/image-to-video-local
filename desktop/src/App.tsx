@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { FALLBACK_CONFIG } from "./constants";
 import { engine } from "./engine";
-import { Inspector } from "./components/Inspector";
+import { Inspector, type InspectorTabId } from "./components/Inspector";
 import { JobManifest } from "./components/JobManifest";
 import { PreviewStage } from "./components/PreviewStage";
 import { UpdateCenter } from "./components/UpdateCenter";
@@ -28,6 +28,7 @@ import type {
   JobState,
   PreviewAsset,
   SystemSnapshot,
+  ValidationIssue,
   VideoConfig,
   Workspace,
 } from "./types";
@@ -54,6 +55,13 @@ const DEFAULT_LAYOUT: LayoutState = {
   railCollapsed: false,
   inspectorCollapsed: false,
 };
+
+const INSPECTOR_SECTION_LABELS: Record<string, string> = {
+  basic: "基础参数",
+  motion: "转场与特效",
+  watermark: "视频水印",
+};
+const GENERAL_SECTION_LABEL = "通用";
 
 const LAYOUT_LIMITS: Record<LayoutSizeKey, [number, number]> = {
   railWidth: [168, 360],
@@ -153,6 +161,7 @@ function makeWorkspace(config: VideoConfig, name = "新建工作区"): Workspace
     imageCount: null,
     preview: null,
     validationErrors: [],
+    validationIssues: [],
     dirty: false,
   };
 }
@@ -200,6 +209,7 @@ function mergeStoredWorkspaces(raw: unknown, defaults: VideoConfig): Workspace[]
       imageCount: null,
       preview: null,
       validationErrors: [],
+      validationIssues: [],
       dirty: false,
     }];
   });
@@ -263,11 +273,13 @@ export default function App() {
   const [previewFocused, setPreviewFocused] = useState(false);
   const [previewSequences, setPreviewSequences] = useState<Record<string, number>>({});
   const [previewReadySequences, setPreviewReadySequences] = useState<Record<string, number>>({});
+  const [inspectorTab, setInspectorTab] = useState<InspectorTabId>("basic");
 
   const jobsRef = useRef(jobs);
   const queuedWorkspaces = useRef(new Map<string, Workspace>());
   const pumpQueueRef = useRef<() => void>(() => undefined);
   const latestPreviewKey = useRef("");
+  const validationTokens = useRef<Record<string, number>>({});
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeId) ?? workspaces[0];
   const activePreviewSequence = activeWorkspace ? previewSequences[activeWorkspace.id] ?? 0 : 0;
   const activePreviewReadySequence = activeWorkspace ? previewReadySequences[activeWorkspace.id] ?? 0 : 0;
@@ -377,6 +389,9 @@ export default function App() {
 
   useEffect(() => {
     const unsubscribe = engine.subscribe(updateJobFromEvent);
+    const unsubscribeReady = engine.subscribe((event) => {
+      if (event.type === "event" && event.event === "engine.ready" && !cancelled) setReady(true);
+    });
     let cancelled = false;
     const initialize = async () => {
       let defaults = structuredClone(FALLBACK_CONFIG);
@@ -412,12 +427,13 @@ export default function App() {
     return () => {
       cancelled = true;
       unsubscribe();
+      unsubscribeReady();
     };
   }, [demoMode, refreshSystem, updateJobFromEvent]);
 
   useEffect(() => {
     if (!ready || demoMode) return;
-    const serializable = workspaces.map(({ preview: _preview, validationErrors: _errors, ...workspace }) => workspace);
+    const serializable = workspaces.map(({ preview: _preview, validationErrors: _errors, validationIssues: _issues, ...workspace }) => workspace);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
   }, [demoMode, ready, workspaces]);
 
@@ -452,6 +468,7 @@ export default function App() {
         preview,
         imageCount: key === "input_dir" ? null : workspace.imageCount,
         validationErrors: [],
+        validationIssues: [],
         dirty: true,
       };
     }));
@@ -461,13 +478,13 @@ export default function App() {
     const requestKey = previewSyncKey(workspace, previewSequence);
     latestPreviewKey.current = requestKey;
     if (!workspace.config.input_dir) {
-      patchWorkspace(workspace.id, { validationErrors: ["请先选择输入目录"] });
-      if (announce) showNotice("error", "请先选择输入目录");
+      patchWorkspace(workspace.id, { validationErrors: ["请输入输入目录"], validationIssues: [{ field: "input_dir", section: "basic", message: "请输入输入目录" }] });
+      if (announce) showNotice("error", "请输入输入目录");
       return;
     }
     const previewLimit = Math.max(0, Math.trunc(Number(workspace.config.num_images) || 0));
     if (!previewLimit) {
-      patchWorkspace(workspace.id, { preview: null, validationErrors: ["每个视频图片数必须大于 0"] });
+      patchWorkspace(workspace.id, { preview: null, validationErrors: ["每个视频图片数必须大于 0"], validationIssues: [{ field: "num_images", section: "basic", message: "每个视频图片数必须大于 0" }] });
       if (announce) showNotice("error", "每个视频图片数必须大于 0");
       return;
     }
@@ -491,7 +508,7 @@ export default function App() {
         preview = frames.length ? { ...frames[0], frames } : null;
       }
       if (latestPreviewKey.current !== requestKey) return;
-      patchWorkspace(workspace.id, { imageCount: scan.count, preview, validationErrors: scan.count ? [] : ["输入目录里没有可用图片"] });
+      patchWorkspace(workspace.id, { imageCount: scan.count, preview, validationErrors: scan.count ? [] : ["输入目录里没有可用图片"], validationIssues: scan.count ? [] : [{ field: "input_dir", section: "basic", message: "输入目录里没有可用图片" }] });
       if (scan.count > 0) {
         setPreviewReadySequences((current) => ({ ...current, [workspace.id]: previewSequence }));
       }
@@ -499,7 +516,7 @@ export default function App() {
     } catch (error) {
       if (latestPreviewKey.current !== requestKey) return;
       const message = error instanceof Error ? error.message : "读取预览失败";
-      patchWorkspace(workspace.id, { validationErrors: [message] });
+      patchWorkspace(workspace.id, { validationErrors: [message], validationIssues: [{ field: "", section: "", message }] });
       if (announce) showNotice("error", message);
     } finally {
       if (latestPreviewKey.current === requestKey) setPreviewLoading(false);
@@ -529,6 +546,45 @@ export default function App() {
     refreshPreview,
   ]);
 
+  useEffect(() => {
+    if (!activeWorkspace || demoMode || !engineState.connected) return;
+    const token = (validationTokens.current[activeWorkspace.id] ?? 0) + 1;
+    validationTokens.current[activeWorkspace.id] = token;
+    const { id, config } = activeWorkspace;
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await engine.call<{ valid: boolean; issues: ValidationIssue[] }>(
+          "validate_config_detailed",
+          { config, check_files: true },
+          30_000,
+        );
+        if (validationTokens.current[id] !== token) return;
+        patchWorkspace(id, {
+          validationIssues: result.issues,
+          validationErrors: result.issues.map((issue) => issue.message),
+        });
+      } catch {
+        /* 校验失败不阻塞编辑，等待下次重试用 */
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeWorkspace?.id,
+    activeWorkspace?.config.input_dir,
+    activeWorkspace?.config.output_dir,
+    activeWorkspace?.config.num_images,
+    activeWorkspace?.config.video_count,
+    activeWorkspace?.config.duration,
+    activeWorkspace?.config.total_duration,
+    activeWorkspace?.config.use_bgm,
+    activeWorkspace?.config.bgm_dir,
+    activeWorkspace?.config.watermark_audio,
+    activeWorkspace?.config.image_selection_mode,
+    demoMode,
+    engineState.connected,
+    patchWorkspace,
+  ]);
+
   const browseDirectory = useCallback(async (key: keyof VideoConfig) => {
     if (!engine.desktopRuntime) return showNotice("info", "目录选择需要在 Tauri 桌面窗口中运行");
     const selected = await openDialog({ directory: true, multiple: false, title: "选择目录" });
@@ -554,9 +610,9 @@ export default function App() {
   }, [activeWorkspace, showNotice, updateConfig]);
 
   const validateWorkspace = useCallback(async (workspace: Workspace) => {
-    const result = await engine.call<{ valid: boolean; errors: string[] }>("validate_config", { config: workspace.config, check_files: true }, 30_000);
-    patchWorkspace(workspace.id, { validationErrors: result.errors });
-    return result;
+    const result = await engine.call<{ valid: boolean; issues: ValidationIssue[] }>("validate_config_detailed", { config: workspace.config, check_files: true }, 30_000);
+    patchWorkspace(workspace.id, { validationIssues: result.issues, validationErrors: result.issues.map((issue) => issue.message) });
+    return { valid: result.valid, errors: result.issues.map((issue) => issue.message) };
   }, [patchWorkspace]);
 
   const pumpQueue = useCallback(() => {
@@ -602,7 +658,8 @@ export default function App() {
           queuedWorkspaces.current.set(job.job_id, workspace);
         }
       } catch (error) {
-        patchWorkspace(workspace.id, { validationErrors: [error instanceof Error ? error.message : "配置校验失败"] });
+        const message = error instanceof Error ? error.message : "配置校验失败";
+        patchWorkspace(workspace.id, { validationErrors: [message], validationIssues: [{ field: "", section: "", message }] });
       }
     }
     if (!accepted.length) return showNotice("error", "没有可执行的工作区，请先处理参数提示");
@@ -675,7 +732,7 @@ export default function App() {
       const name = path.split(/[\\/]/).pop()?.replace(/\.json$/i, "") || "加载的工作区";
       setPreviewSequences((current) => ({ ...current, [activeId]: 0 }));
       setPreviewReadySequences((current) => ({ ...current, [activeId]: 0 }));
-      patchWorkspace(activeId, { name, config: normalized, imageCount: null, preview: null, validationErrors: [], dirty: false });
+      patchWorkspace(activeId, { name, config: normalized, imageCount: null, preview: null, validationErrors: [], validationIssues: [], dirty: false });
       showNotice("success", "配置已加载");
     } catch (error) {
       showNotice("error", error instanceof Error ? error.message : "配置加载失败");
@@ -769,13 +826,32 @@ export default function App() {
         </nav>
       </header>
 
-      {activeWorkspace.validationErrors.length ? (
-        <div className="validation-banner" role="alert">
-          <CircleAlert size={16} />
-          <strong>当前工作区需要处理：</strong>
-          <span>{activeWorkspace.validationErrors.join("；")}</span>
-        </div>
-      ) : <div className="validation-spacer" aria-hidden="true" />}
+      {activeWorkspace.validationIssues.length ? (() => {
+        const grouped = new Map<string, string[]>();
+        for (const issue of activeWorkspace.validationIssues) {
+          const key = issue.section || "general";
+          if (!grouped.has(key)) grouped.set(key, []);
+          grouped.get(key)!.push(issue.message);
+        }
+        const jumpToSection = (section: string) => {
+          if (section && section !== "general") setInspectorTab(section as InspectorTabId);
+          if (layout.inspectorCollapsed) setLayout((current) => ({ ...current, inspectorCollapsed: false }));
+        };
+        return (
+          <div className="validation-banner" role="alert">
+            <CircleAlert size={16} />
+            <div className="validation-banner-body">
+              <strong>当前工作区需要处理（{activeWorkspace.validationIssues.length} 项）：</strong>
+              {Array.from(grouped.entries()).map(([section, messages]) => (
+                <button type="button" key={section} className="validation-group" onClick={() => jumpToSection(section)} title="点击跳转到对应配置项">
+                  <span className="validation-group-label">{INSPECTOR_SECTION_LABELS[section] ?? GENERAL_SECTION_LABEL}</span>
+                  <span className="validation-group-items">{messages.join("；")}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })() : <div className="validation-spacer" aria-hidden="true" />}
 
       <main className="production-grid">
         <WorkspaceRail
@@ -834,7 +910,15 @@ export default function App() {
             if (event.key === "ArrowRight") nudgeLayout("inspectorWidth", -8);
           }}
         />
-        <Inspector config={activeWorkspace.config} onChange={updateConfig} onBrowseDirectory={(key) => void browseDirectory(key)} onBrowseFile={(key, layerIndex) => void browseFile(key, layerIndex)} />
+        <Inspector
+          config={activeWorkspace.config}
+          onChange={updateConfig}
+          onBrowseDirectory={(key) => void browseDirectory(key)}
+          onBrowseFile={(key, layerIndex) => void browseFile(key, layerIndex)}
+          activeTab={inspectorTab}
+          onActiveTabChange={setInspectorTab}
+          validationIssues={activeWorkspace.validationIssues}
+        />
       </main>
 
       <div

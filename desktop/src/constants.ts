@@ -1,13 +1,9 @@
 import type { VideoConfig, WatermarkLayer } from "./types";
 
-export const RESOLUTIONS = [
+export const DEFAULT_RESOLUTION_PRESETS = [
   "1280x720",
-  "1920x1080",
-  "2560x1440",
-  "3840x2160",
-  "1080x1920",
   "720x1280",
-  "1080x1080",
+  "1080x1920",
 ];
 
 export const TRANSITIONS = [
@@ -56,7 +52,7 @@ export const FALLBACK_CONFIG: VideoConfig = {
   video_count: 1,
   video_format: "mp4",
   resolution_preset: "1280x720",
-  resolution_presets: RESOLUTIONS,
+  resolution_presets: DEFAULT_RESOLUTION_PRESETS,
   keep_aspect_ratio: true,
   use_transition: true,
   transition_type: TRANSITIONS[0],

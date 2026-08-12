@@ -33,8 +33,9 @@ export function WorkspaceRail({
       <div className="workspace-list">
         {workspaces.map((workspace, index) => {
           const selected = workspace.id === activeId;
+          const firstError = workspace.validationIssues[0]?.message ?? workspace.validationErrors[0] ?? "";
           const state = workspace.validationErrors.length
-            ? "需要处理"
+            ? firstError
             : workspace.imageCount === null
               ? "尚未扫描"
               : `${workspace.imageCount} 张图片`;

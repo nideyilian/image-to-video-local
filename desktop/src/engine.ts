@@ -1,7 +1,7 @@
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { Command, type Child } from "@tauri-apps/plugin-shell";
 import { FALLBACK_CONFIG } from "./constants";
-import type { EngineEvent, EngineHealth, VideoConfig } from "./types";
+import type { EngineEvent, EngineHealth, ValidationIssue, VideoConfig } from "./types";
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -172,6 +172,14 @@ export class EngineBridge {
         ...(!config.output_dir ? ["请输入输出目录"] : []),
       ];
       return { valid: errors.length === 0, errors } as T;
+    }
+    if (method === "validate_config_detailed") {
+      const config = (params.config ?? FALLBACK_CONFIG) as VideoConfig;
+      const issues: ValidationIssue[] = [
+        ...(!config.input_dir ? [{ field: "input_dir", section: "basic", message: "请输入输入目录" }] : []),
+        ...(!config.output_dir ? [{ field: "output_dir", section: "basic", message: "请输入输出目录" }] : []),
+      ];
+      return { valid: issues.length === 0, issues } as T;
     }
     if (method === "scan_images") return { count: 0, images: [] } as T;
     if (method === "system_snapshot") {

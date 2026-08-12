@@ -72,6 +72,12 @@ export type PreviewAsset = PreviewFrame & {
   frames: PreviewFrame[];
 };
 
+export type ValidationIssue = {
+  field: string;
+  section: string;
+  message: string;
+};
+
 export type Workspace = {
   id: string;
   name: string;
@@ -79,6 +85,7 @@ export type Workspace = {
   imageCount: number | null;
   preview: PreviewAsset | null;
   validationErrors: string[];
+  validationIssues: ValidationIssue[];
   dirty: boolean;
 };
 

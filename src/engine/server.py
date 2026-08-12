@@ -14,11 +14,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
-
 from ..utils.ffmpeg_runtime import configure_ffmpeg_environment, probe_ffmpeg
-from .config import build_default_config, normalize_config, scan_audio_files, scan_images, validate_config
-from .effect_preview import render_effect_preview
+from .config import build_default_config, normalize_config, scan_audio_files, scan_images, validate_config, validate_config_detailed
 from .preview_random import preview_choice, preview_sample
 from .runner import JobManager
 
@@ -38,11 +35,26 @@ def _configure_utf8_stdio() -> None:
 class EngineServer:
     def __init__(self, project_root: str | Path):
         self.project_root = Path(project_root).resolve()
+        # ffmpeg 版本探测需要启动 ffmpeg 子进程（安装版首次运行还会触发杀软扫描），
+        # 属于重操作。启动关键路径上只解析路径，真正的版本探测延迟到首次需要时再做。
         self.ffmpeg_path = configure_ffmpeg_environment(self.project_root)
-        self.ffmpeg_available, self.ffmpeg_version = probe_ffmpeg(self.ffmpeg_path)
+        self.ffmpeg_available: bool | None = None
+        self.ffmpeg_version: str | None = None
+        self._ffmpeg_probed = False
+        self._ffmpeg_probe_lock = threading.Lock()
         self._output_lock = threading.Lock()
         self._running = True
         self.jobs = JobManager(self.project_root, callback=self.emit)
+
+    def _ensure_ffmpeg_probed(self) -> None:
+        """惰性探测 ffmpeg，只在 system_snapshot / 预览等真正需要时才执行。"""
+        if self._ffmpeg_probed:
+            return
+        with self._ffmpeg_probe_lock:
+            if self._ffmpeg_probed:
+                return
+            self.ffmpeg_available, self.ffmpeg_version = probe_ffmpeg(self.ffmpeg_path)
+            self._ffmpeg_probed = True
 
     def emit(self, payload: dict[str, Any]) -> None:
         with self._output_lock:
@@ -90,6 +102,9 @@ class EngineServer:
         if method == "validate_config":
             errors = validate_config(params.get("config"), check_files=bool(params.get("check_files", True)))
             return {"valid": not errors, "errors": errors}
+        if method == "validate_config_detailed":
+            issues = validate_config_detailed(params.get("config"), check_files=bool(params.get("check_files", True)))
+            return {"valid": not issues, "issues": issues}
         if method == "scan_images":
             all_images = scan_images(str(params.get("input_dir", "")))
             preview_sequence = int(params.get("preview_sequence", 0) or 0)
@@ -110,6 +125,8 @@ class EngineServer:
         if method == "preview_thumbnail":
             return self._preview_thumbnail(params)
         if method == "preview_effect_frame":
+            from .effect_preview import render_effect_preview
+
             return render_effect_preview(params)
         if method == "preview_bgm":
             return self._preview_bgm(params)
@@ -131,6 +148,7 @@ class EngineServer:
     def _system_snapshot(self, params: dict[str, Any]) -> dict[str, Any]:
         import psutil
 
+        self._ensure_ffmpeg_probed()
         output_dir = str(params.get("output_dir", "") or self.project_root)
         disk_target = output_dir if Path(output_dir).exists() else str(self.project_root)
         memory = psutil.virtual_memory()
@@ -162,6 +180,8 @@ class EngineServer:
         }
 
     def _preview_thumbnail(self, params: dict[str, Any]) -> dict[str, Any]:
+        from PIL import Image
+
         source = str(params.get("path", "") or "").strip()
         if not source:
             input_dir = str(params.get("input_dir", "") or "").strip()
@@ -288,6 +308,8 @@ class EngineServer:
         }
 
     def serve(self) -> int:
+        # 引擎已就绪，立即通知前端关闭启动屏（无需等待 ffmpeg 探测或配置加载完成）。
+        self.emit({"type": "event", "event": "engine.ready", "payload": {"protocol": PROTOCOL_VERSION}})
         for raw_line in sys.stdin:
             if not self._running:
                 break

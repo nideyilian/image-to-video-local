@@ -3,14 +3,14 @@ import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, Plus, Shuffle, Trash2, X } from "lucide-react";
 import {
   BLEND_MODES,
+  DEFAULT_RESOLUTION_PRESETS,
   DEFAULT_WATERMARK_LAYER,
-  RESOLUTIONS,
   TRANSITIONS,
   VIDEO_EFFECTS,
   WATERMARK_POSITIONS,
   WATERMARK_SIZE_MODES,
 } from "../constants";
-import type { VideoConfig, WatermarkLayer } from "../types";
+import type { ValidationIssue, VideoConfig, WatermarkLayer } from "../types";
 import { Field, PathField } from "./Controls";
 
 type ConfigKey = keyof VideoConfig;
@@ -24,7 +24,7 @@ const INSPECTOR_TABS = [
 const POOL_PAGE_SIZE = 12;
 const LAYER_PAGE_SIZE = 1;
 
-type InspectorTabId = (typeof INSPECTOR_TABS)[number]["id"];
+export type InspectorTabId = (typeof INSPECTOR_TABS)[number]["id"];
 type InspectorDialogState = "transition-pool" | "effect-pool" | null;
 type FeatureMode = "off" | "fixed" | "random";
 type BgmMode = "off" | "ordered" | "random";
@@ -66,6 +66,90 @@ function SegmentedControl<T extends string>({ label, value, options, onChange, c
         ))}
       </div>
     </div>
+  );
+}
+
+const CUSTOM_RESOLUTION_OPTION = "__custom_resolution__";
+
+function ResolutionField({ config, onChange }: {
+  config: VideoConfig;
+  onChange: <K extends ConfigKey>(key: K, value: VideoConfig[K]) => void;
+}) {
+  const defaults = DEFAULT_RESOLUTION_PRESETS;
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState("");
+
+  const presets = config.resolution_presets ?? [];
+  const customPresets = Array.from(new Set(presets.filter((value) => !defaults.includes(value))));
+  const current = config.resolution_preset;
+  const selectValue = adding ? CUSTOM_RESOLUTION_OPTION : current;
+
+  const handleSelectChange = (next: string) => {
+    if (next === CUSTOM_RESOLUTION_OPTION) {
+      setDraft("");
+      setError("");
+      setAdding(true);
+      return;
+    }
+    onChange("resolution_preset", next);
+  };
+
+  const commitCustom = () => {
+    const normalized = draft.trim().toLowerCase().replace(/[×*]/g, "x");
+    if (!/^\d{1,5}x\d{1,5}$/.test(normalized)) {
+      setError("格式应为 宽x高，例如 1920x1080");
+      return;
+    }
+    const nextPresets = presets.includes(normalized) ? presets : [...presets, normalized];
+    onChange("resolution_presets", nextPresets);
+    onChange("resolution_preset", normalized);
+    setAdding(false);
+    setDraft("");
+    setError("");
+  };
+
+  const cancelCustom = () => {
+    setAdding(false);
+    setDraft("");
+    setError("");
+  };
+
+  const showCurrentOnly = current && !defaults.includes(current) && !customPresets.includes(current);
+
+  return (
+    <Field label="分辨率" hint={error || undefined}>
+      <select value={selectValue} onChange={(event) => handleSelectChange(event.target.value)}>
+        {defaults.map((value) => (
+          <option key={value} value={value}>{value}</option>
+        ))}
+        {customPresets.length > 0 && (
+          <optgroup label="自定义">
+            {customPresets.map((value) => (
+              <option key={value} value={value}>{value}</option>
+            ))}
+          </optgroup>
+        )}
+        {showCurrentOnly && <option value={current}>{current}（当前）</option>}
+        <option value={CUSTOM_RESOLUTION_OPTION}>＋ 自定义添加</option>
+      </select>
+      {adding && (
+        <span className="resolution-add">
+          <input
+            autoFocus
+            placeholder="如 1920x1080"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") commitCustom();
+              if (event.key === "Escape") cancelCustom();
+            }}
+          />
+          <button type="button" onClick={commitCustom}>添加</button>
+          <button type="button" className="quiet" onClick={cancelCustom}>取消</button>
+        </span>
+      )}
+    </Field>
   );
 }
 
@@ -189,13 +273,18 @@ export function Inspector({
   onChange,
   onBrowseDirectory,
   onBrowseFile,
+  activeTab,
+  onActiveTabChange,
+  validationIssues,
 }: {
   config: VideoConfig;
   onChange: <K extends ConfigKey>(key: K, value: VideoConfig[K]) => void;
   onBrowseDirectory: (key: ConfigKey) => void;
   onBrowseFile: (key: ConfigKey, layerIndex?: number) => void;
+  activeTab: InspectorTabId;
+  onActiveTabChange: (tab: InspectorTabId) => void;
+  validationIssues: ValidationIssue[];
 }) {
-  const [activeTab, setActiveTab] = useState<InspectorTabId>("basic");
   const [dialog, setDialog] = useState<InspectorDialogState>(null);
   const [transitionPage, setTransitionPage] = useState(0);
   const [effectPage, setEffectPage] = useState(0);
@@ -223,7 +312,7 @@ export function Inspector({
     else return;
     event.preventDefault();
     const nextTab = INSPECTOR_TABS[nextIndex];
-    setActiveTab(nextTab.id);
+    onActiveTabChange(nextTab.id);
     window.requestAnimationFrame(() => document.getElementById(`inspector-tab-${nextTab.id}`)?.focus());
   };
 
@@ -252,6 +341,7 @@ export function Inspector({
     if (mode !== "off") onChange("random_bgm", mode === "random");
   };
 
+  const tabsWithErrors = new Set(validationIssues.map((issue) => issue.section).filter(Boolean));
   return (
     <aside className="inspector" aria-label="参数检查器">
       <div className="panel-heading inspector-heading">
@@ -269,11 +359,12 @@ export function Inspector({
             aria-selected={activeTab === tab.id}
             aria-controls={`inspector-panel-${tab.id}`}
             tabIndex={activeTab === tab.id ? 0 : -1}
-            className={activeTab === tab.id ? "is-active" : undefined}
-            onClick={() => setActiveTab(tab.id)}
+            className={`${activeTab === tab.id ? "is-active" : ""}${tabsWithErrors.has(tab.id) ? " has-error" : ""}`}
+            onClick={() => onActiveTabChange(tab.id)}
             onKeyDown={(event) => handleTabKeyDown(event, index)}
           >
             {tab.label}
+            {tabsWithErrors.has(tab.id) ? <span className="tab-error-dot" aria-label="该分区有未完成的配置" /> : null}
           </button>
         ))}
       </div>
@@ -290,7 +381,7 @@ export function Inspector({
             <Field label="总时长 · 秒"><input type="number" min={0} max={86400} step={0.1} value={config.total_duration} aria-label="视频总时长（秒，0 表示自动）" title="0 表示按图片数自动计算" onChange={(event) => onChange("total_duration", Number(event.target.value))} /></Field>
             <Field label="视频数"><input type="number" min={1} max={1000000} value={config.video_count} aria-label="视频数量" onChange={(event) => onChange("video_count", Number(event.target.value))} /></Field>
             <Field label="FPS"><input type="number" min={1} max={120} value={config.fps} aria-label="帧率" onChange={(event) => onChange("fps", Number(event.target.value))} /></Field>
-            <Field label="分辨率"><input list="resolution-options" value={config.resolution_preset} onChange={(event) => onChange("resolution_preset", event.target.value)} /><datalist id="resolution-options">{[...new Set([...RESOLUTIONS, ...config.resolution_presets])].map((value) => <option key={value} value={value} />)}</datalist></Field>
+            <ResolutionField config={config} onChange={onChange} />
             <Field label="格式"><select value={config.video_format} onChange={(event) => onChange("video_format", event.target.value)}><option>mp4</option><option>mov</option><option>avi</option></select></Field>
             <Field label="编码"><select value={config.codec} onChange={(event) => onChange("codec", event.target.value)}><option>H264</option><option>mp4v</option><option>XVID</option><option>MJPG</option></select></Field>
             <Field label="码率 · kbps"><input type="number" min={500} max={100000} step={500} value={config.bitrate} onChange={(event) => onChange("bitrate", Number(event.target.value))} /></Field>

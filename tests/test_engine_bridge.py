@@ -191,7 +191,18 @@ def test_engine_pipe_preserves_unicode_image_paths(tmp_path):
         capture_output=True,
         check=True,
     )
-    response = json.loads(result.stdout.decode("utf-8"))
+    # 引擎启动后会先输出 engine.ready 事件，再输出请求对应的响应；
+    # 协议是逐行 JSON，这里按行解析并定位与请求 id 匹配的响应。
+    response = None
+    for line in result.stdout.decode("utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        payload = json.loads(line)
+        if payload.get("id") == "scan-unicode":
+            response = payload
+            break
+    assert response is not None
 
     assert response["ok"] is True
     assert response["result"]["count"] == 1

@@ -17,12 +17,8 @@ AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 
 DEFAULT_RESOLUTION_PRESETS = [
     "1280x720",
-    "1920x1080",
-    "2560x1440",
-    "3840x2160",
-    "1080x1920",
     "720x1280",
-    "1080x1080",
+    "1080x1920",
 ]
 
 DEFAULT_VIDEO_EFFECTS = [
@@ -177,25 +173,34 @@ def scan_audio_files(audio_dir: str) -> list[str]:
     return files
 
 
-def validate_config(raw: dict[str, Any] | None, check_files: bool = True) -> list[str]:
+ValidationIssue = dict[str, str]
+
+
+def validate_config_detailed(raw: dict[str, Any] | None, check_files: bool = True) -> list[ValidationIssue]:
+    """返回结构化的配置校验问题，每项包含 field / section / message。
+
+    section 对应前端 Inspector 的标签页 id：basic / motion / watermark。
+    旧版界面可调用 :func:`validate_config` 仅获取 message 列表。
+    """
     config = normalize_config(raw)
-    errors: list[str] = []
+    issues: list[ValidationIssue] = []
+
     input_dir = str(config.get("input_dir", "")).strip()
     output_dir = str(config.get("output_dir", "")).strip()
 
     if not input_dir:
-        errors.append("请输入输入目录")
+        issues.append({"field": "input_dir", "section": "basic", "message": "请输入输入目录"})
     elif check_files and not os.path.isdir(input_dir):
-        errors.append("输入目录不存在，请重新选择")
+        issues.append({"field": "input_dir", "section": "basic", "message": "输入目录不存在，请重新选择"})
     if not output_dir:
-        errors.append("请输入输出目录")
+        issues.append({"field": "output_dir", "section": "basic", "message": "请输入输出目录"})
 
     if check_files and bool(config.get("use_bgm")) and str(config.get("watermark_audio", "使用BGM")) in {"使用BGM", "两者混合"}:
         bgm_dir = str(config.get("bgm_dir", "") or "").strip()
         if not bgm_dir or not Path(bgm_dir).is_dir():
-            errors.append("BGM目录不存在，请重新选择")
+            issues.append({"field": "bgm_dir", "section": "basic", "message": "BGM目录不存在，请重新选择"})
         elif not scan_audio_files(bgm_dir):
-            errors.append("BGM目录中没有可用音频")
+            issues.append({"field": "bgm_dir", "section": "basic", "message": "BGM目录中没有可用音频"})
 
     try:
         num_images = int(config.get("num_images", 0))
@@ -214,33 +219,42 @@ def validate_config(raw: dict[str, Any] | None, check_files: bool = True) -> lis
     except (TypeError, ValueError):
         total_duration = -1.0
     if num_images <= 0:
-        errors.append("每个视频图片数必须大于 0")
+        issues.append({"field": "num_images", "section": "basic", "message": "每个视频图片数必须大于 0"})
     if video_count <= 0:
-        errors.append("视频数量必须大于 0")
+        issues.append({"field": "video_count", "section": "basic", "message": "视频数量必须大于 0"})
     try:
         timeline_slot_count(duration, total_duration)
     except ValueError as exc:
-        errors.append(str(exc))
+        issues.append({"field": "duration", "section": "basic", "message": str(exc)})
 
-    if errors or not check_files:
-        return errors
+    if issues or not check_files:
+        return issues
 
     image_count = len(scan_images(input_dir))
     if image_count == 0:
-        return ["输入目录里没有图片，请先放入图片再导出"]
+        return [{"field": "input_dir", "section": "basic", "message": "输入目录里没有图片，请先放入图片再导出"}]
 
     if str(config.get("image_selection_mode", "随机选择")) == "按名称排序":
         required = video_count * num_images
         if image_count < required:
-            errors.append(
-                f"输出数量超出图片数量：当前只有 {image_count} 张图片，"
-                f"按名称排序模式生成 {video_count} 个视频需要 {required} 张"
-            )
+            issues.append({
+                "field": "input_dir",
+                "section": "basic",
+                "message": f"输出数量超出图片数量：当前只有 {image_count} 张图片，"
+                           f"按名称排序模式生成 {video_count} 个视频需要 {required} 张",
+            })
     else:
         if image_count < num_images:
-            errors.append(f"图片数量不足：当前只有 {image_count} 张，每个视频需要 {num_images} 张")
+            issues.append({"field": "input_dir", "section": "basic", "message": f"图片数量不足：当前只有 {image_count} 张，每个视频需要 {num_images} 张"})
         elif image_count < video_count:
-            errors.append(
-                f"输出数量超出图片数量：随机模式下当前 {image_count} 张图片最多生成 {image_count} 个视频"
-            )
-    return errors
+            issues.append({
+                "field": "input_dir",
+                "section": "basic",
+                "message": f"输出数量超出图片数量：随机模式下当前 {image_count} 张图片最多生成 {image_count} 个视频",
+            })
+    return issues
+
+
+def validate_config(raw: dict[str, Any] | None, check_files: bool = True) -> list[str]:
+    """兼容旧版界面：仅返回错误文本列表。"""
+    return [issue["message"] for issue in validate_config_detailed(raw, check_files)]

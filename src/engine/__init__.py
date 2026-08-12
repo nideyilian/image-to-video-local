@@ -1,6 +1,6 @@
 """Headless application boundary shared by desktop frontends."""
 
-from .config import build_default_config, normalize_config, scan_images, validate_config
+from .config import build_default_config, normalize_config, scan_images, validate_config, validate_config_detailed
 from .runner import JobManager
 
 __all__ = [
@@ -9,4 +9,5 @@ __all__ = [
     "normalize_config",
     "scan_images",
     "validate_config",
+    "validate_config_detailed",
 ]
