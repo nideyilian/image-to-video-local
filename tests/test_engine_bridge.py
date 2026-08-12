@@ -19,6 +19,13 @@ from src.utils.timeline import cycle_images_to_duration, timeline_slot_count
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_desktop_allows_slow_packaged_engine_startup():
+    bridge_source = (ROOT / "desktop" / "src" / "engine.ts").read_text(encoding="utf-8")
+
+    assert "const ENGINE_STARTUP_TIMEOUT_MS = 120_000;" in bridge_source
+    assert 'this.call<EngineHealth>("health", {}, ENGINE_STARTUP_TIMEOUT_MS)' in bridge_source
+
+
 def test_default_config_keeps_legacy_dimensions():
     config = normalize_config(build_default_config())
     assert config["resolution_preset"] == "1280x720"

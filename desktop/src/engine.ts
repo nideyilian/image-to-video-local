@@ -17,6 +17,8 @@ type ResponsePayload = {
   error?: string;
 };
 
+const ENGINE_STARTUP_TIMEOUT_MS = 120_000;
+
 export class EngineBridge {
   private child: Child | null = null;
   private pending = new Map<string, PendingRequest>();
@@ -33,10 +35,10 @@ export class EngineBridge {
     if (!this.desktopRuntime) {
       throw new Error("浏览器预览模式未连接本地引擎");
     }
+    if (this.connecting) return this.connecting;
     if (this.child) {
       return this.call<EngineHealth>("health");
     }
-    if (this.connecting) return this.connecting;
 
     this.connecting = (async () => {
       const command = import.meta.env.DEV
@@ -70,7 +72,7 @@ export class EngineBridge {
         this.emit({ type: "event", event: "engine.error", payload: { message } });
       });
       this.child = await command.spawn();
-      return this.call<EngineHealth>("health");
+      return this.call<EngineHealth>("health", {}, ENGINE_STARTUP_TIMEOUT_MS);
     })();
 
     try {
