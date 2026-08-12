@@ -13,7 +13,7 @@ type EffectPreviewResponse = {
 };
 
 type PreviewRequest = {
-  key: string;
+  identity: string;
   path: string;
   nextPath: string;
   config: Workspace["config"];
@@ -47,7 +47,7 @@ export function useEngineEffectPreview(
   const pendingRef = useRef<PreviewRequest | null>(null);
   const runningRef = useRef(false);
   const mountedRef = useRef(true);
-  const latestKeyRef = useRef("");
+  const latestIdentityRef = useRef("");
 
   useEffect(() => {
     mountedRef.current = true;
@@ -62,7 +62,7 @@ export function useEngineEffectPreview(
     while (mountedRef.current && pendingRef.current) {
       const request = pendingRef.current;
       pendingRef.current = null;
-      if (latestKeyRef.current === request.key) setLoading(true);
+      if (latestIdentityRef.current === request.identity) setLoading(true);
       try {
         const result = await engine.call<EffectPreviewResponse>(
           "preview_effect_frame",
@@ -77,7 +77,7 @@ export function useEngineEffectPreview(
           },
           30_000,
         );
-        if (mountedRef.current && latestKeyRef.current === request.key) {
+        if (mountedRef.current && latestIdentityRef.current === request.identity) {
           setUrl(engine.toAssetUrl(result.preview_path));
           setEffectType(result.effect_type);
           setTransitionType(result.transition_type);
@@ -85,7 +85,7 @@ export function useEngineEffectPreview(
           setError("");
         }
       } catch (requestError) {
-        if (mountedRef.current && latestKeyRef.current === request.key) {
+        if (mountedRef.current && latestIdentityRef.current === request.identity) {
           setUrl(null);
           setEffectType("");
           setTransitionType("");
@@ -126,7 +126,7 @@ export function useEngineEffectPreview(
     const hasVideoWatermark = Boolean(workspace.config.use_watermark && workspace.config.watermark_path);
     const hasTransition = Boolean(workspace.config.use_transition && nextFrame?.source);
     if (!active || !frame?.source || (!isEffectEnabled(workspace.config) && !hasImageWatermark && !hasVideoWatermark && !hasTransition)) {
-      latestKeyRef.current = "";
+      latestIdentityRef.current = "";
       pendingRef.current = null;
       setUrl(null);
       setLoading(false);
@@ -138,10 +138,9 @@ export function useEngineEffectPreview(
     }
     const duration = Math.max(0.1, Number(workspace.config.duration) || 0.1);
     const localTime = quantizeEffectPreviewTime(time, duration, workspace.config.fps);
-    const key = `${identity}:${localTime}`;
-    latestKeyRef.current = key;
+    latestIdentityRef.current = identity;
     pendingRef.current = {
-      key,
+      identity,
       path: frame.source,
       nextPath: nextFrame?.source ?? "",
       config: workspace.config,

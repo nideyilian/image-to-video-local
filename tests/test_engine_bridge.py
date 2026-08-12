@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+import src.engine.effect_preview as effect_preview
 from src.engine.config import DEFAULT_VIDEO_EFFECTS, build_default_config, normalize_config, scan_images, validate_config
 from src.engine.effect_preview import _resolve_video_watermark, preview_phase_timing, render_effect_frame, render_effect_preview
 from src.engine.preview_random import preview_choice, preview_sample
@@ -24,6 +25,13 @@ def test_desktop_allows_slow_packaged_engine_startup():
 
     assert "const ENGINE_STARTUP_TIMEOUT_MS = 120_000;" in bridge_source
     assert 'this.call<EngineHealth>("health", {}, ENGINE_STARTUP_TIMEOUT_MS)' in bridge_source
+
+
+def test_desktop_preview_keeps_completed_frames_from_current_timeline():
+    preview_source = (ROOT / "desktop" / "src" / "components" / "useEngineEffectPreview.ts").read_text(encoding="utf-8")
+
+    assert "latestIdentityRef.current === request.identity" in preview_source
+    assert "latestKeyRef.current === request.key" not in preview_source
 
 
 def test_export_video_watermark_normal_mode_preserves_rendered_frames():
@@ -377,6 +385,103 @@ def test_effect_preview_applies_enabled_image_watermark(tmp_path):
     assert center[0] > 200
     assert center[1] < 30
     assert center[2] < 30
+
+
+def test_video_watermark_preview_reuses_decoder_for_sequential_frames(tmp_path, monkeypatch):
+    watermark = tmp_path / "视频水印.avi"
+    writer = effect_preview.cv2.VideoWriter(
+        str(watermark),
+        effect_preview.cv2.VideoWriter_fourcc(*"MJPG"),
+        30.0,
+        (64, 36),
+    )
+    assert writer.isOpened()
+    for index in range(6):
+        writer.write(np.full((36, 64, 3), index * 30, dtype=np.uint8))
+    writer.release()
+
+    effect_preview._clear_video_watermark_reader_cache()
+    real_video_capture = effect_preview.cv2.VideoCapture
+    opened_paths = []
+
+    def counting_video_capture(path):
+        opened_paths.append(path)
+        return real_video_capture(path)
+
+    monkeypatch.setattr(effect_preview.cv2, "VideoCapture", counting_video_capture)
+    try:
+        frames = [
+            effect_preview._read_video_watermark_frame(watermark, index / 30, 1.0, "循环")
+            for index in range(3)
+        ]
+    finally:
+        effect_preview._clear_video_watermark_reader_cache()
+
+    assert all(frame is not None for frame in frames)
+    assert len(opened_paths) == 1
+
+
+def test_effect_preview_combines_video_watermark_effect_and_transition(tmp_path):
+    source = tmp_path / "组合预览前.png"
+    next_source = tmp_path / "组合预览后.png"
+    watermark = tmp_path / "组合预览水印.avi"
+    Image.effect_noise((160, 90), 80).convert("RGB").save(source)
+    Image.new("RGB", (160, 90), "blue").save(next_source)
+    writer = effect_preview.cv2.VideoWriter(
+        str(watermark),
+        effect_preview.cv2.VideoWriter_fourcc(*"MJPG"),
+        30.0,
+        (64, 36),
+    )
+    assert writer.isOpened()
+    for index in range(30):
+        frame = np.zeros((36, 64, 3), dtype=np.uint8)
+        frame[:, :, index % 3] = 80 + index * 5
+        writer.write(frame)
+    writer.release()
+
+    config = build_default_config()
+    config.update({
+        "duration": 1.0,
+        "fps": 30,
+        "use_transition": True,
+        "random_transition": False,
+        "transition_type": "淡入淡出",
+        "use_video_effect": True,
+        "video_effect_type": "灵魂出窍",
+        "use_watermark": True,
+        "watermark_path": str(watermark),
+        "watermark_match_method": "循环",
+        "watermark_position": "中心",
+        "watermark_size_mode": "自适应覆盖",
+        "resolution_preset": "160x90",
+        "width": 160,
+        "height": 90,
+    })
+
+    early = render_effect_preview({
+        "path": str(source),
+        "next_path": str(next_source),
+        "config": config,
+        "time_sec": 0.1,
+    })
+    later = render_effect_preview({
+        "path": str(source),
+        "next_path": str(next_source),
+        "config": config,
+        "time_sec": 0.2,
+    })
+    transition = render_effect_preview({
+        "path": str(source),
+        "next_path": str(next_source),
+        "config": config,
+        "time_sec": 0.9,
+    })
+
+    assert early["video_watermark_name"] == watermark.name
+    assert early["effect_type"] == "灵魂出窍"
+    assert Path(early["preview_path"]).read_bytes() != Path(later["preview_path"]).read_bytes()
+    assert transition["transition_active"] is True
 
 
 def test_effect_preview_uses_next_frame_during_transition(tmp_path):

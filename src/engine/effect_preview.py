@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import re
 import tempfile
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +31,74 @@ VIDEO_WATERMARK_ALPHA = {
     "变暗": 0.90,
     "相加": 0.95,
 }
+
+
+class _VideoWatermarkReader:
+    """Keep one decoder open while the preview clock advances."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.capture = cv2.VideoCapture(str(path))
+        self.fps = float(self.capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        self.frame_count = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        self.last_frame_index = -1
+        self.last_frame: np.ndarray | None = None
+
+    @property
+    def is_opened(self) -> bool:
+        return bool(self.capture.isOpened())
+
+    @property
+    def duration(self) -> float:
+        if self.fps <= 0 or self.frame_count <= 0:
+            return 0.0
+        return self.frame_count / self.fps
+
+    def read(self, frame_index: int) -> np.ndarray | None:
+        if frame_index == self.last_frame_index and self.last_frame is not None:
+            return self.last_frame.copy()
+
+        ok = False
+        frame = None
+        sequential_limit = max(4, int(round(self.fps)))
+        if (
+            self.last_frame_index >= 0
+            and self.last_frame_index < frame_index
+            and frame_index - self.last_frame_index <= sequential_limit
+        ):
+            for _ in range(self.last_frame_index + 1, frame_index + 1):
+                ok, frame = self.capture.read()
+                if not ok:
+                    break
+        else:
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, float(frame_index))
+            ok, frame = self.capture.read()
+
+        if not ok or frame is None:
+            return None
+        self.last_frame_index = frame_index
+        self.last_frame = frame
+        return frame.copy()
+
+    def release(self) -> None:
+        self.capture.release()
+
+
+_VIDEO_WATERMARK_READER_LIMIT = 4
+_VIDEO_WATERMARK_READER_LOCK = threading.RLock()
+_VIDEO_WATERMARK_READERS: OrderedDict[
+    str, tuple[tuple[int, int], _VideoWatermarkReader]
+] = OrderedDict()
+
+
+def _clear_video_watermark_reader_cache() -> None:
+    with _VIDEO_WATERMARK_READER_LOCK:
+        while _VIDEO_WATERMARK_READERS:
+            _, (_, reader) = _VIDEO_WATERMARK_READERS.popitem()
+            reader.release()
+
+
+atexit.register(_clear_video_watermark_reader_cache)
 
 
 class _LegacyEffectAdapter:
@@ -190,13 +261,28 @@ def _read_video_watermark_frame(
     output_duration: float,
     match_method: str,
 ) -> np.ndarray | None:
-    capture = cv2.VideoCapture(str(path))
-    if not capture.isOpened():
-        return None
-    try:
-        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
-        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        source_duration = frame_count / fps if fps > 0 and frame_count > 0 else 0.0
+    resolved_path = path.resolve()
+    stat = resolved_path.stat()
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cache_key = str(resolved_path)
+    with _VIDEO_WATERMARK_READER_LOCK:
+        cached = _VIDEO_WATERMARK_READERS.pop(cache_key, None)
+        if cached is not None and cached[0] != signature:
+            cached[1].release()
+            cached = None
+        if cached is None:
+            reader = _VideoWatermarkReader(resolved_path)
+            if not reader.is_opened:
+                reader.release()
+                return None
+            cached = (signature, reader)
+        _VIDEO_WATERMARK_READERS[cache_key] = cached
+        while len(_VIDEO_WATERMARK_READERS) > _VIDEO_WATERMARK_READER_LIMIT:
+            _, (_, stale_reader) = _VIDEO_WATERMARK_READERS.popitem(last=False)
+            stale_reader.release()
+
+        reader = cached[1]
+        source_duration = reader.duration
         target_time = max(0.0, time_sec)
         if source_duration > 0:
             if match_method == "循环":
@@ -205,11 +291,10 @@ def _read_video_watermark_frame(
                 target_time = min(source_duration, target_time / max(0.001, output_duration) * source_duration)
             elif target_time >= source_duration:
                 return None
-        capture.set(cv2.CAP_PROP_POS_MSEC, target_time * 1000.0)
-        ok, frame = capture.read()
-        return frame if ok else None
-    finally:
-        capture.release()
+        frame_index = max(0, int(target_time * reader.fps + 1e-7))
+        if reader.frame_count > 0:
+            frame_index = min(reader.frame_count - 1, frame_index)
+        return reader.read(frame_index)
 
 
 def preview_phase_timing(
