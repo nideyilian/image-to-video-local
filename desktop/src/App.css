@@ -552,40 +552,61 @@ select:disabled {
   font-size: 11px;
 }
 
-.validation-group {
+.validation-issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.validation-issue {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto 1fr auto;
   gap: 8px;
   align-items: baseline;
   width: 100%;
   text-align: left;
-  padding: 3px 6px;
+  padding: 4px 8px;
   color: var(--danger);
   font-size: 11px;
   background: color-mix(in srgb, var(--danger) 10%, var(--paper));
   border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
   border-radius: 4px;
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.validation-group:hover {
+.validation-issue:hover {
   background: color-mix(in srgb, var(--danger) 16%, var(--paper));
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
 }
 
-.validation-group-label {
+.validation-issue-section {
   flex: none;
   font-weight: 700;
   white-space: nowrap;
 }
 
-.validation-group-label::after {
+.validation-issue-section::after {
   content: "：";
 }
 
-.validation-group-items {
+.validation-issue-message {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.validation-issue-action {
+  flex: none;
+  font-size: 10px;
+  color: var(--paper);
+  background: var(--danger);
+  padding: 1px 6px;
+  border-radius: 999px;
   white-space: nowrap;
 }
 
@@ -1557,6 +1578,18 @@ body.is-resizing-rows * {
 }
 
 .field-wide { grid-column: 1 / -1; }
+
+.field.is-located {
+  border-radius: 4px;
+  animation: field-locate 2s ease-out;
+}
+
+@keyframes field-locate {
+  0% { box-shadow: 0 0 0 0 rgba(255, 170, 0, 0); background: transparent; }
+  10% { box-shadow: 0 0 0 3px rgba(255, 170, 0, 0.6); background: color-mix(in srgb, var(--accent, #ffaa00) 16%, transparent); }
+  20% { box-shadow: 0 0 0 3px rgba(255, 170, 0, 0.6); background: color-mix(in srgb, var(--accent, #ffaa00) 16%, transparent); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 170, 0, 0); background: transparent; }
+}
 .field-label {
   overflow: hidden;
   color: var(--muted);

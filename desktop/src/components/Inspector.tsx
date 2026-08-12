@@ -372,15 +372,15 @@ export function Inspector({
       <div className="inspector-module-body">
         <div id="inspector-panel-basic" className="inspector-module-panel" role="tabpanel" aria-labelledby="inspector-tab-basic" hidden={activeTab !== "basic"}>
           <div className="inspector-paths">
-            <PathField label="输入目录" value={config.input_dir} placeholder="选择图片目录" onChange={(value) => onChange("input_dir", value)} onBrowse={() => onBrowseDirectory("input_dir")} />
-            <PathField label="输出目录" value={config.output_dir} placeholder="选择视频输出目录" onChange={(value) => onChange("output_dir", value)} onBrowse={() => onBrowseDirectory("output_dir")} />
+            <PathField label="输入目录" name="input_dir" value={config.input_dir} placeholder="选择图片目录" onChange={(value) => onChange("input_dir", value)} onBrowse={() => onBrowseDirectory("input_dir")} />
+            <PathField label="输出目录" name="output_dir" value={config.output_dir} placeholder="选择视频输出目录" onChange={(value) => onChange("output_dir", value)} onBrowse={() => onBrowseDirectory("output_dir")} />
           </div>
           <div className="parameter-grid parameter-grid-basic">
-            <Field label="图片数"><input type="number" min={1} max={1000} value={config.num_images} aria-label="每视频图片数" onChange={(event) => onChange("num_images", Number(event.target.value))} /></Field>
-            <Field label="单图时长 · 秒"><input type="number" min={0.1} max={120} step={0.1} value={config.duration} aria-label="每张图片时长（秒）" onChange={(event) => onChange("duration", Number(event.target.value))} /></Field>
-            <Field label="总时长 · 秒"><input type="number" min={0} max={86400} step={0.1} value={config.total_duration} aria-label="视频总时长（秒，0 表示自动）" title="0 表示按图片数自动计算" onChange={(event) => onChange("total_duration", Number(event.target.value))} /></Field>
-            <Field label="视频数"><input type="number" min={1} max={1000000} value={config.video_count} aria-label="视频数量" onChange={(event) => onChange("video_count", Number(event.target.value))} /></Field>
-            <Field label="FPS"><input type="number" min={1} max={120} value={config.fps} aria-label="帧率" onChange={(event) => onChange("fps", Number(event.target.value))} /></Field>
+            <Field label="图片数" name="num_images"><input type="number" min={1} max={1000} value={config.num_images} aria-label="每视频图片数" onChange={(event) => onChange("num_images", Number(event.target.value))} /></Field>
+            <Field label="单图时长 · 秒" name="duration"><input type="number" min={0.1} max={120} step={0.1} value={config.duration} aria-label="每张图片时长（秒）" onChange={(event) => onChange("duration", Number(event.target.value))} /></Field>
+            <Field label="总时长 · 秒" name="total_duration"><input type="number" min={0} max={86400} step={0.1} value={config.total_duration} aria-label="视频总时长（秒，0 表示自动）" title="0 表示按图片数自动计算" onChange={(event) => onChange("total_duration", Number(event.target.value))} /></Field>
+            <Field label="视频数" name="video_count"><input type="number" min={1} max={1000000} value={config.video_count} aria-label="视频数量" onChange={(event) => onChange("video_count", Number(event.target.value))} /></Field>
+            <Field label="FPS" name="fps"><input type="number" min={1} max={120} value={config.fps} aria-label="帧率" onChange={(event) => onChange("fps", Number(event.target.value))} /></Field>
             <ResolutionField config={config} onChange={onChange} />
             <Field label="格式"><select value={config.video_format} onChange={(event) => onChange("video_format", event.target.value)}><option>mp4</option><option>mov</option><option>avi</option></select></Field>
             <Field label="编码"><select value={config.codec} onChange={(event) => onChange("codec", event.target.value)}><option>H264</option><option>mp4v</option><option>XVID</option><option>MJPG</option></select></Field>
@@ -394,7 +394,7 @@ export function Inspector({
             <SegmentedControl label="BGM 模式" value={bgmMode} options={BGM_MODE_OPTIONS} onChange={changeBgmMode} />
             <Checkbox label="循环播放" checked={config.loop_bgm} disabled={!config.use_bgm} onChange={(value) => onChange("loop_bgm", value)} />
           </div>
-          <PathField label="音频目录" value={config.bgm_dir} placeholder="选择 BGM 目录" onChange={(value) => onChange("bgm_dir", value)} onBrowse={() => onBrowseDirectory("bgm_dir")} />
+          <PathField label="音频目录" name="bgm_dir" value={config.bgm_dir} placeholder="选择 BGM 目录" onChange={(value) => onChange("bgm_dir", value)} onBrowse={() => onBrowseDirectory("bgm_dir")} />
           <div className="parameter-grid">
             <Field label={`音量 ${Math.round(config.bgm_volume * 100)}%`}><input className="range-input" type="range" min={0.1} max={1} step={0.1} disabled={!config.use_bgm} value={config.bgm_volume} onChange={(event) => onChange("bgm_volume", Number(event.target.value))} /></Field>
             <Field label="声音策略"><select disabled={!config.use_bgm} value={config.watermark_audio} onChange={(event) => onChange("watermark_audio", event.target.value)}><option>使用BGM</option><option>使用水印</option><option>两者混合</option><option>静音</option></select></Field>
@@ -431,13 +431,13 @@ export function Inspector({
               <strong>视频水印</strong>
               <SegmentedControl compact label="状态" value={config.use_watermark ? "on" : "off"} options={STATUS_OPTIONS} onChange={(value) => onChange("use_watermark", value === "on")} />
             </header>
-            <PathField label="水印路径" value={config.watermark_path} placeholder="选择视频或目录" onChange={(value) => onChange("watermark_path", value)} onBrowse={() => config.watermark_mode === "文件夹" ? onBrowseDirectory("watermark_path") : onBrowseFile("watermark_path")} />
+            <PathField label="水印路径" name="watermark_path" value={config.watermark_path} placeholder="选择视频或目录" onChange={(value) => onChange("watermark_path", value)} onBrowse={() => config.watermark_mode === "文件夹" ? onBrowseDirectory("watermark_path") : onBrowseFile("watermark_path")} />
             <div className="parameter-grid">
               <Field label="路径模式"><select disabled={!config.use_watermark} value={config.watermark_mode} onChange={(event) => onChange("watermark_mode", event.target.value)}><option>单文件</option><option>文件夹</option></select></Field>
               <Field label="匹配"><select disabled={!config.use_watermark} value={config.watermark_match_method} onChange={(event) => onChange("watermark_match_method", event.target.value)}><option>循环</option><option>拉伸</option><option>单次</option></select></Field>
               <Field label="位置"><select disabled={!config.use_watermark} value={config.watermark_position} onChange={(event) => onChange("watermark_position", event.target.value)}>{WATERMARK_POSITIONS.map((value) => <option key={value}>{value}</option>)}</select></Field>
               <Field label="大小模式"><select disabled={!config.use_watermark} value={config.watermark_size_mode} onChange={(event) => onChange("watermark_size_mode", event.target.value)}>{WATERMARK_SIZE_MODES.map((value) => <option key={value}>{value}</option>)}</select></Field>
-              <Field label="缩放（%）"><input disabled={!config.use_watermark || config.watermark_size_mode !== "固定比例"} type="number" min={5} max={100} step={5} value={config.watermark_scale} aria-label="视频水印缩放比例（固定比例模式下生效）" onChange={(event) => onChange("watermark_scale", Number(event.target.value))} /></Field>
+              <Field label="缩放（%）" name="watermark_scale"><input disabled={!config.use_watermark || config.watermark_size_mode !== "固定比例"} type="number" min={5} max={100} step={5} value={config.watermark_scale} aria-label="视频水印缩放比例（固定比例模式下生效）" onChange={(event) => onChange("watermark_scale", Number(event.target.value))} /></Field>
               <Field label="混合方式"><select disabled={!config.use_watermark} value={config.watermark_blend_mode} onChange={(event) => onChange("watermark_blend_mode", event.target.value)}>{BLEND_MODES.map((value) => <option key={value}>{value}</option>)}</select></Field>
             </div>
           </section>

@@ -24,14 +24,15 @@ export function InspectorSection({
   );
 }
 
-export function Field({ label, hint, children, wide = false }: {
+export function Field({ label, hint, children, wide = false, name }: {
   label: string;
   hint?: string;
   children: ReactNode;
   wide?: boolean;
+  name?: string;
 }) {
   return (
-    <label className={`field ${wide ? "field-wide" : ""}`}>
+    <label className={`field ${wide ? "field-wide" : ""}`} data-field={name}>
       <span className="field-label">{label}</span>
       {children}
       {hint ? <span className="field-hint">{hint}</span> : null}
@@ -45,15 +46,17 @@ export function PathField({
   placeholder,
   onChange,
   onBrowse,
+  name,
 }: {
   label: string;
   value: string;
   placeholder: string;
   onChange: (value: string) => void;
   onBrowse: () => void;
+  name?: string;
 }) {
   return (
-    <Field label={label} wide>
+    <Field label={label} wide name={name}>
       <span className="path-control">
         <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
         <button type="button" className="icon-button" onClick={onBrowse} aria-label={`浏览${label}`} title={`浏览${label}`}>

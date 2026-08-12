@@ -189,18 +189,18 @@ def validate_config_detailed(raw: dict[str, Any] | None, check_files: bool = Tru
     output_dir = str(config.get("output_dir", "")).strip()
 
     if not input_dir:
-        issues.append({"field": "input_dir", "section": "basic", "message": "请输入输入目录"})
+        issues.append({"field": "input_dir", "section": "basic", "message": "请先选择「输入目录」（存放图片的文件夹），再开始导出。"})
     elif check_files and not os.path.isdir(input_dir):
-        issues.append({"field": "input_dir", "section": "basic", "message": "输入目录不存在，请重新选择"})
+        issues.append({"field": "input_dir", "section": "basic", "message": "找不到输入目录，请重新选择已存在的图片文件夹。"})
     if not output_dir:
-        issues.append({"field": "output_dir", "section": "basic", "message": "请输入输出目录"})
+        issues.append({"field": "output_dir", "section": "basic", "message": "请先选择「输出目录」（视频保存位置）。"})
 
     if check_files and bool(config.get("use_bgm")) and str(config.get("watermark_audio", "使用BGM")) in {"使用BGM", "两者混合"}:
         bgm_dir = str(config.get("bgm_dir", "") or "").strip()
         if not bgm_dir or not Path(bgm_dir).is_dir():
-            issues.append({"field": "bgm_dir", "section": "basic", "message": "BGM目录不存在，请重新选择"})
+            issues.append({"field": "bgm_dir", "section": "basic", "message": "找不到 BGM 目录，请重新选择存放音频的文件夹。"})
         elif not scan_audio_files(bgm_dir):
-            issues.append({"field": "bgm_dir", "section": "basic", "message": "BGM目录中没有可用音频"})
+            issues.append({"field": "bgm_dir", "section": "basic", "message": "BGM 目录里没有可用的音频文件，请放入 mp3 / wav 等音频后再试。"})
 
     try:
         num_images = int(config.get("num_images", 0))
@@ -219,9 +219,9 @@ def validate_config_detailed(raw: dict[str, Any] | None, check_files: bool = Tru
     except (TypeError, ValueError):
         total_duration = -1.0
     if num_images <= 0:
-        issues.append({"field": "num_images", "section": "basic", "message": "每个视频图片数必须大于 0"})
+        issues.append({"field": "num_images", "section": "basic", "message": "「图片数」需要大于 0，请把每个视频的图片数调到 1 张以上。"})
     if video_count <= 0:
-        issues.append({"field": "video_count", "section": "basic", "message": "视频数量必须大于 0"})
+        issues.append({"field": "video_count", "section": "basic", "message": "「视频数」需要大于 0，请至少导出 1 个视频。"})
     try:
         timeline_slot_count(duration, total_duration)
     except ValueError as exc:

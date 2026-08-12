@@ -274,6 +274,42 @@ export default function App() {
   const [previewSequences, setPreviewSequences] = useState<Record<string, number>>({});
   const [previewReadySequences, setPreviewReadySequences] = useState<Record<string, number>>({});
   const [inspectorTab, setInspectorTab] = useState<InspectorTabId>("basic");
+  const [locate, setLocate] = useState<{ field: string; token: number } | null>(null);
+  const locateToken = useRef(0);
+  const locatedElRef = useRef<HTMLElement | null>(null);
+
+  const locateIssue = useCallback((issue: ValidationIssue) => {
+    setLayout((current) => ({ ...current, inspectorCollapsed: false }));
+    if (issue?.section && issue.section !== "general") setInspectorTab(issue.section as InspectorTabId);
+    if (issue?.field) {
+      locateToken.current += 1;
+      setLocate({ field: issue.field, token: locateToken.current });
+    } else {
+      setLocate(null);
+    }
+  }, [setLayout]);
+
+  useEffect(() => {
+    if (!locate) return;
+    const target = document.querySelector<HTMLElement>(`[data-field="${CSS.escape(locate.field)}"]`);
+    if (!target) return;
+    locatedElRef.current?.classList.remove("is-located");
+    locatedElRef.current = target;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    const focusable = target.querySelector<HTMLElement>("input, select, textarea, button");
+    const focusTimer = window.setTimeout(() => focusable?.focus({ preventScroll: true }), 300);
+    target.classList.add("is-located");
+    const clearTimer = window.setTimeout(() => {
+      target.classList.remove("is-located");
+      if (locatedElRef.current === target) locatedElRef.current = null;
+    }, 2200);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.clearTimeout(clearTimer);
+      target.classList.remove("is-located");
+      if (locatedElRef.current === target) locatedElRef.current = null;
+    };
+  }, [locate, inspectorTab]);
 
   const jobsRef = useRef(jobs);
   const queuedWorkspaces = useRef(new Map<string, Workspace>());
@@ -478,14 +514,14 @@ export default function App() {
     const requestKey = previewSyncKey(workspace, previewSequence);
     latestPreviewKey.current = requestKey;
     if (!workspace.config.input_dir) {
-      patchWorkspace(workspace.id, { validationErrors: ["请输入输入目录"], validationIssues: [{ field: "input_dir", section: "basic", message: "请输入输入目录" }] });
-      if (announce) showNotice("error", "请输入输入目录");
+      patchWorkspace(workspace.id, { validationErrors: ["请先选择「输入目录」（存放图片的文件夹），再开始导出。"], validationIssues: [{ field: "input_dir", section: "basic", message: "请先选择「输入目录」（存放图片的文件夹），再开始导出。" }] });
+      if (announce) showNotice("error", "请先选择「输入目录」（存放图片的文件夹），再开始导出。");
       return;
     }
     const previewLimit = Math.max(0, Math.trunc(Number(workspace.config.num_images) || 0));
     if (!previewLimit) {
-      patchWorkspace(workspace.id, { preview: null, validationErrors: ["每个视频图片数必须大于 0"], validationIssues: [{ field: "num_images", section: "basic", message: "每个视频图片数必须大于 0" }] });
-      if (announce) showNotice("error", "每个视频图片数必须大于 0");
+      patchWorkspace(workspace.id, { preview: null, validationErrors: ["「图片数」需要大于 0，请把每个视频的图片数调到 1 张以上。"], validationIssues: [{ field: "num_images", section: "basic", message: "「图片数」需要大于 0，请把每个视频的图片数调到 1 张以上。" }] });
+      if (announce) showNotice("error", "「图片数」需要大于 0，请把每个视频的图片数调到 1 张以上。");
       return;
     }
     setPreviewLoading(true);
@@ -827,27 +863,28 @@ export default function App() {
       </header>
 
       {activeWorkspace.validationIssues.length ? (() => {
-        const grouped = new Map<string, string[]>();
-        for (const issue of activeWorkspace.validationIssues) {
-          const key = issue.section || "general";
-          if (!grouped.has(key)) grouped.set(key, []);
-          grouped.get(key)!.push(issue.message);
-        }
-        const jumpToSection = (section: string) => {
-          if (section && section !== "general") setInspectorTab(section as InspectorTabId);
-          if (layout.inspectorCollapsed) setLayout((current) => ({ ...current, inspectorCollapsed: false }));
-        };
+        const issues = activeWorkspace.validationIssues;
         return (
           <div className="validation-banner" role="alert">
             <CircleAlert size={16} />
             <div className="validation-banner-body">
-              <strong>当前工作区需要处理（{activeWorkspace.validationIssues.length} 项）：</strong>
-              {Array.from(grouped.entries()).map(([section, messages]) => (
-                <button type="button" key={section} className="validation-group" onClick={() => jumpToSection(section)} title="点击跳转到对应配置项">
-                  <span className="validation-group-label">{INSPECTOR_SECTION_LABELS[section] ?? GENERAL_SECTION_LABEL}</span>
-                  <span className="validation-group-items">{messages.join("；")}</span>
-                </button>
-              ))}
+              <strong>导出前请先处理 {issues.length} 项配置：</strong>
+              <ul className="validation-issue-list">
+                {issues.map((issue, index) => (
+                  <li key={`${issue.section}-${issue.field}-${index}`}>
+                    <button
+                      type="button"
+                      className="validation-issue"
+                      onClick={() => locateIssue(issue)}
+                      title="点击自动跳转到对应参数并高亮"
+                    >
+                      <span className="validation-issue-section">{INSPECTOR_SECTION_LABELS[issue.section ?? "general"] ?? GENERAL_SECTION_LABEL}</span>
+                      <span className="validation-issue-message">{issue.message}</span>
+                      <span className="validation-issue-action" aria-hidden="true">定位</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
           </div>
         );
