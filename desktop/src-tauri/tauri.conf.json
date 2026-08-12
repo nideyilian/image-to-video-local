@@ -31,7 +31,7 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "externalBin": ["binaries/image-to-video-engine"],
     "targets": ["nsis"],
     "icon": [
@@ -44,7 +44,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYxQzIyM0Y5OTU2M0MxMjkKUldRcHdXT1YrU1BDOFYzNFdYb0xJdXd0YUlxRllIelRGN01zNk1FUVpzSmRreE5mN1JsMHJPSFEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc4MUZBNDkxNDQ5NzEzMTQKUldRVUU1ZEVrYVFmZVBTbWdXV0FpOG9hMkVRdnpVUDllbmIxRE5YTFMyQjRiMi9BclJObkdhK0YK",
       "endpoints": [
         "https://github.com/nideyilian/image-to-video-local/releases/latest/download/latest.json"
       ],

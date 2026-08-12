@@ -72,6 +72,6 @@ jobs:
           generateReleaseNotes: true
           releaseDraft: false
           prerelease: false
-          updaterJsonPreferNsis: false
-          uploadUpdaterJson: false
+          updaterJsonPreferNsis: true
+          uploadUpdaterJson: true
           args: --bundles nsis

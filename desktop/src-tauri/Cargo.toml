@@ -1,6 +1,6 @@
 [package]
 name = "image-to-video-desktop"
-version = "3.0.0-local.7"
+version = "3.0.0-local.8"
 description = "Local image-to-video production workbench"
 authors = ["image-to-video-local contributors"]
 edition = "2021"
