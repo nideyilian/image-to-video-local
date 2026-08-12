@@ -3075,6 +3075,18 @@ class QtMainWindow(QMainWindow):
         out = base_f * (1.0 - alpha) + mixed * alpha
         return np.clip(out, 0.0, 255.0).astype(np.uint8)
 
+    @staticmethod
+    def _video_watermark_alpha(blend_mode: str) -> float:
+        return {
+            "正常": 0.50,
+            "滤色": 1.00,
+            "叠加": 0.90,
+            "正片叠底": 0.85,
+            "变亮": 0.90,
+            "变暗": 0.90,
+            "相加": 0.95,
+        }.get(str(blend_mode or "正常"), 0.50)
+
     def _calc_overlay_rect(
         self,
         main_w: int,
@@ -3183,7 +3195,13 @@ class QtMainWindow(QMainWindow):
         result = frame.copy()
         overlay_roi = resized[sy1:sy2, sx1:sx2]
         base_roi = result[y1:y2, x1:x2]
-        mixed = self._blend_with_mode(base_roi, overlay_roi, self.watermark_blend_combo.currentText(), 0.85)
+        blend_mode = self.watermark_blend_combo.currentText()
+        mixed = self._blend_with_mode(
+            base_roi,
+            overlay_roi,
+            blend_mode,
+            self._video_watermark_alpha(blend_mode),
+        )
         result[y1:y2, x1:x2] = mixed
         return result
 

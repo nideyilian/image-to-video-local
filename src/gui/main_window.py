@@ -6057,6 +6057,9 @@ Turbo图片预处理 - 并行优化版本
                 if match_method == "拉伸" and wm_meta["duration"] > 0 and main_meta["duration"] > 0:
                     stretch_ratio = main_meta["duration"] / wm_meta["duration"]
                     wm_chain = f"[{input_idx}:v]setpts={stretch_ratio:.6f}*PTS,scale={target_w}:{target_h}"
+                if blend_mode == "正常":
+                    blend_alpha = self._get_video_watermark_alpha(blend_mode)
+                    wm_chain += f",format=rgba,colorchannelmixer=aa={blend_alpha:.3f}"
                 filter_parts.append(f"{wm_chain}[{wm_label}]")
                 next_label = f"v_wm_{input_idx}"
                 if blend_mode == "正常":

@@ -26,6 +26,12 @@ def test_desktop_allows_slow_packaged_engine_startup():
     assert 'this.call<EngineHealth>("health", {}, ENGINE_STARTUP_TIMEOUT_MS)' in bridge_source
 
 
+def test_export_video_watermark_normal_mode_preserves_rendered_frames():
+    renderer_source = (ROOT / "src" / "gui" / "main_window.py").read_text(encoding="utf-8")
+
+    assert 'wm_chain += f",format=rgba,colorchannelmixer=aa={blend_alpha:.3f}"' in renderer_source
+
+
 def test_default_config_keeps_legacy_dimensions():
     config = normalize_config(build_default_config())
     assert config["resolution_preset"] == "1280x720"

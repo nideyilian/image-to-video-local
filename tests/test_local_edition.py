@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import numpy as np
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,3 +54,15 @@ def test_qt_window_starts_as_local_edition():
     finally:
         window.close()
         app.processEvents()
+
+
+def test_qt_video_watermark_preview_keeps_effects_visible():
+    from src.gui_qt.main_window import QtMainWindow
+
+    base = np.full((2, 2, 3), 200, dtype=np.uint8)
+    watermark = np.zeros_like(base)
+    alpha = QtMainWindow._video_watermark_alpha("正常")
+    mixed = QtMainWindow._blend_with_mode(base, watermark, "正常", alpha)
+
+    assert alpha == 0.50
+    assert np.all(mixed == 100)
