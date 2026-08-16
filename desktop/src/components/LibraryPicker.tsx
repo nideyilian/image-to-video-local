@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, CircleAlert, Image as ImageIcon, Layers, Loader2, Music, Play, Search, X } from "lucide-react";
 import { engine } from "../engine";
 import type { LibraryDirs, LibraryItem } from "../types";
+import { BgmCover } from "./BgmCover";
 
 const LIBRARY_KEY = "image-to-video.library.v1";
 
@@ -187,7 +188,7 @@ export function LibraryPicker({ open, onClose, kind, selected, onConfirmBgm, onU
                 <li key={item.path} className={`library-picker-row${isPicked ? " is-picked" : ""}`}>
                   <input type="checkbox" className="library-checkbox" checked={isPicked} onChange={() => toggle(item.path)} aria-label={`选择 ${item.name}`} />
                   {isBgm ? (
-                    <span className="library-file-icon"><Music size={15} /></span>
+                    <BgmCover path={item.path} size="small" />
                   ) : (
                     <span className="library-thumb-wrap">
                       <PickerThumb path={item.path} />

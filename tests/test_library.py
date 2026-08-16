@@ -693,3 +693,75 @@ def test_server_dispatches_effect_animation():
     animation = server._dispatch("effect_preview_animation", {"kind": "transition", "name": "百叶窗", "frames": 5})
     assert len(animation["frames"]) == 5
     assert all(Path(path).is_file() for path in animation["frames"])
+
+
+def test_audio_cover_extracts_embedded_artwork(tmp_path):
+    """内嵌封面的音频能提取出封面图并缓存；无封面音频返回 None。"""
+    import subprocess
+    import sys
+
+    from PIL import Image
+
+    from src.engine.library import _extract_audio_cover
+
+    ffmpeg_path = configure_ffmpeg_environment(ROOT)
+    if not ffmpeg_path:
+        pytest.skip("需要 ffmpeg")
+
+    cover = tmp_path / "cover.png"
+    Image.new("RGB", (64, 64), (200, 40, 60)).save(cover)
+    wav = tmp_path / "sound.wav"
+    _write_wav(wav, seconds=1)
+
+    startupinfo = None
+    creationflags = 0
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        creationflags = subprocess.CREATE_NO_WINDOW
+    audio = tmp_path / "带封面.mp3"
+    result = subprocess.run(
+        [
+            ffmpeg_path, "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(cover), "-i", str(wav),
+            "-map", "0:v:0", "-map", "1:a",
+            "-c:v", "mjpeg", "-c:a", "libmp3lame", "-id3v2_version", "3",
+            str(audio),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+        startupinfo=startupinfo,
+        creationflags=creationflags,
+    )
+    if result.returncode != 0 or not audio.is_file():
+        pytest.skip("ffmpeg 无法生成带封面音频")
+
+    cover_path = _extract_audio_cover(ffmpeg_path, audio)
+    assert cover_path is not None
+    extracted = Path(cover_path)
+    assert extracted.is_file() and extracted.stat().st_size > 0
+    with Image.open(extracted) as image:
+        image.verify()
+
+    # 缓存命中：再次调用返回同一路径
+    assert _extract_audio_cover(ffmpeg_path, audio) == cover_path
+
+    # 无封面音频返回 None
+    plain = tmp_path / "无封面.wav"
+    _write_wav(plain, seconds=1)
+    assert _extract_audio_cover(ffmpeg_path, plain) is None
+
+
+def test_audio_cover_method_handles_missing_and_dispatch():
+    server = EngineServer(ROOT)
+
+    # 文件不存在时返回 None
+    assert server._dispatch("library_audio_cover", {"path": str(ROOT / "不存在的音频.mp3")})["cover_path"] is None
+
+    # 参数缺失时同样安全返回
+    assert server.library.audio_cover({})["cover_path"] is None

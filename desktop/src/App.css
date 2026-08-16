@@ -3308,6 +3308,65 @@ body.is-rail-dragging {
   color: var(--faint);
 }
 
+.library-bgm-cover {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 92px;
+  overflow: hidden;
+  color: var(--blue);
+  background: var(--paper-deep);
+  border-radius: 4px;
+}
+
+.library-bgm-cover > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.library-bgm-cover.is-small {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+}
+
+.library-bgm-cover-placeholder {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--blue);
+}
+
+.library-bgm-cover.is-small .library-bgm-cover-placeholder {
+  color: var(--faint);
+}
+
+.library-bgm-cover-badge {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 1px 5px;
+  color: #fff;
+  font-size: 9px;
+  line-height: 1.5;
+  background: rgba(10, 14, 22, 0.62);
+  border-radius: 3px;
+}
+
+.library-bgm-cover-playing {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: rgba(10, 14, 22, 0.45);
+}
+
 .library-card-meta {
   display: grid;
   gap: 1px;

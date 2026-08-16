@@ -279,8 +279,13 @@ def test_bgm_preview_uses_explicit_library_files_without_bgm_dir(tmp_path):
     result = server._preview_bgm({"config": config, "preview_sequence": 1})
 
     assert result["enabled"] is True
-    assert Path(result["source"]).resolve() == first.resolve()
+    # preview_choice 按路径哈希确定性洗牌，只保证取自显式文件集合
+    assert Path(result["source"]).resolve() in {first.resolve(), second.resolve()}
     assert Path(result["preview_path"]).is_file()
+
+    other = server._preview_bgm({"config": config, "preview_sequence": 2})
+    assert Path(other["source"]).resolve() in {first.resolve(), second.resolve()}
+    assert other["source"] != result["source"]
 
 
 def test_bgm_preview_reports_missing_explicit_files(tmp_path):

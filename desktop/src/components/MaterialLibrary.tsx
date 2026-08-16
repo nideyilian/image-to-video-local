@@ -9,7 +9,6 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
-  FileAudio,
   FileVideo,
   Folder,
   FolderOpen,
@@ -35,6 +34,7 @@ import {
 import { DEFAULT_WATERMARK_LAYER, TRANSITIONS, VIDEO_EFFECTS } from "../constants";
 import { engine } from "../engine";
 import { AddVideoSource } from "./AddVideoSource";
+import { BgmCover } from "./BgmCover";
 import { EffectLibraryPanel } from "./EffectLibraryPanel";
 import type {
   LibraryDirs,
@@ -310,11 +310,20 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       const payload = event.payload;
       const taskId = String(payload.task_id ?? "");
       if (!taskId) return;
+      if (event.event === "library.extract.done") {
+        const summary = payload.summary as LibraryExtractSummary | undefined;
+        onExtractBusyChange?.(false);
+        if (summary) {
+          notify(
+            summary.saved ? "success" : summary.failed || summary.cancelled ? "error" : "info",
+            `拆解完成：成功 ${summary.saved}${summary.duplicate ? ` · 重复跳过 ${summary.duplicate}` : ""}${summary.no_audio ? ` · 无音轨 ${summary.no_audio}` : ""}${summary.failed ? ` · 失败 ${summary.failed}` : ""}${summary.cancelled ? ` · 已取消 ${summary.cancelled}` : ""}`,
+          );
+        }
+      }
       setExtract((current) => {
         if (current.taskId && current.taskId !== taskId) return current;
         if (event.event === "library.extract.done") {
           const summary = payload.summary as LibraryExtractSummary | undefined;
-          onExtractBusyChange?.(false);
           void refresh();
           return {
             ...current,
@@ -339,7 +348,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       });
     });
     return () => { unsubscribe(); };
-  }, [open, refresh]);
+  }, [notify, onExtractBusyChange, refresh]);
 
   useEffect(() => {
     if (!open) return;
@@ -942,7 +951,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                     return (
                       <li key={item.path} ref={registerItemRef(item.path)} className={`library-row${isSelected ? " is-selected" : ""}`}>
                         <input type="checkbox" className="library-checkbox" checked={isSelected} onChange={() => toggleSelected(item.path)} aria-label={`选择 ${item.name}`} />
-                        <span className="library-file-icon"><FileAudio size={16} /></span>
+                        <BgmCover path={item.path} size="small" />
                         <span className="library-row-main">
                           <strong title={item.path}>{item.name}</strong>
                           <small>{item.folder ? `${item.folder} · ` : ""}{formatBytes(item.size_bytes)} · {formatDuration(item.duration)}{item.added_at ? ` · 入库于 ${item.added_at}` : ""}</small>
@@ -974,10 +983,15 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                     return (
                       <li key={item.path} ref={registerItemRef(item.path)} className={`library-card${isSelected ? " is-selected" : ""}`}>
                         <span className="library-card-check"><input type="checkbox" className="library-checkbox" checked={isSelected} onChange={() => toggleSelected(item.path)} aria-label={`选择 ${item.name}`} /></span>
-                        <span className="library-card-icon">
-                          {isPlaying ? <Pause size={22} /> : <Music size={22} />}
-                          <small>{formatDuration(item.duration)}</small>
-                        </span>
+                        <BgmCover
+                          path={item.path}
+                          overlay={
+                            <>
+                              {isPlaying ? <span className="library-bgm-cover-playing"><Pause size={16} /></span> : null}
+                              {item.duration != null ? <span className="library-bgm-cover-badge">{formatDuration(item.duration)}</span> : null}
+                            </>
+                          }
+                        />
                         <span className="library-card-meta">
                           <strong title={item.path}>{item.name}</strong>
                           <small>{item.folder ? `${item.folder} · ` : ""}{formatBytes(item.size_bytes)}</small>

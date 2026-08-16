@@ -22,6 +22,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -197,6 +198,65 @@ def _probe_duration(ffprobe_path: str | None, path: Path) -> float | None:
     try:
         return float(result.stdout.strip())
     except ValueError:
+        return None
+
+
+def _extract_audio_cover(ffmpeg_path: str | None, path: Path) -> str | None:
+    """从音频文件的内嵌封面提取图片并缓存；没有封面或失败返回 None。
+
+    缓存目录位于系统临时目录（image-to-video-engine/library-covers），
+    与资产协议作用域一致，前端可直接通过 asset:// 读取。
+    """
+    if not ffmpeg_path or not path.is_file():
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    cache_key = f"cover:{path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+    digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()
+    cover_dir = Path(tempfile.gettempdir()) / "image-to-video-engine" / "library-covers"
+    try:
+        cover_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    cover_path = cover_dir / f"{digest}.jpg"
+    if cover_path.is_file() and cover_path.stat().st_size > 0:
+        return str(cover_path)
+
+    # 临时文件保留 .jpg 扩展名，ffmpeg 才能推断输出格式（与预览的 .tmp.mp3 同理）
+    temporary_path = cover_path.with_name(f".{cover_path.stem}-{os.getpid()}-{threading.get_ident()}.tmp.jpg")
+    try:
+        result = _run_ffmpeg(
+            [
+                ffmpeg_path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-i",
+                str(path),
+                "-an",
+                "-map",
+                "0:v:0",
+                "-frames:v",
+                "1",
+                "-c:v",
+                "copy",
+                str(temporary_path),
+            ],
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        if result.returncode != 0 or not temporary_path.is_file() or temporary_path.stat().st_size == 0:
+            temporary_path.unlink(missing_ok=True)
+            return None
+        temporary_path.replace(cover_path)
+        return str(cover_path)
+    except OSError:
         return None
 
 
@@ -442,6 +502,14 @@ class LibraryManager:
             "watermark": watermark_items,
             "watermark_folders": watermark_folders,
         }
+
+    def audio_cover(self, params: dict[str, Any]) -> dict[str, Any]:
+        """提取音频内嵌封面（如有）并返回缓存路径；没有封面返回 cover_path=None。"""
+        path = str(params.get("path", "") or "").strip()
+        source = Path(path).expanduser()
+        if not source.is_file():
+            return {"cover_path": None}
+        return {"cover_path": _extract_audio_cover(self.ffmpeg_path, source)}
 
     def _scan_tree(
         self,

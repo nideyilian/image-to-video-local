@@ -56,9 +56,11 @@ export function EffectLibraryPanel({ kind, config, onChange, notify }: {
   };
 
   const togglePool = (name: string) => {
-    const next = pool.includes(name) ? pool.filter((item) => item !== name) : [...pool, name];
+    const inPool = pool.includes(name);
+    const next = inPool ? pool.filter((item) => item !== name) : [...pool, name];
     if (isEffect) onChange("enabled_video_effects", next);
     else onChange("enabled_transitions", next);
+    notify(inPool ? "info" : "success", inPool ? `已把${isEffect ? "特效" : "转场"}移出随机池：${name}` : `已加入随机池：${name}`);
   };
 
   return (

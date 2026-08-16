@@ -17,13 +17,24 @@ from src.gui.main_window import ImageToVideoTab
 from src.optimization.turbo_accelerator import TurboAccelerator
 import tkinter as tk
 
+import pytest
+
+
+def _require_tk():
+    """创建隐藏 Tk 根窗口；环境不支持时跳过测试（如无桌面会话）。"""
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk 不可用，跳过 GUI 测试：{exc}")
+    root.withdraw()
+    return root
+
 def test_turbo_acceleration():
     """测试Turbo加速效果"""
     print("🧪 测试Turbo加速器性能...")
     
     # 创建测试环境
-    root = tk.Tk()
-    root.withdraw()  # 隐藏主窗口
+    root = _require_tk()
     
     try:
         # 初始化组件
@@ -57,8 +68,7 @@ def test_transition_effects():
     print("\n🧪 测试转场效果配置...")
     
     # 创建测试环境
-    root = tk.Tk()
-    root.withdraw()
+    root = _require_tk()
     
     try:
         app = ImageToVideoTab(root)
