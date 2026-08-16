@@ -5,7 +5,9 @@ from __future__ import annotations
 import atexit
 import hashlib
 import json
+import os
 import re
+import shutil
 import tempfile
 import threading
 from collections import OrderedDict
@@ -38,10 +40,12 @@ LIBRARY_PREVIEW_HEIGHT = 108
 LIBRARY_PREVIEW_FRAMES = 8
 
 
-def ensure_effect_library_assets() -> dict[str, str]:
+def ensure_effect_library_assets(params: dict[str, Any] | None = None) -> dict[str, Any]:
     """生成（或复用）特效/转场演示源图，返回两张不同色系的图片路径。
 
     A 图用于特效与转场的第一张，B 图仅用于转场第二张，保证过渡动画清晰可辨。
+    用户可通过 effect_library_set_asset 自定义演示图；自定义图存在时优先使用，
+    返回 custom_a / custom_b 标记与原始来源路径。
     """
     from PIL import Image, ImageDraw
 
@@ -49,28 +53,135 @@ def ensure_effect_library_assets() -> dict[str, str]:
     preview_dir.mkdir(parents=True, exist_ok=True)
     source_a = preview_dir / "source-a.png"
     source_b = preview_dir / "source-b.png"
-    if source_a.is_file() and source_b.is_file():
-        return {"source_a": str(source_a.resolve()), "source_b": str(source_b.resolve())}
 
-    def draw_demo(path: Path, top: tuple[int, int, int], bottom: tuple[int, int, int], shape: str) -> None:
-        image = Image.new("RGB", (480, 270))
-        draw = ImageDraw.Draw(image)
-        for y in range(270):
-            ratio = y / 269
-            color = tuple(int(top[c] + (bottom[c] - top[c]) * ratio) for c in range(3))
-            draw.line([(0, y), (479, y)], fill=color)
-        if shape == "circle":
-            draw.ellipse([140, 60, 340, 210], fill=(255, 255, 255, 255), outline=(20, 30, 60, 255), width=6)
-            draw.ellipse([210, 120, 270, 180], fill=(30, 50, 90, 255))
-        else:
-            draw.polygon([(240, 50), (380, 220), (100, 220)], fill=(255, 255, 255, 255), outline=(60, 30, 20, 255))
-            draw.ellipse([200, 95, 280, 175], fill=(90, 50, 30, 255))
-        draw.text((18, 14), "演示画面 A" if path.name == "source-a.png" else "演示画面 B", fill=(255, 255, 255, 255))
-        image.save(path, "PNG")
+    manifest = _load_user_assets(preview_dir)
+    user_a = _resolve_user_asset(preview_dir, manifest.get("a"))
+    user_b = _resolve_user_asset(preview_dir, manifest.get("b"))
 
-    draw_demo(source_a, (40, 90, 200), (120, 40, 160), "circle")
-    draw_demo(source_b, (200, 90, 40), (160, 40, 120), "triangle")
-    return {"source_a": str(source_a.resolve()), "source_b": str(source_b.resolve())}
+    if not source_a.is_file() or not source_b.is_file():
+        def draw_demo(path: Path, top: tuple[int, int, int], bottom: tuple[int, int, int], shape: str) -> None:
+            image = Image.new("RGB", (480, 270))
+            draw = ImageDraw.Draw(image)
+            for y in range(270):
+                ratio = y / 269
+                color = tuple(int(top[c] + (bottom[c] - top[c]) * ratio) for c in range(3))
+                draw.line([(0, y), (479, y)], fill=color)
+            if shape == "circle":
+                draw.ellipse([140, 60, 340, 210], fill=(255, 255, 255, 255), outline=(20, 30, 60, 255), width=6)
+                draw.ellipse([210, 120, 270, 180], fill=(30, 50, 90, 255))
+            else:
+                draw.polygon([(240, 50), (380, 220), (100, 220)], fill=(255, 255, 255, 255), outline=(60, 30, 20, 255))
+                draw.ellipse([200, 95, 280, 175], fill=(90, 50, 30, 255))
+            draw.text((18, 14), "演示画面 A" if path.name == "source-a.png" else "演示画面 B", fill=(255, 255, 255, 255))
+            image.save(path, "PNG")
+
+        draw_demo(source_a, (40, 90, 200), (120, 40, 160), "circle")
+        draw_demo(source_b, (200, 90, 40), (160, 40, 120), "triangle")
+
+    return {
+        "source_a": str((user_a or source_a).resolve()),
+        "source_b": str((user_b or source_b).resolve()),
+        "custom_a": user_a is not None,
+        "custom_b": user_b is not None,
+        "user_path_a": manifest.get("a", {}).get("source", "") if user_a else "",
+        "user_path_b": manifest.get("b", {}).get("source", "") if user_b else "",
+    }
+
+
+_USER_ASSET_MANIFEST = ".user-assets.json"
+
+
+def _load_user_assets(preview_dir: Path) -> dict[str, dict[str, str]]:
+    """读取自定义演示图清单；损坏或缺失时返回空清单。"""
+    try:
+        data = json.loads((preview_dir / _USER_ASSET_MANIFEST).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for slot in ("a", "b"):
+        entry = data.get(slot)
+        if isinstance(entry, dict) and isinstance(entry.get("file"), str) and isinstance(entry.get("source"), str):
+            result[slot] = {"file": entry["file"], "source": entry["source"]}
+    return result
+
+
+def _save_user_assets(preview_dir: Path, manifest: dict[str, dict[str, str]]) -> None:
+    temporary = preview_dir / f".{_USER_ASSET_MANIFEST}.{os.getpid()}.tmp"
+    temporary.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(preview_dir / _USER_ASSET_MANIFEST)
+
+
+def _resolve_user_asset(preview_dir: Path, entry: dict[str, str] | None) -> Path | None:
+    """返回可用的自定义演示图路径；临时目录被清理时尝试从原始路径恢复。"""
+    if not entry:
+        return None
+    user_file = preview_dir / entry["file"]
+    if not user_file.is_file():
+        source = Path(entry.get("source", ""))
+        if source.is_file():
+            try:
+                shutil.copy2(source, user_file)
+            except OSError:
+                return None
+    return user_file if user_file.is_file() else None
+
+
+def _validate_image_file(path: Path) -> None:
+    from PIL import Image
+
+    try:
+        with Image.open(path) as image:
+            image.verify()
+    except Exception as exc:
+        raise ValueError(f"不是有效的图片文件：{path.name}") from exc
+
+
+def effect_library_set_asset(params: dict[str, Any]) -> dict[str, Any]:
+    """把用户选择的图片设为特效/转场演示图（which = a 或 b），返回最新资产。"""
+    slot = str(params.get("which", "") or "").strip().lower()
+    if slot not in {"a", "b"}:
+        raise ValueError("which 必须是 a 或 b")
+    source = str(params.get("path", "") or "").strip()
+    source_path = Path(source).expanduser()
+    if not source_path.is_file():
+        raise ValueError("图片文件不存在，请重新选择")
+    _validate_image_file(source_path)
+
+    preview_dir = Path(tempfile.gettempdir()) / "image-to-video-engine" / "effect-library"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    suffix = source_path.suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff"}:
+        suffix = ".png"
+    user_file = preview_dir / f"user-{slot}{suffix}"
+
+    manifest = _load_user_assets(preview_dir)
+    previous = manifest.get(slot, {}).get("file")
+    if previous and previous != user_file.name:
+        try:
+            (preview_dir / previous).unlink(missing_ok=True)
+        except OSError:
+            pass
+    if source_path.resolve() != user_file.resolve():
+        shutil.copy2(source_path, user_file)
+    manifest[slot] = {"file": user_file.name, "source": str(source_path.resolve())}
+    _save_user_assets(preview_dir, manifest)
+    return ensure_effect_library_assets()
+
+
+def effect_library_reset_assets() -> dict[str, Any]:
+    """清除自定义演示图，恢复内置演示图。"""
+    preview_dir = Path(tempfile.gettempdir()) / "image-to-video-engine" / "effect-library"
+    manifest = _load_user_assets(preview_dir)
+    for entry in manifest.values():
+        try:
+            (preview_dir / entry["file"]).unlink(missing_ok=True)
+        except OSError:
+            pass
+    try:
+        (preview_dir / _USER_ASSET_MANIFEST).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return ensure_effect_library_assets()
 
 
 def render_effect_animation(params: dict[str, Any]) -> dict[str, Any]:
@@ -136,7 +247,11 @@ def render_effect_animation(params: dict[str, Any]) -> dict[str, Any]:
 
 
 class _VideoWatermarkReader:
-    """Keep one decoder open while the preview clock advances."""
+    """Keep one decoder open while the preview clock advances.
+
+    OpenCV 解码视频时会丢弃 alpha 通道，因此优先用 ffmpeg 解码出 RGBA
+    帧列表（保留透明通道）；失败时回退到 OpenCV 逐帧读取。
+    """
 
     def __init__(self, path: Path):
         self.path = path
@@ -145,10 +260,22 @@ class _VideoWatermarkReader:
         self.frame_count = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         self.last_frame_index = -1
         self.last_frame: np.ndarray | None = None
+        try:
+            from ..utils.ffmpeg_runtime import read_video_frames_rgba, resolve_ffmpeg_path
+
+            alpha_frames = read_video_frames_rgba(resolve_ffmpeg_path(), path)
+        except Exception:
+            alpha_frames = None
+        if alpha_frames is not None:
+            self.alpha_frames = alpha_frames
+            if self.frame_count <= 0:
+                self.frame_count = len(alpha_frames)
+        else:
+            self.alpha_frames = None
 
     @property
     def is_opened(self) -> bool:
-        return bool(self.capture.isOpened())
+        return bool(self.capture.isOpened()) or self.alpha_frames is not None
 
     @property
     def duration(self) -> float:
@@ -157,6 +284,11 @@ class _VideoWatermarkReader:
         return self.frame_count / self.fps
 
     def read(self, frame_index: int) -> np.ndarray | None:
+        if self.alpha_frames is not None:
+            if frame_index < 0 or frame_index >= len(self.alpha_frames):
+                return None
+            return self.alpha_frames[frame_index].copy()
+
         if frame_index == self.last_frame_index and self.last_frame is not None:
             return self.last_frame.copy()
 

@@ -252,6 +252,7 @@ select:disabled {
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
+  white-space: nowrap;
 }
 
 .command-actions button:hover:not(:disabled),
@@ -580,6 +581,7 @@ select:disabled {
 .update-dialog-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid var(--line);
@@ -597,6 +599,7 @@ select:disabled {
   background: var(--accent);
   border: 1px solid var(--accent);
   border-radius: 4px;
+  white-space: nowrap;
 }
 
 .update-primary:hover:not(:disabled) {
@@ -1184,6 +1187,7 @@ body.is-rail-dragging {
 .preview-heading > .preview-heading-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
   flex: 0 0 auto;
 }
@@ -1989,6 +1993,7 @@ body.is-rail-dragging {
   border: 1px solid var(--accent);
   border-radius: 4px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .inspector-config-button { justify-self: start; }
@@ -3084,6 +3089,7 @@ body.is-rail-dragging {
 .library-selection-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 6px 10px;
   color: var(--blue);
@@ -3110,6 +3116,7 @@ body.is-rail-dragging {
 .library-toolbar-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   flex: 0 0 auto;
 }
@@ -3128,6 +3135,7 @@ body.is-rail-dragging {
   background: var(--accent);
   border: 1px solid var(--accent);
   border-radius: 4px;
+  white-space: nowrap;
 }
 
 .library-accent-button:hover:not(:disabled) {
@@ -3392,6 +3400,14 @@ body.is-rail-dragging {
   gap: 4px;
 }
 
+/* 卡片模式操作按钮统一为小图标，保证一行放得下 4 个 */
+.library-card-actions .icon-button {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .library-dialog-footer {
   display: flex;
   align-items: center;
@@ -3416,6 +3432,7 @@ body.is-rail-dragging {
 .library-dialog-footer-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   flex: 0 0 auto;
 }
@@ -3451,6 +3468,117 @@ body.is-rail-dragging {
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   box-shadow: 0 24px 80px rgba(15, 20, 29, 0.32);
+}
+
+/* 从剪映导入 */
+.library-jianying-dialog {
+  width: min(520px, 92vw);
+}
+
+.library-jianying-empty {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  min-height: 120px;
+  padding: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.library-jianying-note {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 8px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-jianying-note small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.library-jianying-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.library-jianying-stats span {
+  padding: 3px 9px;
+  color: var(--blue);
+  font-size: 11px;
+  background: var(--blue-soft);
+  border: 1px solid color-mix(in srgb, var(--blue) 28%, var(--line));
+  border-radius: 999px;
+}
+
+.library-jianying-stats strong {
+  font-size: 12px;
+}
+
+.library-jianying-list {
+  display: grid;
+  gap: 1px;
+  max-height: 180px;
+  margin: 0 0 8px;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.library-jianying-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 6px;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.library-jianying-list li svg {
+  flex: 0 0 auto;
+  color: var(--blue);
+}
+
+.library-jianying-list li > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-jianying-list li small {
+  flex: 0 0 auto;
+  max-width: 90px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-jianying-more {
+  color: var(--muted) !important;
+}
+
+.library-jianying-hint {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.library-jianying-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .library-move-body {
@@ -3834,6 +3962,89 @@ body.is-rail-dragging {
   border-radius: 999px;
 }
 
+.effect-asset-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 8px 12px;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.effect-asset-head {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.effect-asset-head > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.effect-asset-head svg {
+  color: var(--blue);
+}
+
+.effect-asset-head strong {
+  font-size: 11px;
+}
+
+.effect-asset-head small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.effect-asset-slots {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.effect-asset-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.effect-asset-slot > img {
+  display: block;
+  width: 64px;
+  height: 36px;
+  object-fit: cover;
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+
+.effect-asset-slot.is-custom > img {
+  border-color: color-mix(in srgb, var(--blue) 65%, var(--line));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--blue) 30%, transparent);
+}
+
+.effect-asset-slot-empty {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 36px;
+  color: var(--faint);
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+
+.effect-asset-slot .quiet-button {
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 10px;
+}
+
 .effect-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
@@ -4042,6 +4253,7 @@ body.is-marquee-active {
 .bgm-files-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
   flex: 0 0 auto;
 }

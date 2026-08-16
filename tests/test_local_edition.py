@@ -48,7 +48,7 @@ def test_qt_window_starts_as_local_edition():
     app = QApplication.instance() or QApplication([])
     window = QtMainWindow()
     try:
-        assert window.windowTitle() == "图转视频极速版 - 本地版"
+        assert window.windowTitle() == "图转视频极速版"
         assert not hasattr(window, "remote_service_dock")
         assert not hasattr(window, "remote_service_btn")
     finally:

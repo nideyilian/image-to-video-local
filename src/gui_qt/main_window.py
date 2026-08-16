@@ -374,7 +374,7 @@ class QtMainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("图转视频极速版 - 本地版")
+        self.setWindowTitle("图转视频极速版")
         self.resize(1400, 900)
         self.setMinimumSize(1024, 640)
 

@@ -1,5 +1,5 @@
 ---
-name: "图转视频极速版 - 本地版"
+name: "图转视频极速版"
 description: "采用 Codex 中性黑白与高识别蓝色的本地渲染工作台"
 colors:
   codex-light-background: "#ffffff"
@@ -107,7 +107,7 @@ components:
     padding: "11px 12px"
 ---
 
-# Design System: 图转视频极速版 - 本地版
+# Design System: 图转视频极速版
 
 ## Overview
 

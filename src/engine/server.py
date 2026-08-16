@@ -93,6 +93,7 @@ class EngineServer:
                     "system-snapshot",
                     "library",
                     "library-audio-cover",
+                    "jianying",
                 ],
             }
         if method == "system_snapshot":
@@ -135,7 +136,15 @@ class EngineServer:
         if method == "effect_library_assets":
             from .effect_preview import ensure_effect_library_assets
 
-            return ensure_effect_library_assets()
+            return ensure_effect_library_assets(params)
+        if method == "effect_library_set_asset":
+            from .effect_preview import effect_library_set_asset
+
+            return effect_library_set_asset(params)
+        if method == "effect_library_reset_assets":
+            from .effect_preview import effect_library_reset_assets
+
+            return effect_library_reset_assets()
         if method == "effect_preview_animation":
             from .effect_preview import render_effect_animation
 
@@ -176,6 +185,10 @@ class EngineServer:
             return self.library.start_extract(params)
         if method == "library_extract_cancel":
             return self.library.cancel_extract(params)
+        if method == "jianying_scan":
+            from .jianying import jianying_scan
+
+            return jianying_scan(params)
         if method == "shutdown":
             self._running = False
             return {"shutting_down": True}

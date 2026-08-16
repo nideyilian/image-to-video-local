@@ -695,6 +695,272 @@ def test_server_dispatches_effect_animation():
     assert all(Path(path).is_file() for path in animation["frames"])
 
 
+def test_effect_library_custom_assets_roundtrip(tmp_path):
+    """自定义演示图：设置后生效、清单持久化、可恢复默认、非图片被拒绝。"""
+    from PIL import Image
+
+    from src.engine.effect_preview import (
+        effect_library_reset_assets,
+        effect_library_set_asset,
+        ensure_effect_library_assets,
+    )
+
+    effect_library_reset_assets()  # 保证测试起点干净
+
+    custom = tmp_path / "我的演示图.png"
+    Image.new("RGB", (96, 54), (10, 200, 120)).save(custom)
+
+    assets = effect_library_set_asset({"which": "a", "path": str(custom)})
+    assert assets["custom_a"] is True
+    assert assets["custom_b"] is False
+    assert Path(assets["source_a"]).is_file()
+    assert Path(assets["source_a"]).stat().st_size == custom.stat().st_size  # 原样复制
+    assert assets["user_path_a"] == str(custom.resolve())
+
+    # 再次读取仍生效（清单持久化，临时目录清理后也能从原路径恢复）
+    again = ensure_effect_library_assets()
+    assert again["custom_a"] is True
+
+    # 恢复默认
+    reset = effect_library_reset_assets()
+    assert reset["custom_a"] is False and reset["custom_b"] is False
+
+    # 非图片文件被拒绝
+    bad = tmp_path / "不是图片.txt"
+    bad.write_text("hello", encoding="utf-8")
+    with pytest.raises(ValueError, match="不是有效的图片"):
+        effect_library_set_asset({"which": "b", "path": str(bad)})
+
+    with pytest.raises(ValueError, match="which"):
+        effect_library_set_asset({"which": "x", "path": str(custom)})
+
+
+def test_server_dispatches_custom_effect_assets(tmp_path):
+    from PIL import Image
+
+    server = EngineServer(ROOT)
+    server._dispatch("effect_library_reset_assets", {})
+
+    custom = tmp_path / "服务端演示图.png"
+    Image.new("RGB", (64, 64), (200, 40, 60)).save(custom)
+
+    assets = server._dispatch("effect_library_set_asset", {"which": "b", "path": str(custom)})
+    assert assets["custom_b"] is True
+    assert Path(assets["source_b"]).is_file()
+
+    reset = server._dispatch("effect_library_reset_assets", {})
+    assert reset["custom_a"] is False and reset["custom_b"] is False
+
+
+def _write_fake_draft(draft_dir: Path, name: str, payload: dict) -> None:
+    import json
+
+    draft_dir.mkdir(parents=True, exist_ok=True)
+    (draft_dir / "draft_content.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_jianying_scan_collects_draft_materials(tmp_path):
+    """剪映草稿扫描：新旧格式兼容、按路径去重、跳过缺失文件、照片单独归类。"""
+    import json
+    import wave
+
+    from src.engine.jianying import jianying_scan
+
+    draft_root = tmp_path / "com.lveditor.draft"
+    media = tmp_path / "media"
+    media.mkdir()
+
+    # 真实音频（wav）与占位视频/图片（扫描只校验存在性与扩展名）
+    audio_a = media / "第一首歌.wav"
+    with wave.open(str(audio_a), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(8000)
+        output.writeframes(b"\x00\x00" * 800)
+    audio_b = media / "第二首歌.mp3"
+    audio_b.write_bytes(b"ID3")
+    video = media / "素材视频.mp4"
+    video.write_bytes(b"fake")
+    photo = media / "封面照片.png"
+    photo.write_bytes(b"fake")
+
+    # 新版草稿：materials.videos / materials.audios
+    _write_fake_draft(draft_root / "我的草稿", "我的草稿", {
+        "name": "我的草稿",
+        "materials": {
+            "audios": [
+                {"path": str(audio_a), "type": "music", "material_name": "第一首歌"},
+                {"path": str(audio_b), "type": "sound"},
+                {"path": str(media / "已删除.mp3"), "type": "music"},  # 文件不存在，跳过
+            ],
+            "videos": [
+                {"path": str(video), "type": "video"},
+                {"path": str(photo), "type": "photo"},
+            ],
+        },
+        "tracks": [],
+    })
+
+    # 旧版草稿：materials_audios / materials_videos
+    old_draft = draft_root / "旧草稿"
+    old_draft.mkdir(parents=True)
+    (old_draft / "draft_info.json").write_text(json.dumps({
+        "name": "旧草稿",
+        "materials_audios": [{"path": str(audio_a)}],  # 与新版草稿重复，应去重
+        "materials_videos": [{"path": str(video)}],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    # 无 JSON 的目录应被忽略
+    (draft_root / "无清单草稿").mkdir()
+
+    result = jianying_scan({"draft_root": str(draft_root)})
+
+    assert len(result["drafts"]) == 2
+    assert [d["name"] for d in result["drafts"]] == ["我的草稿", "旧草稿"]
+
+    audio_paths = {entry["path"] for entry in result["audios"]}
+    assert audio_paths == {str(audio_a.resolve()), str(audio_b.resolve())}  # 缺失文件跳过、跨草稿去重
+
+    assert [entry["path"] for entry in result["videos"]] == [str(video.resolve())]
+    assert [entry["path"] for entry in result["images"]] == [str(photo.resolve())]
+
+    draft_a = next(d for d in result["drafts"] if d["name"] == "我的草稿")
+    assert draft_a["counts"] == {"audio": 2, "video": 1, "image": 1}
+
+
+def test_jianying_scan_rejects_missing_root(tmp_path):
+    from src.engine.jianying import jianying_scan
+
+    with pytest.raises(ValueError, match="未找到剪映草稿目录"):
+        jianying_scan({"draft_root": str(tmp_path / "不存在")})
+
+
+def test_server_dispatches_jianying_scan(tmp_path):
+    import json
+
+    server = EngineServer(ROOT)
+
+    media = tmp_path / "media"
+    media.mkdir()
+    audio = media / "服务端歌曲.wav"
+    audio.write_bytes(b"wav")
+
+    draft_root = tmp_path / "com.lveditor.draft"
+    (draft_root / "草稿").mkdir(parents=True)
+    (draft_root / "草稿" / "draft_content.json").write_text(json.dumps({
+        "materials": {"audios": [{"path": str(audio)}], "videos": []},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    result = server._dispatch("jianying_scan", {"draft_root": str(draft_root)})
+    assert len(result["audios"]) == 1
+    assert result["audios"][0]["path"] == str(audio.resolve())
+
+
+def _make_transparent_mov(tmp_path, size: int = 40, frames: int = 3) -> Path:
+    """生成一个「品红方块 + 其余全透明」的 qtrle MOV（OpenCV 解码会丢 alpha）。"""
+    import subprocess
+    import sys
+
+    from PIL import Image, ImageDraw
+
+    ffmpeg_path = configure_ffmpeg_environment(ROOT)
+    if not ffmpeg_path:
+        pytest.skip("需要 ffmpeg")
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(exist_ok=True)
+    for index in range(frames):
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle([5, 5, 25, 25], fill=(255, 0, 200, 255))
+        image.save(frames_dir / f"{index:02d}.png")
+    mov = tmp_path / "transparent.mov"
+    startupinfo = None
+    creationflags = 0
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        creationflags = subprocess.CREATE_NO_WINDOW
+    result = subprocess.run(
+        [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-y", "-framerate", "10",
+         "-i", str(frames_dir / "%02d.png"), "-c:v", "qtrle", str(mov)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+        startupinfo=startupinfo,
+        creationflags=creationflags,
+    )
+    if result.returncode != 0 or not mov.is_file():
+        pytest.skip("ffmpeg 无法生成透明视频")
+    return mov
+
+
+def test_read_video_frames_rgba_preserves_alpha(tmp_path):
+    """FFmpeg RGBA 解码保留透明通道（OpenCV VideoCapture 会丢弃）。"""
+    from src.utils.ffmpeg_runtime import configure_ffmpeg_environment, read_video_frames_rgba
+
+    ffmpeg_path = configure_ffmpeg_environment(ROOT)
+    if not ffmpeg_path:
+        pytest.skip("需要 ffmpeg")
+    mov = _make_transparent_mov(tmp_path)
+
+    frames = read_video_frames_rgba(ffmpeg_path, mov)
+    assert frames is not None and len(frames) == 3
+    frame = frames[1]
+    assert frame.shape[2] == 4
+    transparent = int((frame[:, :, 3] == 0).sum())
+    opaque = int((frame[:, :, 3] == 255).sum())
+    assert transparent > 0, "应存在透明像素"
+    assert opaque > 0, "应存在不透明像素"
+
+    # 不存在的文件 / 非视频返回 None
+    assert read_video_frames_rgba(ffmpeg_path, tmp_path / "不存在.mov") is None
+
+
+def test_preview_video_watermark_keeps_transparency(tmp_path):
+    """透明视频水印预览：透明区域透出背景，方块区域按 alpha 叠加。"""
+    import numpy as np
+    from PIL import Image
+
+    from src.engine.config import build_default_config
+    from src.engine.effect_preview import render_effect_preview
+
+    mov = _make_transparent_mov(tmp_path)
+    base = tmp_path / "base.png"
+    Image.new("RGB", (192, 108), (40, 44, 50)).save(base)
+
+    config = build_default_config()
+    config.update({
+        "use_watermark": True,
+        "watermark_path": str(mov),
+        "watermark_position": "中心",
+        "watermark_match_method": "循环",
+        "watermark_size_mode": "固定比例",
+        "watermark_scale": 40,
+        "watermark_blend_mode": "正常",
+    })
+    result = render_effect_preview({
+        "path": str(base),
+        "config": config,
+        "time_sec": 0.5,
+        "max_width": 192,
+        "max_height": 108,
+    })
+    frame = np.asarray(Image.open(result["preview_path"]).convert("RGB"))
+    h, w, _ = frame.shape
+    center = frame[h // 2 - 2:h // 2 + 2, w // 2 - 2:w // 2 + 2]
+    corner = frame[2:8, 2:8]
+    center_red = center[:, :, 0].mean()
+    corner_red = corner[:, :, 0].mean()
+    # 中央方块区域应有品红叠加（红色通道明显高于背景），角落保持背景色
+    assert center_red > corner_red + 40, f"中央未叠加水印: center={center_red:.1f} corner={corner_red:.1f}"
+    assert corner_red < 80, "角落不应被水印污染（透明区域透出背景）"
+
+
 def test_audio_cover_extracts_embedded_artwork(tmp_path):
     """内嵌封面的音频能提取出封面图并缓存；无封面音频返回 None。"""
     import subprocess

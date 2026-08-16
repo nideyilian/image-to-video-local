@@ -972,7 +972,7 @@ export default function App() {
       <header className="command-strip">
         <div className="brand-block">
           <span className="brand-mark"><Aperture size={20} /></span>
-          <span><strong>图转视频极速版</strong><small>本地版</small></span>
+          <span><strong>图转视频极速版</strong></span>
         </div>
 
         <label className="project-name">

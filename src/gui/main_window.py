@@ -6953,6 +6953,21 @@ Turbo图片预处理 - 并行优化版本
             wm_frame_count = int(watermark_cap.get(cv2.CAP_PROP_FRAME_COUNT))
             wm_duration = wm_frame_count / max(0.0001, wm_fps)
             
+            # OpenCV 解码会丢弃 alpha 通道；优先用 FFmpeg 解码 RGBA 帧保留透明通道
+            wm_alpha_frames = None
+            try:
+                from ..utils.ffmpeg_runtime import read_video_frames_rgba
+
+                wm_alpha_frames = read_video_frames_rgba(
+                    getattr(self, "ffmpeg_executable", None) or "ffmpeg",
+                    watermark_path,
+                )
+            except Exception:
+                wm_alpha_frames = None
+            if wm_alpha_frames is not None:
+                wm_frame_count = min(wm_frame_count, len(wm_alpha_frames))
+                log(f"已通过 FFmpeg 解码 {len(wm_alpha_frames)} 帧 RGBA 水印（保留透明通道）")
+            
             log(f"水印视频信息: {wm_width}x{wm_height}, {wm_fps}fps, {wm_frame_count}帧, 时长:{wm_duration:.2f}秒")
             
             # 获取水印大小模式和缩放比例
@@ -7137,6 +7152,8 @@ Turbo图片预处理 - 并行优化版本
                 nonlocal wm_read_idx, wm_last_idx, wm_last_frame
                 if target_idx < 0 or target_idx >= wm_frame_count:
                     return None
+                if wm_alpha_frames is not None:
+                    return wm_alpha_frames[target_idx].copy()
                 if target_idx == wm_last_idx and wm_last_frame is not None:
                     return wm_last_frame
                 if target_idx < wm_read_idx:
@@ -7204,11 +7221,23 @@ Turbo图片预处理 - 并行优化版本
                         ]
                         # 确保尺寸匹配
                         if wm_crop.shape[:2] == roi.shape[:2]:
-                            blended = self.apply_blend_mode(roi, wm_crop, mode=blend_mode, alpha=blend_alpha)
-                            main_frame[
-                                dst_y_start:dst_y_start + actual_h,
-                                dst_x_start:dst_x_start + actual_w
-                            ] = blended
+                            if wm_crop.shape[2] == 4:
+                                # RGBA 水印：按 alpha 通道合成（透明区域透出主画面）
+                                wm_rgb = wm_crop[:, :, :3]
+                                alpha_mask = (wm_crop[:, :, 3].astype(np.float32) / 255.0) * blend_alpha
+                                blended_full = self.apply_blend_mode(roi, wm_rgb, mode=blend_mode, alpha=1.0)
+                                alpha_mask = np.expand_dims(alpha_mask, axis=2)
+                                result = roi.astype(np.float32) * (1 - alpha_mask) + blended_full * alpha_mask
+                                main_frame[
+                                    dst_y_start:dst_y_start + actual_h,
+                                    dst_x_start:dst_x_start + actual_w
+                                ] = result.astype(np.uint8)
+                            else:
+                                blended = self.apply_blend_mode(roi, wm_crop, mode=blend_mode, alpha=blend_alpha)
+                                main_frame[
+                                    dst_y_start:dst_y_start + actual_h,
+                                    dst_x_start:dst_x_start + actual_w
+                                ] = blended
                         else:
                             log(f"尺寸不匹配: wm_crop={wm_crop.shape}, roi={roi.shape}")
                     except Exception as e:

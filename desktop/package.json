@@ -1,7 +1,7 @@
 {
   "name": "image-to-video-desktop",
   "private": true,
-  "version": "3.0.0-local.11",
+  "version": "3.0.0-local.12",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -28,6 +28,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "jsdom": "^29.1.1",
+    "puppeteer-core": "^25.7.0",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^4.1.10"

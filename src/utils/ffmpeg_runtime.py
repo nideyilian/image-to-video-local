@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
+
+import numpy as np
 
 
 def _candidate_bases(project_root: str | Path | None = None) -> Iterable[Path]:
@@ -130,6 +133,88 @@ def configure_ffmpeg_environment(project_root: str | Path | None = None) -> str 
     if binary_dir not in path_entries:
         os.environ["PATH"] = os.pathsep.join([binary_dir, *path_entries])
     return ffmpeg_path
+
+
+def read_video_frames_rgba(
+    ffmpeg_path: str | None,
+    path: str | Path,
+    max_frames: int = 6000,
+    max_total_bytes: int = 256 * 1024 * 1024,
+) -> list[Any] | None:
+    """用 ffmpeg 把视频完整解码为 RGBA 帧列表（保留透明通道）。
+
+    解码失败、帧数或内存超过上限时返回 None，由调用方回退到其他读取方式
+    （例如 OpenCV VideoCapture——注意它通常会丢弃 alpha 通道）。
+    """
+    if not ffmpeg_path or not Path(str(path)).is_file():
+        return None
+    startupinfo = None
+    creationflags = 0
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        creationflags = subprocess.CREATE_NO_WINDOW
+    try:
+        result = subprocess.run(
+            [
+                str(ffmpeg_path),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-i",
+                str(path),
+                "-an",
+                "-f",
+                "image2pipe",
+                "-c:v",
+                "png",
+                "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+            startupinfo=startupinfo,
+            creationflags=creationflags,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+
+    frames: list[Any] = []
+    total_bytes = 0
+    signature = b"\x89PNG\r\n\x1a\n"
+    cursor = 0
+    stream = result.stdout
+    while cursor < len(stream):
+        start = stream.find(signature, cursor)
+        if start < 0:
+            break
+        end = stream.find(signature, start + len(signature))
+        if end < 0:
+            end = len(stream)
+        blob = stream[start:end]
+        cursor = end
+        if not blob:
+            continue
+        try:
+            with Image.open(io.BytesIO(blob)) as image:
+                rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
+        except Exception:
+            continue
+        frames.append(rgba)
+        total_bytes += rgba.shape[0] * rgba.shape[1] * 4
+        if len(frames) > max_frames or total_bytes > max_total_bytes:
+            return None
+    return frames or None
 
 
 def probe_ffmpeg(ffmpeg_path: str | None) -> tuple[bool, str | None]:

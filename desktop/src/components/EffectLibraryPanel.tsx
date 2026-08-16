@@ -1,10 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Loader2, Plus, Shuffle, Sparkles } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { Check, Image as ImageIcon, Loader2, Plus, RotateCcw, Shuffle, Sparkles, Upload } from "lucide-react";
 import { FALLBACK_CONFIG, TRANSITIONS, VIDEO_EFFECTS } from "../constants";
 import { engine } from "../engine";
 import type { VideoConfig } from "../types";
 
 const ANIMATION_FRAMES = 8;
+
+type EffectLibraryAssets = {
+  source_a: string;
+  source_b: string;
+  custom_a?: boolean;
+  custom_b?: boolean;
+  user_path_a?: string;
+  user_path_b?: string;
+};
 
 // 模块级 LRU 缓存：同一效果的动画帧/静态帧只请求一次（引擎侧另有磁盘缓存）
 const ANIMATION_CACHE = new Map<string, string[]>();
@@ -63,6 +73,67 @@ export function EffectLibraryPanel({ kind, config, onChange, notify }: {
     notify(inPool ? "info" : "success", inPool ? `已把${isEffect ? "特效" : "转场"}移出随机池：${name}` : `已加入随机池：${name}`);
   };
 
+  // ---------- 自定义演示图 ----------
+
+  const [assets, setAssets] = useState<EffectLibraryAssets | null>(null);
+  const [assetVersion, setAssetVersion] = useState(0);
+  const [assetBusy, setAssetBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void engine.call<EffectLibraryAssets>("effect_library_assets", {}, 15_000)
+      .then((result) => {
+        if (!cancelled) setAssets(result);
+      })
+      .catch(() => {
+        /* 演示图信息非关键路径，失败不打扰 */
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const applyAssets = (result: EffectLibraryAssets, message: string) => {
+    ANIMATION_CACHE.clear();
+    STATIC_CACHE.clear();
+    setAssets(result);
+    setAssetVersion((version) => version + 1);
+    notify("success", message);
+  };
+
+  const pickCustomAsset = async (which: "a" | "b") => {
+    if (!engine.desktopRuntime) return notify("info", "自定义演示图需要在 Tauri 桌面窗口中运行");
+    const picked = await openDialog({
+      multiple: false,
+      directory: false,
+      title: `选择演示图${which === "a" ? " A（特效 / 转场首帧）" : " B（转场第二帧）"}`,
+      filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif"] }],
+    });
+    if (!picked) return;
+    setAssetBusy(true);
+    try {
+      const result = await engine.call<EffectLibraryAssets>("effect_library_set_asset", { which, path: picked }, 30_000);
+      applyAssets(result, `已使用自定义演示图${which === "a" ? " A" : " B"}，全部预览已更新`);
+    } catch (err) {
+      notify("error", err instanceof Error ? err.message : "设置演示图失败");
+    } finally {
+      setAssetBusy(false);
+    }
+  };
+
+  const resetAssets = async () => {
+    setAssetBusy(true);
+    try {
+      const result = await engine.call<EffectLibraryAssets>("effect_library_reset_assets", {}, 30_000);
+      applyAssets(result, "已恢复内置演示图");
+    } catch (err) {
+      notify("error", err instanceof Error ? err.message : "恢复演示图失败");
+    } finally {
+      setAssetBusy(false);
+    }
+  };
+
+  const customA = Boolean(assets?.custom_a);
+  const customB = Boolean(assets?.custom_b);
+
   return (
     <div className="effect-library">
       <div className="effect-stats-bar">
@@ -79,13 +150,39 @@ export function EffectLibraryPanel({ kind, config, onChange, notify }: {
         </span>
       </div>
 
+      <div className="effect-asset-bar">
+        <span className="effect-asset-head">
+          <span><ImageIcon size={13} /><strong>演示图</strong></span>
+          <small>A 图用于特效与转场首帧，B 图用于转场第二帧；自定义后所有卡片预览立即更新。</small>
+        </span>
+        <span className="effect-asset-slots">
+          <span className={`effect-asset-slot${customA ? " is-custom" : ""}`}>
+            {assets ? <img src={engine.toAssetUrl(assets.source_a)} alt="演示图 A" /> : <span className="effect-asset-slot-empty"><Loader2 className="is-spinning" size={12} /></span>}
+            <button type="button" className="quiet-button" onClick={() => void pickCustomAsset("a")} disabled={!engine.desktopRuntime || assetBusy}>
+              <Upload size={12} />{customA ? "更换 A" : "自定义 A"}
+            </button>
+          </span>
+          <span className={`effect-asset-slot${customB ? " is-custom" : ""}`}>
+            {assets ? <img src={engine.toAssetUrl(assets.source_b)} alt="演示图 B" /> : <span className="effect-asset-slot-empty"><Loader2 className="is-spinning" size={12} /></span>}
+            <button type="button" className="quiet-button" onClick={() => void pickCustomAsset("b")} disabled={!engine.desktopRuntime || assetBusy}>
+              <Upload size={12} />{customB ? "更换 B" : "自定义 B"}
+            </button>
+          </span>
+          {customA || customB ? (
+            <button type="button" className="quiet-button" onClick={() => void resetAssets()} disabled={assetBusy}>
+              <RotateCcw size={12} />恢复默认
+            </button>
+          ) : null}
+        </span>
+      </div>
+
       <ul className="effect-grid">
         {names.map((name) => {
           const isActive = enabled && current === name;
           const inPool = pool.includes(name);
           return (
             <EffectCard
-              key={name}
+              key={`${name}:${assetVersion}`}
               name={name}
               kind={kind}
               active={isActive}
