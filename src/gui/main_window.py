@@ -5444,6 +5444,10 @@ Turbo图片预处理 - 并行优化版本
             self.effect_preview_time.set(config_dict.get("effect_preview_time", 1.0))
             self.use_bgm.set(config_dict.get("use_bgm", False))
             self.bgm_dir.set(config_dict.get("bgm_dir", ""))
+            self._bgm_files = [
+                str(path) for path in (config_dict.get("bgm_files") or [])
+                if isinstance(path, str) and str(path).strip()
+            ]
             self.random_bgm.set(config_dict.get("random_bgm", True))
             self.bgm_volume.set(config_dict.get("bgm_volume", 0.5))
             self.loop_bgm.set(config_dict.get("loop_bgm", True))
@@ -5877,6 +5881,19 @@ Turbo图片预处理 - 并行优化版本
             return watermark_base_path
         return None
 
+    def _resolve_bgm_candidates(self):
+        """返回本次可用的BGM候选：优先使用素材库显式选定的文件，否则扫描音频目录。"""
+        explicit = [
+            path for path in getattr(self, "_bgm_files", None) or []
+            if os.path.isfile(path)
+        ]
+        if explicit:
+            return sorted(explicit)
+        bgm_dir = self.bgm_dir.get()
+        if not bgm_dir or not os.path.exists(bgm_dir):
+            return []
+        return sorted(self.get_audio_files(bgm_dir))
+
     def _select_bgm_file(self):
         """获取本次应使用的BGM文件。"""
         if not self.use_bgm.get():
@@ -5884,10 +5901,7 @@ Turbo图片预处理 - 并行优化版本
         audio_strategy = self.watermark_audio.get() if hasattr(self, "watermark_audio") else "使用BGM"
         if audio_strategy not in ("使用BGM", "两者混合"):
             return None
-        bgm_dir = self.bgm_dir.get()
-        if not bgm_dir or not os.path.exists(bgm_dir):
-            return None
-        bgm_files = sorted(self.get_audio_files(bgm_dir))
+        bgm_files = self._resolve_bgm_candidates()
         if not bgm_files:
             return None
         if self.random_bgm.get():
@@ -5905,8 +5919,13 @@ Turbo图片预处理 - 并行优化版本
         )
         has_bgm = bool(
             self.use_bgm.get()
-            and self.bgm_dir.get()
-            and os.path.exists(self.bgm_dir.get())
+            and (
+                bool(getattr(self, "_bgm_files", None))
+                or (
+                    self.bgm_dir.get()
+                    and os.path.exists(self.bgm_dir.get())
+                )
+            )
         )
         return has_fixed or has_video_wm or has_bgm
 
@@ -6464,28 +6483,26 @@ Turbo图片预处理 - 并行优化版本
         # 背景音乐
         audio_strategy = self.watermark_audio.get() if hasattr(self, "watermark_audio") else "使用BGM"
         if self.use_bgm.get() and audio_strategy in ("使用BGM", "两者混合"):
-            bgm_dir = self.bgm_dir.get()
-            if bgm_dir and os.path.exists(bgm_dir):
-                _log(f"开始添加背景音乐: {bgm_dir}")
-                bgm_files = sorted(self.get_audio_files(bgm_dir))
-                if bgm_files:
-                    if self.random_bgm.get():
-                        import random
-                        bgm_file = random.choice(bgm_files)
-                    else:
-                        bgm_file = bgm_files[0]
-                    _log(f"选择音乐文件: {os.path.basename(bgm_file)}")
-                    try:
-                        volume = self.bgm_volume.get()
-                        bgm_success = self.add_audio_with_ffmpeg(output_path, bgm_file, volume)
-                        if bgm_success:
-                            _log("背景音乐添加成功")
-                        else:
-                            _log("背景音乐添加失败")
-                    except Exception as e:
-                        _log(f"添加背景音乐出错: {str(e)}")
+            bgm_files = self._resolve_bgm_candidates()
+            if bgm_files:
+                _log(f"开始添加背景音乐: {os.path.dirname(bgm_files[0])}")
+                if self.random_bgm.get():
+                    import random
+                    bgm_file = random.choice(bgm_files)
                 else:
-                    _log("BGM目录中没有找到音乐文件")
+                    bgm_file = bgm_files[0]
+                _log(f"选择音乐文件: {os.path.basename(bgm_file)}")
+                try:
+                    volume = self.bgm_volume.get()
+                    bgm_success = self.add_audio_with_ffmpeg(output_path, bgm_file, volume)
+                    if bgm_success:
+                        _log("背景音乐添加成功")
+                    else:
+                        _log("背景音乐添加失败")
+                except Exception as e:
+                    _log(f"添加背景音乐出错: {str(e)}")
+            else:
+                _log("BGM目录中没有找到音乐文件")
         _post_progress(0.95, "BGM中")
 
         # 末端容器/编码校验日志

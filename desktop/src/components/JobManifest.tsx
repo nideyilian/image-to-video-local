@@ -3,7 +3,9 @@ import {
   Ban,
   Check,
   CircleAlert,
+  ClipboardCopy,
   Clock3,
+  FileText,
   FolderOpen,
   LoaderCircle,
   Pause,
@@ -40,14 +42,18 @@ function JobTable({
   onResume,
   onCancel,
   onReveal,
+  onCopyPath,
 }: {
   jobs: JobState[];
   onPause: (id: string) => void;
   onResume: (id: string) => void;
   onCancel: (id: string) => void;
   onReveal: (path: string) => void;
+  onCopyPath: (path: string) => void;
 }) {
+  const [detailJob, setDetailJob] = useState<JobState | null>(null);
   return (
+    <>
     <table>
       <thead>
         <tr>
@@ -68,6 +74,8 @@ function JobTable({
                 {job.status === "running" ? <button type="button" className="icon-button" onClick={() => onPause(job.job_id)} aria-label="暂停任务"><Pause size={14} /></button> : null}
                 {job.status === "paused" ? <button type="button" className="icon-button" onClick={() => onResume(job.job_id)} aria-label="继续任务"><Play size={14} /></button> : null}
                 {job.outputPath ? <button type="button" className="icon-button" onClick={() => onReveal(job.outputPath)} aria-label="打开输出目录"><FolderOpen size={14} /></button> : null}
+                {job.outputPath && ["completed", "failed", "cancelled"].includes(job.status) ? <button type="button" className="icon-button" onClick={() => onCopyPath(job.outputPath)} aria-label="复制输出路径"><ClipboardCopy size={14} /></button> : null}
+                {["failed", "cancelled"].includes(job.status) ? <button type="button" className="icon-button" onClick={() => setDetailJob(job)} aria-label="查看任务详情"><FileText size={14} /></button> : null}
                 {["queued", "running", "paused", "cancelling"].includes(job.status) ? <button type="button" className="icon-button danger" onClick={() => onCancel(job.job_id)} disabled={job.status === "cancelling"} aria-label="取消任务"><X size={14} /></button> : null}
               </span>
             </td>
@@ -77,6 +85,41 @@ function JobTable({
         )}
       </tbody>
     </table>
+
+    {detailJob ? (
+      <div className="manifest-history-backdrop" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setDetailJob(null);
+      }}>
+        <section className="manifest-history-dialog" role="dialog" aria-modal="true" aria-labelledby="job-detail-title">
+          <header className="manifest-history-heading">
+            <div>
+              <span className="panel-kicker">任务详情</span>
+              <strong id="job-detail-title">{detailJob.workspaceName}</strong>
+              <span className={`status-label status-${detailJob.status}`}><StatusIcon status={detailJob.status} />{STATUS_COPY[detailJob.status]}</span>
+            </div>
+            <button type="button" className="icon-button" onClick={() => setDetailJob(null)} aria-label="关闭任务详情" autoFocus><X size={16} /></button>
+          </header>
+          <div className="job-detail-body">
+            <dl className="job-detail-grid">
+              <div><dt>任务 ID</dt><dd>{detailJob.job_id}</dd></div>
+              <div><dt>说明</dt><dd className="job-detail-message">{detailJob.message || "—"}</dd></div>
+              {detailJob.outputPath ? <div className="job-detail-wide"><dt>输出路径</dt><dd>{detailJob.outputPath}</dd></div> : null}
+              {detailJob.speed ? <div><dt>速度</dt><dd>{detailJob.speed}</dd></div> : null}
+              <div><dt>开始时间</dt><dd>{detailJob.started_at ? new Date(detailJob.started_at * 1000).toLocaleString("zh-CN") : "—"}</dd></div>
+              <div><dt>结束时间</dt><dd>{detailJob.finished_at ? new Date(detailJob.finished_at * 1000).toLocaleString("zh-CN") : "—"}</dd></div>
+            </dl>
+          </div>
+          <footer className="manifest-history-footer">
+            <span>任务退出码：{detailJob.return_code ?? "—"}</span>
+            <span className="manifest-history-footer-actions">
+              {detailJob.outputPath ? <button type="button" className="quiet-button" onClick={() => onCopyPath(detailJob.outputPath)}><ClipboardCopy size={13} />复制路径</button> : null}
+              <button type="button" className="quiet-button" onClick={() => setDetailJob(null)}>关闭</button>
+            </span>
+          </footer>
+        </section>
+      </div>
+    ) : null}
+    </>
   );
 }
 
@@ -90,6 +133,7 @@ export function JobManifest({
   onResume,
   onCancel,
   onReveal,
+  onCopyPath,
   onClearCompleted,
 }: {
   jobs: JobState[];
@@ -101,6 +145,7 @@ export function JobManifest({
   onResume: (id: string) => void;
   onCancel: (id: string) => void;
   onReveal: (path: string) => void;
+  onCopyPath: (path: string) => void;
   onClearCompleted: () => void;
 }) {
   const [showAll, setShowAll] = useState(false);
@@ -135,7 +180,7 @@ export function JobManifest({
         </div>
 
         <div className="manifest-table-wrap">
-          <JobTable jobs={summaryJobs} onPause={onPause} onResume={onResume} onCancel={onCancel} onReveal={onReveal} />
+          <JobTable jobs={summaryJobs} onPause={onPause} onResume={onResume} onCancel={onCancel} onReveal={onReveal} onCopyPath={onCopyPath} />
         </div>
 
         <div className="manifest-command-bar">
@@ -159,7 +204,7 @@ export function JobManifest({
               <button type="button" className="icon-button" onClick={() => setShowAll(false)} aria-label="关闭全部任务列表" autoFocus><X size={16} /></button>
             </header>
             <div className="manifest-table-wrap manifest-history-table-wrap">
-              <JobTable jobs={jobs} onPause={onPause} onResume={onResume} onCancel={onCancel} onReveal={onReveal} />
+              <JobTable jobs={jobs} onPause={onPause} onResume={onResume} onCancel={onCancel} onReveal={onReveal} onCopyPath={onCopyPath} />
             </div>
             <footer className="manifest-history-footer">
               <span>共 {jobs.length} 条任务记录</span>

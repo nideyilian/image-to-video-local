@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ChevronLeft, ChevronRight, Plus, Shuffle, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, LibraryBig, Plus, Shuffle, Trash2, X } from "lucide-react";
 import {
   BLEND_MODES,
   DEFAULT_RESOLUTION_PRESETS,
@@ -10,8 +10,9 @@ import {
   WATERMARK_POSITIONS,
   WATERMARK_SIZE_MODES,
 } from "../constants";
-import type { ValidationIssue, VideoConfig, WatermarkLayer } from "../types";
+import type { LibraryItem, ValidationIssue, VideoConfig, WatermarkLayer } from "../types";
 import { Field, PathField } from "./Controls";
+import { LibraryPicker } from "./LibraryPicker";
 
 type ConfigKey = keyof VideoConfig;
 
@@ -286,6 +287,8 @@ export function Inspector({
   validationIssues: ValidationIssue[];
 }) {
   const [dialog, setDialog] = useState<InspectorDialogState>(null);
+  const [bgmPickerOpen, setBgmPickerOpen] = useState(false);
+  const [watermarkPickerOpen, setWatermarkPickerOpen] = useState(false);
   const [transitionPage, setTransitionPage] = useState(0);
   const [effectPage, setEffectPage] = useState(0);
   const [layerPage, setLayerPage] = useState(0);
@@ -395,6 +398,27 @@ export function Inspector({
             <Checkbox label="循环播放" checked={config.loop_bgm} disabled={!config.use_bgm} onChange={(value) => onChange("loop_bgm", value)} />
           </div>
           <PathField label="音频目录" name="bgm_dir" value={config.bgm_dir} placeholder="选择 BGM 目录" onChange={(value) => onChange("bgm_dir", value)} onBrowse={() => onBrowseDirectory("bgm_dir")} />
+          <div className="bgm-files-row" data-field="bgm_files">
+            <div className="bgm-files-head">
+              <span><small>BGM 素材</small><strong>{(config.bgm_files ?? []).length ? `已选 ${config.bgm_files.length} 首` : "未指定"}</strong></span>
+              <span className="bgm-files-actions">
+                <button type="button" className="inspector-config-button" onClick={() => setBgmPickerOpen(true)} disabled={!config.use_bgm}><LibraryBig size={14} />从素材库选择</button>
+                {(config.bgm_files ?? []).length ? <button type="button" className="quiet-button" onClick={() => onChange("bgm_files", [])} disabled={!config.use_bgm}>清除</button> : null}
+              </span>
+            </div>
+            {(config.bgm_files ?? []).length ? (
+              <ul className="bgm-files-chips">
+                {(config.bgm_files ?? []).map((path, index) => (
+                  <li key={path}>
+                    <span title={path}>{path.split(/[\\/]/).pop()}</span>
+                    <button type="button" className="icon-button" onClick={() => onChange("bgm_files", (config.bgm_files ?? []).filter((_, itemIndex) => itemIndex !== index))} aria-label={`移除 BGM ${path.split(/[\\/]/).pop()}`}><X size={11} /></button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="bgm-files-hint">未指定时，导出将从「音频目录」按顺序 / 随机选取。</p>
+            )}
+          </div>
           <div className="parameter-grid">
             <Field label={`音量 ${Math.round(config.bgm_volume * 100)}%`}><input className="range-input" type="range" min={0.1} max={1} step={0.1} disabled={!config.use_bgm} value={config.bgm_volume} onChange={(event) => onChange("bgm_volume", Number(event.target.value))} /></Field>
             <Field label="声音策略"><select disabled={!config.use_bgm} value={config.watermark_audio} onChange={(event) => onChange("watermark_audio", event.target.value)}><option>使用BGM</option><option>使用水印</option><option>两者混合</option><option>静音</option></select></Field>
@@ -429,7 +453,10 @@ export function Inspector({
           <section className="inspector-static-section">
             <header className="inspector-section-heading">
               <strong>视频水印</strong>
-              <SegmentedControl compact label="状态" value={config.use_watermark ? "on" : "off"} options={STATUS_OPTIONS} onChange={(value) => onChange("use_watermark", value === "on")} />
+              <span className="inspector-section-actions">
+                <SegmentedControl compact label="状态" value={config.use_watermark ? "on" : "off"} options={STATUS_OPTIONS} onChange={(value) => onChange("use_watermark", value === "on")} />
+                <button type="button" className="inspector-config-button" onClick={() => setWatermarkPickerOpen(true)}><LibraryBig size={14} />从素材库选择</button>
+              </span>
             </header>
             <PathField label="水印路径" name="watermark_path" value={config.watermark_path} placeholder="选择视频或目录" onChange={(value) => onChange("watermark_path", value)} onBrowse={() => config.watermark_mode === "文件夹" ? onBrowseDirectory("watermark_path") : onBrowseFile("watermark_path")} />
             <div className="parameter-grid">
@@ -480,6 +507,40 @@ export function Inspector({
           <PagedPool values={VIDEO_EFFECTS} selected={config.enabled_video_effects} page={effectPage} onPageChange={setEffectPage} onChange={(value) => onChange("enabled_video_effects", value)} />
         </InspectorDialog>
       ) : null}
+
+      <LibraryPicker
+        open={bgmPickerOpen}
+        onClose={() => setBgmPickerOpen(false)}
+        kind="bgm"
+        selected={config.bgm_files ?? []}
+        onConfirmBgm={(paths) => {
+          onChange("bgm_files", paths);
+          setBgmPickerOpen(false);
+        }}
+      />
+
+      <LibraryPicker
+        open={watermarkPickerOpen}
+        onClose={() => setWatermarkPickerOpen(false)}
+        kind="watermark"
+        onUseAsVideo={(item: LibraryItem) => {
+          onChange("watermark_path", item.path);
+          onChange("watermark_mode", "单文件");
+          onChange("use_watermark", true);
+          setWatermarkPickerOpen(false);
+        }}
+        onAddWatermarkLayers={(items: LibraryItem[]) => {
+          const next = [...config.watermark_layers];
+          for (const item of items) {
+            if (!next.some((layer) => layer.path === item.path)) {
+              next.push({ ...DEFAULT_WATERMARK_LAYER, path: item.path, enabled: true });
+            }
+          }
+          onChange("watermark_layers", next);
+          onChange("use_image_watermark", true);
+          setWatermarkPickerOpen(false);
+        }}
+      />
     </aside>
   );
 }

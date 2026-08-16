@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -10,10 +10,13 @@ import {
   FolderOpen,
   Gauge,
   HardDrive,
+  LibraryBig,
   Moon,
   Play,
   Save,
+  SlidersHorizontal,
   Sun,
+  Terminal,
 } from "lucide-react";
 import { FALLBACK_CONFIG } from "./constants";
 import { engine } from "./engine";
@@ -22,10 +25,17 @@ import { JobManifest } from "./components/JobManifest";
 import { PreviewStage } from "./components/PreviewStage";
 import { UpdateCenter } from "./components/UpdateCenter";
 import { WorkspaceRail } from "./components/WorkspaceRail";
+import { applyPresetToConfig, duplicateWorkspaceList, moveCutWorkspaceList, reorderWorkspaceList } from "./utils/workspaceOps";
+
+// 弹窗类组件按需加载，缩小首屏包体
+const MaterialLibrary = lazy(() => import("./components/MaterialLibrary").then((module) => ({ default: module.MaterialLibrary })));
+const LogDrawer = lazy(() => import("./components/LogDrawer").then((module) => ({ default: module.LogDrawer })));
+const PresetCenter = lazy(() => import("./components/PresetCenter").then((module) => ({ default: module.PresetCenter })));
 import type {
   EngineEvent,
   EngineState,
   JobState,
+  LogEntry,
   PreviewAsset,
   SystemSnapshot,
   ValidationIssue,
@@ -274,6 +284,12 @@ export default function App() {
   const [previewSequences, setPreviewSequences] = useState<Record<string, number>>({});
   const [previewReadySequences, setPreviewReadySequences] = useState<Record<string, number>>({});
   const [inspectorTab, setInspectorTab] = useState<InspectorTabId>("basic");
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [extractBusy, setExtractBusy] = useState(false);
+  const [presetOpen, setPresetOpen] = useState(false);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logOpen, setLogOpen] = useState(false);
+  const logSequence = useRef(0);
   const [locate, setLocate] = useState<{ field: string; token: number } | null>(null);
   const locateToken = useRef(0);
   const locatedElRef = useRef<HTMLElement | null>(null);
@@ -425,6 +441,21 @@ export default function App() {
 
   useEffect(() => {
     const unsubscribe = engine.subscribe(updateJobFromEvent);
+    const unsubscribeLogs = engine.subscribe((event) => {
+      if (event.type !== "event" || !["engine.log", "job.log"].includes(event.event)) return;
+      const payload = event.payload;
+      const message = String(payload.message ?? "").trim();
+      if (!message) return;
+      logSequence.current += 1;
+      const entry: LogEntry = {
+        id: logSequence.current,
+        ts: Date.now(),
+        stream: String(payload.stream ?? "engine"),
+        jobId: payload.job_id != null ? String(payload.job_id) : undefined,
+        message,
+      };
+      setLogs((current) => [...current.slice(-499), entry]);
+    });
     const unsubscribeReady = engine.subscribe((event) => {
       if (event.type === "event" && event.event === "engine.ready" && !cancelled) setReady(true);
     });
@@ -463,6 +494,7 @@ export default function App() {
     return () => {
       cancelled = true;
       unsubscribe();
+      unsubscribeLogs();
       unsubscribeReady();
     };
   }, [demoMode, refreshSystem, updateJobFromEvent]);
@@ -470,7 +502,15 @@ export default function App() {
   useEffect(() => {
     if (!ready || demoMode) return;
     const serializable = workspaces.map(({ preview: _preview, validationErrors: _errors, validationIssues: _issues, ...workspace }) => workspace);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
+    // 防抖：连续编辑只写一次，避免高频 JSON.stringify 大数组
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
+      } catch {
+        /* 存储失败不影响使用 */
+      }
+    }, 500);
+    return () => window.clearTimeout(timer);
   }, [demoMode, ready, workspaces]);
 
   useEffect(() => {
@@ -614,6 +654,7 @@ export default function App() {
     activeWorkspace?.config.total_duration,
     activeWorkspace?.config.use_bgm,
     activeWorkspace?.config.bgm_dir,
+    activeWorkspace?.config.bgm_files,
     activeWorkspace?.config.watermark_audio,
     activeWorkspace?.config.image_selection_mode,
     demoMode,
@@ -747,6 +788,82 @@ export default function App() {
     setActiveId(next[0].id);
   }, [activeId, workspaces]);
 
+  // ---------- 侧栏编辑：重命名 / 复制 / 剪切 / 粘贴 / 排序 ----------
+
+  const [clipboard, setClipboard] = useState<{ mode: "copy" | "cut"; id: string } | null>(null);
+
+  const renameWorkspace = useCallback((id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    patchWorkspace(id, { name: trimmed, dirty: true });
+  }, [patchWorkspace]);
+
+  const duplicateWorkspaceById = useCallback((id: string) => {
+    setWorkspaces((current) => {
+      const result = duplicateWorkspaceList(current, id);
+      setActiveId(result.next.id);
+      return result.list;
+    });
+  }, []);
+
+  const cutWorkspace = useCallback((id: string) => {
+    setClipboard((current) => {
+      if (current?.mode === "cut" && current.id === id) {
+        showNotice("info", "已取消剪切");
+        return null;
+      }
+      const workspace = workspaces.find((item) => item.id === id);
+      showNotice("info", `已剪切「${workspace?.name ?? ""}」，右键其他工作区选择「粘贴到此」`);
+      return { mode: "cut", id };
+    });
+  }, [showNotice, workspaces]);
+
+  const pasteWorkspace = useCallback((targetId: string) => {
+    if (!clipboard) return;
+    const source = workspaces.find((workspace) => workspace.id === clipboard.id);
+    const target = workspaces.find((workspace) => workspace.id === targetId);
+    if (!source) {
+      setClipboard(null);
+      return;
+    }
+    if (clipboard.mode === "cut") {
+      if (clipboard.id === targetId) {
+        setClipboard(null);
+        showNotice("info", "已取消剪切");
+        return;
+      }
+      setWorkspaces((current) => moveCutWorkspaceList(current, clipboard.id, targetId));
+      setClipboard(null);
+      setActiveId(source.id);
+      showNotice("success", `已把「${source.name}」移动到「${target?.name ?? ""}」之后`);
+      return;
+    }
+    setWorkspaces((current) => {
+      const result = duplicateWorkspaceList(current, clipboard.id);
+      setActiveId(result.next.id);
+      return result.list;
+    });
+    showNotice("success", `已复制「${source.name}」到「${target?.name ?? ""}」之后`);
+  }, [clipboard, showNotice, workspaces]);
+
+  const removeWorkspaceById = useCallback((id: string) => {
+    if (workspaces.length <= 1) return;
+    const next = workspaces.filter((workspace) => workspace.id !== id);
+    setWorkspaces(next);
+    if (activeId === id) setActiveId(next[0].id);
+    if (clipboard?.id === id) setClipboard(null);
+  }, [activeId, clipboard, workspaces]);
+
+  const reorderWorkspace = useCallback((dragId: string, targetId: string, position: "before" | "after" = "before") => {
+    if (dragId === targetId) return;
+    const source = workspaces.find((workspace) => workspace.id === dragId);
+    const target = workspaces.find((workspace) => workspace.id === targetId);
+    setWorkspaces((current) => reorderWorkspaceList(current, dragId, targetId, position));
+    if (source && target) {
+      showNotice("success", `已把「${source.name}」移动到「${target.name}」${position === "before" ? "之前" : "之后"}`);
+    }
+  }, [showNotice, workspaces]);
+
   const saveConfig = useCallback(async () => {
     if (!activeWorkspace) return;
     if (!engine.desktopRuntime) return showNotice("info", "保存配置需要在 Tauri 桌面窗口中运行");
@@ -794,8 +911,33 @@ export default function App() {
     }
   }, [showNotice]);
 
+  const copyPath = useCallback(async (path: string) => {
+    try {
+      await navigator.clipboard.writeText(path);
+      showNotice("success", "路径已复制到剪贴板");
+    } catch {
+      showNotice("error", "复制失败，请手动复制");
+    }
+  }, [showNotice]);
+
+  const applyPreset = useCallback((preset: { name: string; config: Partial<VideoConfig> }) => {
+    if (!activeWorkspace) return;
+    setPreviewSequences((current) => ({ ...current, [activeWorkspace.id]: 0 }));
+    setPreviewReadySequences((current) => ({ ...current, [activeWorkspace.id]: 0 }));
+    patchWorkspace(activeWorkspace.id, {
+      config: applyPresetToConfig(activeWorkspace.config, preset.config),
+      preview: null,
+      imageCount: null,
+      validationErrors: [],
+      validationIssues: [],
+      dirty: true,
+    });
+    showNotice("success", `已应用参数预设「${preset.name}」`);
+  }, [activeWorkspace, patchWorkspace, setPreviewReadySequences, setPreviewSequences, showNotice]);
+
   const activeHasRunningJob = jobs.some((job) => job.workspaceId === activeWorkspace?.id && ["queued", "running", "paused", "cancelling"].includes(job.status));
   const hasRunningJobs = jobs.some((job) => ["queued", "running", "paused", "cancelling"].includes(job.status));
+  const hasBusyWork = hasRunningJobs || extractBusy;
   const canRun = engineState.connected || demoMode;
   const randomPreview = () => {
     setPreviewSequences((current) => ({
@@ -852,9 +994,12 @@ export default function App() {
         <nav className="command-actions" aria-label="项目命令">
           <button type="button" onClick={loadConfig}><ArchiveRestore size={15} />加载</button>
           <button type="button" onClick={saveConfig}><Save size={15} />保存</button>
+          <button type="button" onClick={() => setPresetOpen(true)}><SlidersHorizontal size={15} />预设</button>
           <button type="button" onClick={() => revealPath(activeWorkspace.config.output_dir)} disabled={!activeWorkspace.config.output_dir}><FolderOpen size={15} />输出</button>
+          <button type="button" onClick={() => setLibraryOpen(true)}><LibraryBig size={15} />素材库</button>
+          <button type="button" onClick={() => setLogOpen((value) => !value)} aria-pressed={logOpen} aria-label="运行日志"><Terminal size={15} />日志{logs.some((entry) => entry.stream === "stderr") ? <span className="log-indicator" aria-label="有错误日志" /> : null}</button>
           <button type="button" onClick={optimizeMemory} disabled={!engineState.connected}><Gauge size={15} />整理</button>
-          <UpdateCenter hasActiveJobs={hasRunningJobs} />
+          <UpdateCenter hasActiveJobs={hasBusyWork} />
           <button type="button" className="theme-button" onClick={() => setTheme((value) => value === "light" ? "dark" : "light")} aria-label={theme === "light" ? "切换深色主题" : "切换浅色主题"}>
             {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
           </button>
@@ -895,9 +1040,16 @@ export default function App() {
           workspaces={workspaces}
           jobs={jobs}
           activeId={activeWorkspace.id}
+          clipboard={clipboard}
           onSelect={setActiveId}
           onAdd={() => void addWorkspace()}
           onDuplicate={duplicateWorkspace}
+          onRename={renameWorkspace}
+          onDuplicateId={duplicateWorkspaceById}
+          onCut={cutWorkspace}
+          onPaste={pasteWorkspace}
+          onRemoveId={removeWorkspaceById}
+          onReorder={reorderWorkspace}
           onRemove={removeWorkspace}
         />
         <div
@@ -985,6 +1137,7 @@ export default function App() {
         onResume={(id) => void controlJob("resume_job", id)}
         onCancel={(id) => void controlJob("cancel_job", id)}
         onReveal={revealPath}
+        onCopyPath={copyPath}
         onClearCompleted={() => setJobs((current) => {
           const next = current.filter((job) => !["completed", "failed", "cancelled"].includes(job.status));
           jobsRef.current = next;
@@ -994,6 +1147,33 @@ export default function App() {
 
       {!ready ? <div className="boot-status" role="status"><Gauge className="is-spinning" size={18} />正在校准本地工作台…</div> : null}
       {notice ? <div className={`toast toast-${notice.kind}`} role="status">{notice.kind === "success" ? <Check size={16} /> : notice.kind === "error" ? <CircleAlert size={16} /> : <Gauge size={16} />}{notice.message}</div> : null}
+
+      <Suspense fallback={null}>
+        <MaterialLibrary
+          open={libraryOpen}
+          onClose={() => setLibraryOpen(false)}
+          config={activeWorkspace.config}
+          onChange={updateConfig}
+          notify={showNotice}
+          onReveal={revealPath}
+          onExtractBusyChange={setExtractBusy}
+        />
+
+        <LogDrawer
+          logs={logs}
+          open={logOpen}
+          onClose={() => setLogOpen(false)}
+          onClear={() => setLogs([])}
+        />
+
+        <PresetCenter
+          open={presetOpen}
+          onClose={() => setPresetOpen(false)}
+          config={activeWorkspace.config}
+          onApply={applyPreset}
+          notify={showNotice}
+        />
+      </Suspense>
     </div>
   );
 }

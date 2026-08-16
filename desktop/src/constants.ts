@@ -66,6 +66,7 @@ export const FALLBACK_CONFIG: VideoConfig = {
   video_effect_speed: 1.3,
   use_bgm: false,
   bgm_dir: "",
+  bgm_files: [],
   random_bgm: false,
   bgm_volume: 0.5,
   loop_bgm: false,

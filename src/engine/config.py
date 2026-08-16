@@ -92,6 +92,7 @@ def build_default_config() -> dict[str, Any]:
         "video_effect_speed": 1.3,
         "use_bgm": False,
         "bgm_dir": "",
+        "bgm_files": [],
         "random_bgm": False,
         "bgm_volume": 0.5,
         "loop_bgm": False,
@@ -142,6 +143,11 @@ def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
             VIDEO_EFFECT_ALIASES.get(str(effect), str(effect)) for effect in enabled_effects
         ]
     config["custom_prefix"] = str(config.get("custom_prefix") or "video").strip() or "video"
+    raw_files = config.get("bgm_files")
+    config["bgm_files"] = [
+        str(path) for path in raw_files
+        if isinstance(path, str) and str(path).strip()
+    ] if isinstance(raw_files, list) else []
     return config
 
 
@@ -196,11 +202,21 @@ def validate_config_detailed(raw: dict[str, Any] | None, check_files: bool = Tru
         issues.append({"field": "output_dir", "section": "basic", "message": "请先选择「输出目录」（视频保存位置）。"})
 
     if check_files and bool(config.get("use_bgm")) and str(config.get("watermark_audio", "使用BGM")) in {"使用BGM", "两者混合"}:
-        bgm_dir = str(config.get("bgm_dir", "") or "").strip()
-        if not bgm_dir or not Path(bgm_dir).is_dir():
-            issues.append({"field": "bgm_dir", "section": "basic", "message": "找不到 BGM 目录，请重新选择存放音频的文件夹。"})
-        elif not scan_audio_files(bgm_dir):
-            issues.append({"field": "bgm_dir", "section": "basic", "message": "BGM 目录里没有可用的音频文件，请放入 mp3 / wav 等音频后再试。"})
+        bgm_files = config.get("bgm_files") or []
+        if bgm_files:
+            missing = [path for path in bgm_files if not os.path.isfile(path)]
+            if missing:
+                issues.append({
+                    "field": "bgm_files",
+                    "section": "basic",
+                    "message": f"选定的 BGM 素材不存在：{os.path.basename(missing[0])}，请在素材库中重新选择。",
+                })
+        else:
+            bgm_dir = str(config.get("bgm_dir", "") or "").strip()
+            if not bgm_dir or not Path(bgm_dir).is_dir():
+                issues.append({"field": "bgm_dir", "section": "basic", "message": "找不到 BGM 目录，请重新选择存放音频的文件夹。"})
+            elif not scan_audio_files(bgm_dir):
+                issues.append({"field": "bgm_dir", "section": "basic", "message": "BGM 目录里没有可用的音频文件，请放入 mp3 / wav 等音频后再试。"})
 
     try:
         num_images = int(config.get("num_images", 0))

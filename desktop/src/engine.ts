@@ -182,6 +182,16 @@ export class EngineBridge {
       return { valid: issues.length === 0, issues } as T;
     }
     if (method === "scan_images") return { count: 0, images: [] } as T;
+    if (method === "library_dirs") {
+      return { library_root: "", bgm_dir: "", watermark_dir: "" } as T;
+    }
+    if (method === "library_snapshot") {
+      return { library_root: "", bgm_dir: "", watermark_dir: "", bgm: [], bgm_folders: [], watermark: [], watermark_folders: [] } as T;
+    }
+    if (method === "library_import") return { results: [] } as T;
+    if (method === "library_preview_audio") {
+      throw new Error("音频试听需要在 Tauri 桌面窗口中运行");
+    }
     if (method === "system_snapshot") {
       return {
         cpu_percent: 0,

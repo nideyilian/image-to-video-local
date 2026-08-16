@@ -1,35 +1,57 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { isTauri } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { Check, CircleAlert, Download, RefreshCw, Rocket, X } from "lucide-react";
+import { Check, CircleAlert, Download, ExternalLink, RefreshCw, Rocket, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { formatBytes } from "../utils/workspaceOps";
 
 const AUTO_CHECK_KEY = "image-to-video.auto-check-updates";
+const PROXY_KEY = "image-to-video.update-proxy";
 const AUTO_CHECK_INTERVAL = 6 * 60 * 60 * 1000;
+const CHECK_TIMEOUT = 20_000;
+const DOWNLOAD_TIMEOUT = 10 * 60 * 1000; // 下载可能很慢，放宽到 10 分钟
+
+const RELEASE_PAGE = "https://github.com/nideyilian/image-to-video-local/releases/latest";
+const MIRROR_PREFIX = "https://mirror.ghproxy.com/";
+const RELEASE_PAGE_MIRROR = `${MIRROR_PREFIX}${RELEASE_PAGE}`;
 
 type UpdatePhase = "idle" | "checking" | "available" | "downloading" | "installing" | "current" | "error";
+type ErrorKind = "network" | "signature" | "format" | "other";
 
 type UpdateCenterProps = {
   hasActiveJobs: boolean;
 };
 
-function errorMessage(error: unknown) {
+function classifyError(error: unknown): { kind: ErrorKind; message: string } {
   const detail = error instanceof Error ? error.message : String(error);
-  if (/release json|fetch|network|connect|timed? out/i.test(detail)) {
-    return "暂时无法读取 GitHub 最新版本，请检查网络或稍后重试。";
+  if (/signature|digest|hash|public key|密钥|签名/i.test(detail)) {
+    return { kind: "signature", message: "安装包签名校验失败：下载内容可能不完整或发布文件异常，请稍后重试。" };
   }
-  return detail || "检查更新失败，请稍后重试。";
+  if (/json|schema|malformed|invalid version|parse/i.test(detail)) {
+    return { kind: "format", message: "更新信息解析失败：服务器返回的数据格式异常，请稍后重试。" };
+  }
+  if (/fetch|network|connect|timed? ?out|ECONN|refused|proxy|reqwest|hyper|dns|lookup/i.test(detail)) {
+    return {
+      kind: "network",
+      message:
+        "无法连接更新服务器（国内网络访问 GitHub 可能受限）。已自动按顺序尝试 GitHub 与多个国内镜像源，仍然失败时，请稍后重试，或使用下方「手动下载」入口从镜像站获取安装包。",
+    };
+  }
+  return { kind: "other", message: detail || "检查更新失败，请稍后重试。" };
 }
 
 export function UpdateCenter({ hasActiveJobs }: UpdateCenterProps) {
   const desktopRuntime = isTauri();
   const [open, setOpen] = useState(false);
   const [autoCheck, setAutoCheck] = useState(() => localStorage.getItem(AUTO_CHECK_KEY) !== "false");
+  const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem(PROXY_KEY) ?? "");
   const [currentVersion, setCurrentVersion] = useState("");
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [phase, setPhase] = useState<UpdatePhase>("idle");
+  const [errorKind, setErrorKind] = useState<ErrorKind | null>(null);
   const [message, setMessage] = useState("");
   const [downloaded, setDownloaded] = useState(0);
   const [contentLength, setContentLength] = useState(0);
@@ -42,11 +64,22 @@ export function UpdateCenter({ hasActiveJobs }: UpdateCenterProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
+  const packageSize = (() => {
+    const size = availableUpdate?.rawJson?.size;
+    return typeof size === "number" && Number.isFinite(size) && size > 0 ? formatBytes(size) : null;
+  })();
+
+  const installerUrl = (() => {
+    const url = availableUpdate?.rawJson?.url;
+    return typeof url === "string" && url.startsWith("https://") ? url : null;
+  })();
+
   const checkForUpdates = useCallback(async (interactive: boolean) => {
     if (!desktopRuntime) {
       if (interactive) {
         setOpen(true);
         setPhase("error");
+        setErrorKind("other");
         setMessage("更新功能仅在安装后的桌面应用中可用。");
       }
       return;
@@ -63,9 +96,10 @@ export function UpdateCenter({ hasActiveJobs }: UpdateCenterProps) {
     checkingRef.current = true;
     if (interactive) setOpen(true);
     setPhase("checking");
-    setMessage("正在连接 GitHub 检查最新版本…");
+    setErrorKind(null);
+    setMessage("正在检查更新（自动依次连接 GitHub 与国内镜像源）…");
     try {
-      const update = await check({ timeout: 20_000 });
+      const update = await check({ timeout: CHECK_TIMEOUT, proxy: proxyUrl || undefined });
       if (!mountedRef.current) {
         if (update) void update.close();
         return;
@@ -85,8 +119,10 @@ export function UpdateCenter({ hasActiveJobs }: UpdateCenterProps) {
     } catch (error) {
       console.warn("自动更新检查失败", error);
       if (interactive) {
+        const classified = classifyError(error);
+        setErrorKind(classified.kind);
         setPhase("error");
-        setMessage(errorMessage(error));
+        setMessage(classified.message);
       } else {
         setPhase("idle");
         setMessage("");
@@ -94,7 +130,7 @@ export function UpdateCenter({ hasActiveJobs }: UpdateCenterProps) {
     } finally {
       checkingRef.current = false;
     }
-  }, [availableUpdate, desktopRuntime]);
+  }, [availableUpdate, desktopRuntime, proxyUrl]);
 
   useEffect(() => {
     if (!desktopRuntime) return;
@@ -117,6 +153,10 @@ export function UpdateCenter({ hasActiveJobs }: UpdateCenterProps) {
       window.clearInterval(interval);
     };
   }, [autoCheck, availableUpdate, checkForUpdates, desktopRuntime]);
+
+  useEffect(() => {
+    localStorage.setItem(PROXY_KEY, proxyUrl);
+  }, [proxyUrl]);
 
   useEffect(() => {
     updatingRef.current = updating;
@@ -162,7 +202,7 @@ export function UpdateCenter({ hasActiveJobs }: UpdateCenterProps) {
   const installUpdate = useCallback(async () => {
     if (!availableUpdate || hasActiveJobs) return;
     setPhase("downloading");
-    setMessage("正在安全下载更新包…");
+    setMessage("正在安全下载更新包，请耐心等待…");
     setDownloaded(0);
     setContentLength(0);
     try {
@@ -177,13 +217,31 @@ export function UpdateCenter({ hasActiveJobs }: UpdateCenterProps) {
         }
         setPhase("installing");
         setMessage("下载完成，正在安装并重新启动…");
-      });
+      }, { timeout: DOWNLOAD_TIMEOUT });
       await relaunch();
     } catch (error) {
+      const classified = classifyError(error);
+      setErrorKind(classified.kind);
       setPhase("error");
-      setMessage(`更新失败：${errorMessage(error)}`);
+      setMessage(`更新失败：${classified.message}`);
     }
   }, [availableUpdate, hasActiveJobs]);
+
+  const openManualDownload = useCallback(() => {
+    // 优先直接下载安装包（走镜像加速）；失败时打开下载页兜底
+    if (installerUrl) {
+      void openUrl(`${MIRROR_PREFIX}${installerUrl}`);
+    } else {
+      void openUrl(RELEASE_PAGE_MIRROR);
+    }
+  }, [installerUrl]);
+
+  const openReleasePage = useCallback(() => {
+    void openUrl(RELEASE_PAGE);
+  }, []);
+
+  const showManualRow = phase === "error" && errorKind === "network";
+  const downloading = phase === "downloading";
 
   const dialog = open ? (
     <div className="update-backdrop" role="presentation" onMouseDown={() => { if (!updating) setOpen(false); }}>
@@ -199,7 +257,7 @@ export function UpdateCenter({ hasActiveJobs }: UpdateCenterProps) {
 
         <div className="update-dialog-body">
           <div id="update-status" className={`update-state update-state-${phase}`} aria-live="polite">
-            {phase === "checking" || phase === "downloading" || phase === "installing" ? <RefreshCw className="is-spinning" size={18} /> : null}
+            {checking || downloading || phase === "installing" ? <RefreshCw className="is-spinning" size={18} /> : null}
             {phase === "available" ? <Download size={18} /> : null}
             {phase === "current" ? <Check size={18} /> : null}
             {phase === "error" ? <CircleAlert size={18} /> : null}
@@ -209,23 +267,58 @@ export function UpdateCenter({ hasActiveJobs }: UpdateCenterProps) {
           {availableUpdate ? (
             <div className="update-release">
               <div><span>可用版本</span><strong>{availableUpdate.version}</strong></div>
+              <div><span>安装包大小</span><strong>{packageSize ?? "未知"}</strong></div>
               {availableUpdate.date ? <div><span>发布时间</span><strong>{new Date(availableUpdate.date).toLocaleDateString("zh-CN")}</strong></div> : null}
               <p>{availableUpdate.body?.trim() || "此版本包含功能改进与问题修复。"}</p>
             </div>
           ) : null}
 
-          {phase === "downloading" ? (
+          {downloading ? (
             <div className="update-progress" aria-label={`更新下载进度 ${progress}%`}>
               <span style={{ transform: `scaleX(${progress / 100})` }} />
               <small>{contentLength > 0 ? `已下载 ${progress}%` : "正在准备下载…"}</small>
             </div>
           ) : null}
 
-          {availableUpdate && hasActiveJobs ? <p className="update-warning"><CircleAlert size={15} />请先等待当前渲染任务结束或取消任务，避免更新时中断导出。</p> : null}
+          {availableUpdate && hasActiveJobs ? <p className="update-warning"><CircleAlert size={15} />请先等待当前渲染 / 拆解任务结束或取消任务，避免更新时中断导出。</p> : null}
+
+          {showManualRow ? (
+            <div className="update-manual">
+              <p><ExternalLink size={14} />自动检查连接失败，可手动下载安装包（运行后覆盖安装，效果与自动更新一致）：</p>
+              <div className="update-manual-actions">
+                <button type="button" className="quiet-button" onClick={openManualDownload}><Download size={13} />镜像站加速下载</button>
+                <button type="button" className="quiet-button" onClick={openReleasePage}><ExternalLink size={13} />打开 GitHub 下载页</button>
+              </div>
+            </div>
+          ) : null}
+
+          {availableUpdate && !updating ? (
+            <div className="update-manual">
+              <p><ExternalLink size={14} />自动下载较慢时，可手动下载安装包（覆盖安装后即为新版本）：</p>
+              <div className="update-manual-actions">
+                <button type="button" className="quiet-button" onClick={openManualDownload}><Download size={13} />镜像站加速下载</button>
+                <button type="button" className="quiet-button" onClick={openReleasePage}><ExternalLink size={13} />打开 GitHub 下载页</button>
+              </div>
+            </div>
+          ) : null}
+
+          <details className="update-proxy">
+            <summary>网络代理设置（可选，仅当需要走代理访问 GitHub 时填写）</summary>
+            <div className="update-proxy-row">
+              <input
+                type="text"
+                value={proxyUrl}
+                onChange={(event) => setProxyUrl(event.target.value.trim())}
+                placeholder="例如 http://127.0.0.1:7890"
+                aria-label="代理地址"
+              />
+              <small>代理地址会同时用于检查与下载更新，仅保存在本机。</small>
+            </div>
+          </details>
 
           <label className="update-setting">
             <input type="checkbox" checked={autoCheck} onChange={(event) => setAutoCheck(event.target.checked)} />
-            <span><strong>启动时自动检查更新</strong><small>发现 GitHub 新版本后立即提醒；不会自动中断任务。</small></span>
+            <span><strong>启动时自动检查更新</strong><small>自动依次连接 GitHub 与国内镜像源；发现新版本后立即提醒，不会自动中断任务。</small></span>
           </label>
         </div>
 

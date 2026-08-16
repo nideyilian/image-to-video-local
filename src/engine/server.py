@@ -16,6 +16,7 @@ from typing import Any
 
 from ..utils.ffmpeg_runtime import configure_ffmpeg_environment, probe_ffmpeg
 from .config import build_default_config, normalize_config, scan_audio_files, scan_images, validate_config, validate_config_detailed
+from .library import LibraryManager, _probe_duration
 from .preview_random import preview_choice, preview_sample
 from .runner import JobManager
 
@@ -45,6 +46,7 @@ class EngineServer:
         self._output_lock = threading.Lock()
         self._running = True
         self.jobs = JobManager(self.project_root, callback=self.emit)
+        self.library = LibraryManager(self.project_root, self.ffmpeg_path, callback=self.emit)
 
     def _ensure_ffmpeg_probed(self) -> None:
         """惰性探测 ffmpeg，只在 system_snapshot / 预览等真正需要时才执行。"""
@@ -89,6 +91,7 @@ class EngineServer:
                     "cancel",
                     "multi-job",
                     "system-snapshot",
+                    "library",
                 ],
             }
         if method == "system_snapshot":
@@ -128,6 +131,14 @@ class EngineServer:
             from .effect_preview import render_effect_preview
 
             return render_effect_preview(params)
+        if method == "effect_library_assets":
+            from .effect_preview import ensure_effect_library_assets
+
+            return ensure_effect_library_assets()
+        if method == "effect_preview_animation":
+            from .effect_preview import render_effect_animation
+
+            return render_effect_animation(params)
         if method == "preview_bgm":
             return self._preview_bgm(params)
         if method == "start_job":
@@ -140,6 +151,28 @@ class EngineServer:
             return self.jobs.cancel(str(params.get("job_id", "")))
         if method == "list_jobs":
             return self.jobs.list_jobs()
+        if method == "library_dirs":
+            return self.library.default_dirs()
+        if method == "library_snapshot":
+            return self.library.snapshot(params)
+        if method == "library_import":
+            return self.library.import_files(params)
+        if method == "library_remove":
+            return self.library.remove(params)
+        if method == "library_create_folder":
+            return self.library.create_folder(params)
+        if method == "library_rename_folder":
+            return self.library.rename_folder(params)
+        if method == "library_delete_folder":
+            return self.library.delete_folder(params)
+        if method == "library_move":
+            return self.library.move(params)
+        if method == "library_preview_audio":
+            return self._library_preview_audio(params)
+        if method == "library_extract_bgm":
+            return self.library.start_extract(params)
+        if method == "library_extract_cancel":
+            return self.library.cancel_extract(params)
         if method == "shutdown":
             self._running = False
             return {"shutting_down": True}
@@ -188,28 +221,91 @@ class EngineServer:
             candidates = scan_images(input_dir, limit=1)
             source = candidates[0] if candidates else ""
         if not source or not Path(source).is_file():
-            raise ValueError("没有可预览的图片")
+            raise ValueError("没有可预览的素材")
 
+        from .library import VIDEO_EXTENSIONS, _probe_duration
+
+        source_path = Path(source)
+        is_video = source_path.suffix.lower() in VIDEO_EXTENSIONS
         max_width = max(64, min(1920, int(params.get("max_width", 960) or 960)))
         max_height = max(64, min(1080, int(params.get("max_height", 540) or 540)))
         preview_dir = Path(tempfile.gettempdir()) / "image-to-video-engine" / "previews"
         preview_dir.mkdir(parents=True, exist_ok=True)
-        stat = Path(source).stat()
-        cache_key = f"{Path(source).resolve()}:{stat.st_mtime_ns}:{max_width}x{max_height}"
+        stat = source_path.stat()
+        cache_key = f"{source_path.resolve()}:{stat.st_mtime_ns}:{max_width}x{max_height}"
         import hashlib
 
         preview_path = preview_dir / f"{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()}.jpg"
-        with Image.open(source) as image:
-            image = image.convert("RGB")
-            image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-            width, height = image.size
+        width, height = 0, 0
+        duration: float | None = None
+        if is_video:
+            # 视频：用 ffmpeg 提取中段一帧作为预览
+            if not self.ffmpeg_path:
+                raise ValueError("未找到 FFmpeg，无法预览视频素材")
+            duration = _probe_duration(self.library._ffprobe(), source_path)
             if not preview_path.exists():
-                image.save(preview_path, "JPEG", quality=88, optimize=True)
+                seek = max(0.0, (duration or 0.0) / 2 - 0.05)
+                temporary_path = preview_path.with_name(
+                    f".{preview_path.stem}-{os.getpid()}-{threading.get_ident()}.tmp.jpg"
+                )
+                startupinfo = None
+                creationflags = 0
+                if sys.platform == "win32":
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = subprocess.SW_HIDE
+                    creationflags = subprocess.CREATE_NO_WINDOW
+                try:
+                    result = subprocess.run(
+                        [
+                            self.ffmpeg_path,
+                            "-hide_banner",
+                            "-loglevel", "error",
+                            "-nostdin",
+                            "-y",
+                            "-ss", f"{seek:.3f}",
+                            "-i", str(source_path),
+                            "-frames:v", "1",
+                            "-vf", f"scale='min({max_width},iw)':'min({max_height},ih)':force_original_aspect_ratio=decrease",
+                            str(temporary_path),
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=60,
+                        check=False,
+                        startupinfo=startupinfo,
+                        creationflags=creationflags,
+                    )
+                    if result.returncode != 0 or not temporary_path.is_file():
+                        detail = next(
+                            (line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()),
+                            source_path.name,
+                        )
+                        raise ValueError(f"视频预览失败：{detail}")
+                    os.replace(temporary_path, preview_path)
+                except subprocess.TimeoutExpired as exc:
+                    raise ValueError("视频预览超时") from exc
+                finally:
+                    temporary_path.unlink(missing_ok=True)
+            with Image.open(preview_path) as image:
+                width, height = image.size
+        else:
+            with Image.open(source_path) as image:
+                image = image.convert("RGB")
+                image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+                width, height = image.size
+                if not preview_path.exists():
+                    image.save(preview_path, "JPEG", quality=88, optimize=True)
         return {
-            "source": str(Path(source).resolve()),
+            "source": str(source_path.resolve()),
             "preview_path": str(preview_path.resolve()),
             "width": width,
             "height": height,
+            "kind": "video" if is_video else "image",
+            "duration": duration,
         }
 
     def _preview_bgm(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -221,10 +317,23 @@ class EngineServer:
             return {"enabled": False, "reason": f"声音策略：{strategy}"}
 
         bgm_dir = str(config.get("bgm_dir", "") or "").strip()
-        if not bgm_dir or not Path(bgm_dir).is_dir():
-            raise ValueError("BGM目录不存在，请重新选择")
-        candidates = scan_audio_files(bgm_dir)
+        raw_explicit = [
+            str(path) for path in (config.get("bgm_files") or [])
+            if isinstance(path, str) and str(path).strip()
+        ]
+        explicit_files = [path for path in raw_explicit if Path(path).expanduser().is_file()]
+        if explicit_files:
+            candidates = explicit_files
+        elif raw_explicit:
+            # 素材库显式选定了 BGM，但文件已全部不存在
+            raise ValueError("所选 BGM 文件已不存在，请重新在素材库中选择")
+        else:
+            if not bgm_dir or not Path(bgm_dir).is_dir():
+                raise ValueError("BGM目录不存在，请重新选择")
+            candidates = scan_audio_files(bgm_dir)
         if not candidates:
+            if raw_explicit:
+                raise ValueError("所选 BGM 文件已不存在，请重新在素材库中选择")
             raise ValueError("BGM目录中没有可用音频")
 
         preview_sequence = int(params.get("preview_sequence", 0) or 0)
@@ -232,7 +341,8 @@ class EngineServer:
         if preview_sequence > 0:
             source = Path(preview_choice(candidates, preview_sequence, "bgm") or candidates[0])
         elif bool(config.get("random_bgm")) and len(candidates) > 1:
-            seed = hashlib.sha1(str(Path(bgm_dir).resolve()).encode("utf-8")).digest()
+            seed_source = "|".join(explicit_files) if explicit_files else str(Path(bgm_dir).resolve())
+            seed = hashlib.sha1(seed_source.encode("utf-8")).digest()
             source = Path(candidates[int.from_bytes(seed[:4], "big") % len(candidates)])
 
         stat = source.stat()
@@ -305,6 +415,83 @@ class EngineServer:
             "name": source.name,
             "mime_type": "audio/mpeg",
             "random": bool(config.get("random_bgm")),
+        }
+
+    def _library_preview_audio(self, params: dict[str, Any]) -> dict[str, Any]:
+        """把素材库中的任意音频转码为浏览器可播放的 MP3 预览。"""
+        source = Path(str(params.get("path", "") or "")).expanduser()
+        if not source.is_file():
+            raise ValueError("音频文件不存在")
+        stat = source.stat()
+        cache_key = f"mp3-v1:{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+        preview_dir = Path(tempfile.gettempdir()) / "image-to-video-engine" / "audio-previews"
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        preview_path = preview_dir / f"{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()}.mp3"
+        if not preview_path.exists():
+            if not self.ffmpeg_path:
+                raise ValueError("未找到 FFmpeg，无法读取音频预览")
+            temporary_path = preview_path.with_name(
+                f".{preview_path.stem}-{os.getpid()}-{threading.get_ident()}.tmp.mp3"
+            )
+            startupinfo = None
+            creationflags = 0
+            if sys.platform == "win32":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                creationflags = subprocess.CREATE_NO_WINDOW
+            try:
+                result = subprocess.run(
+                    [
+                        self.ffmpeg_path,
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-nostdin",
+                        "-y",
+                        "-i",
+                        str(source),
+                        "-map",
+                        "0:a:0",
+                        "-vn",
+                        "-c:a",
+                        "libmp3lame",
+                        "-q:a",
+                        "4",
+                        "-ar",
+                        "44100",
+                        "-ac",
+                        "2",
+                        str(temporary_path),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=120,
+                    check=False,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                )
+                if result.returncode != 0 or not temporary_path.is_file():
+                    detail = next(
+                        (line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()),
+                        source.name,
+                    )
+                    raise ValueError(f"音频预览转换失败：{detail}")
+                os.replace(temporary_path, preview_path)
+            except subprocess.TimeoutExpired as exc:
+                raise ValueError("音频预览转换超时，请检查音频文件") from exc
+            finally:
+                temporary_path.unlink(missing_ok=True)
+        duration = _probe_duration(self.library._ffprobe(), source)
+        return {
+            "source": str(source.resolve()),
+            "preview_path": str(preview_path.resolve()),
+            "name": source.name,
+            "mime_type": "audio/mpeg",
+            "duration": duration,
         }
 
     def serve(self) -> int:

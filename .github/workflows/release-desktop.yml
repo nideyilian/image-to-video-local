@@ -75,3 +75,32 @@ jobs:
           updaterJsonPreferNsis: true
           uploadUpdaterJson: true
           args: --bundles nsis
+
+      - name: 写入具体发布说明
+        # 从 RELEASE_NOTES.md 中提取当前版本小节，替换自动生成的发布说明
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (Get-Content -Raw desktop/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $notesPath = Join-Path $env:GITHUB_WORKSPACE "RELEASE_NOTES.md"
+          if (-not (Test-Path $notesPath)) { Write-Host "未找到 RELEASE_NOTES.md，跳过"; exit 0 }
+          $content = Get-Content -Raw $notesPath
+          $pattern = "(?sm)##\s+v" + [regex]::Escape($version) + ".*?(?=^##\s+|\z)"
+          $match = [regex]::Match($content, $pattern)
+          if (-not $match.Success) { Write-Host "RELEASE_NOTES.md 中没有 v$version 小节，跳过"; exit 0 }
+          $body = $match.Value.Trim()
+          $tmp = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          [System.IO.File]::WriteAllText($tmp, $body, [System.Text.UTF8Encoding]::new($false))
+          gh release edit "v$version" --repo $env:GITHUB_REPOSITORY --notes-file $tmp
+          Write-Host "已写入 v$version 发布说明"
+
+      - name: 同步更新文件到 Gitee 镜像（可选）
+        # 未配置 GITEE_TOKEN / GITEE_REPO 时，脚本会直接跳过，不影响发布
+        shell: pwsh
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_REPO: ${{ secrets.GITEE_REPO }}
+        run: |
+          $version = (Get-Content -Raw desktop/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          ./desktop/scripts/sync-gitee.ps1 -Version $version -GiteeRepo $env:GITEE_REPO -GiteeToken $env:GITEE_TOKEN

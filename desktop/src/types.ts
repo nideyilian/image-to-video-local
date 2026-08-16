@@ -34,6 +34,7 @@ export type VideoConfig = {
   video_effect_speed: number;
   use_bgm: boolean;
   bgm_dir: string;
+  bgm_files: string[];
   random_bgm: boolean;
   bgm_volume: number;
   loop_bgm: boolean;
@@ -146,4 +147,83 @@ export type EngineEvent = {
   type: "event";
   event: string;
   payload: Record<string, unknown> & { job_id?: string };
+};
+
+export type LogEntry = {
+  id: number;
+  ts: number;
+  stream: "stdout" | "stderr" | "worker" | "engine" | string;
+  jobId?: string;
+  message: string;
+};
+
+export type LibraryKind = "bgm" | "watermark";
+
+export type LibraryItem = {
+  name: string;
+  path: string;
+  folder: string;
+  type: "audio" | "image" | "video" | string;
+  size_bytes: number;
+  duration: number | null;
+  added_at: string | null;
+  duplicate_key: string;
+};
+
+export type LibraryFolder = {
+  relative: string;
+  name: string;
+  path: string;
+  count: number;
+};
+
+export type LibraryDirs = {
+  library_root: string;
+  bgm_dir: string;
+  watermark_dir: string;
+};
+
+export type LibrarySnapshot = LibraryDirs & {
+  bgm: LibraryItem[];
+  bgm_folders: LibraryFolder[];
+  watermark: LibraryItem[];
+  watermark_folders: LibraryFolder[];
+};
+
+export type LibraryImportResult = {
+  name: string;
+  path: string;
+  status: "imported" | "duplicate" | "failed";
+  reason?: string;
+  folder?: string;
+  size_bytes?: number;
+  duration?: number | null;
+};
+
+export type LibraryMoveResult = {
+  name: string;
+  path: string;
+  status: "moved" | "duplicate" | "failed";
+  reason?: string;
+  folder?: string;
+  size_bytes?: number;
+  duration?: number | null;
+};
+
+export type LibraryExtractResult = {
+  video: string;
+  name: string;
+  path: string;
+  status: "saved" | "duplicate" | "no_audio" | "failed";
+  reason?: string;
+  duration?: number | null;
+};
+
+export type LibraryExtractSummary = {
+  saved: number;
+  duplicate: number;
+  no_audio: number;
+  failed: number;
+  cancelled: number;
+  total: number;
 };

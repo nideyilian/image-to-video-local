@@ -20,14 +20,17 @@ const OFF_STATE: BgmPreviewState = { status: "off", url: null, name: "", message
 
 export function useBgmPreview(workspace: Workspace, previewSequence = 0): BgmPreviewState {
   const [state, setState] = useState<BgmPreviewState>(OFF_STATE);
+  const bgmFiles = workspace.config.bgm_files ?? [];
   const identity = useMemo(() => JSON.stringify({
     enabled: workspace.config.use_bgm,
     directory: workspace.config.bgm_dir,
+    files: bgmFiles,
     random: workspace.config.random_bgm,
     strategy: workspace.config.watermark_audio,
     previewSequence,
   }), [
     workspace.config.bgm_dir,
+    workspace.config.bgm_files,
     workspace.config.random_bgm,
     workspace.config.use_bgm,
     workspace.config.watermark_audio,
@@ -44,8 +47,9 @@ export function useBgmPreview(workspace: Workspace, previewSequence = 0): BgmPre
       setState({ status: "off", url: null, name: "", message: `声音策略：${workspace.config.watermark_audio}` });
       return;
     }
-    if (!workspace.config.bgm_dir.trim()) {
-      setState({ status: "error", url: null, name: "", message: "请选择 BGM 目录" });
+    const hasExplicitBgm = bgmFiles.some((path) => path.trim().length > 0);
+    if (!hasExplicitBgm && !workspace.config.bgm_dir.trim()) {
+      setState({ status: "error", url: null, name: "", message: "请在素材库选择 BGM，或设置音频目录" });
       return;
     }
     if (!engine.desktopRuntime) {

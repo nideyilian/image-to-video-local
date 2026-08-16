@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 
 from ..utils.opencv_silent import import_cv2_silent
-from .config import normalize_config, scan_images
+from .config import build_default_config, normalize_config, scan_images
 from .preview_random import preview_choice
 
 
@@ -31,6 +31,108 @@ VIDEO_WATERMARK_ALPHA = {
     "变暗": 0.90,
     "相加": 0.95,
 }
+
+# 素材库「特效 / 转场」演示图尺寸与帧数
+LIBRARY_PREVIEW_WIDTH = 192
+LIBRARY_PREVIEW_HEIGHT = 108
+LIBRARY_PREVIEW_FRAMES = 8
+
+
+def ensure_effect_library_assets() -> dict[str, str]:
+    """生成（或复用）特效/转场演示源图，返回两张不同色系的图片路径。
+
+    A 图用于特效与转场的第一张，B 图仅用于转场第二张，保证过渡动画清晰可辨。
+    """
+    from PIL import Image, ImageDraw
+
+    preview_dir = Path(tempfile.gettempdir()) / "image-to-video-engine" / "effect-library"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    source_a = preview_dir / "source-a.png"
+    source_b = preview_dir / "source-b.png"
+    if source_a.is_file() and source_b.is_file():
+        return {"source_a": str(source_a.resolve()), "source_b": str(source_b.resolve())}
+
+    def draw_demo(path: Path, top: tuple[int, int, int], bottom: tuple[int, int, int], shape: str) -> None:
+        image = Image.new("RGB", (480, 270))
+        draw = ImageDraw.Draw(image)
+        for y in range(270):
+            ratio = y / 269
+            color = tuple(int(top[c] + (bottom[c] - top[c]) * ratio) for c in range(3))
+            draw.line([(0, y), (479, y)], fill=color)
+        if shape == "circle":
+            draw.ellipse([140, 60, 340, 210], fill=(255, 255, 255, 255), outline=(20, 30, 60, 255), width=6)
+            draw.ellipse([210, 120, 270, 180], fill=(30, 50, 90, 255))
+        else:
+            draw.polygon([(240, 50), (380, 220), (100, 220)], fill=(255, 255, 255, 255), outline=(60, 30, 20, 255))
+            draw.ellipse([200, 95, 280, 175], fill=(90, 50, 30, 255))
+        draw.text((18, 14), "演示画面 A" if path.name == "source-a.png" else "演示画面 B", fill=(255, 255, 255, 255))
+        image.save(path, "PNG")
+
+    draw_demo(source_a, (40, 90, 200), (120, 40, 160), "circle")
+    draw_demo(source_b, (200, 90, 40), (160, 40, 120), "triangle")
+    return {"source_a": str(source_a.resolve()), "source_b": str(source_b.resolve())}
+
+
+def render_effect_animation(params: dict[str, Any]) -> dict[str, Any]:
+    """渲染单个特效/转场的动画帧序列（素材库展示用）。
+
+    参数：kind = "effect" | "transition"；name = 特效/转场名称；
+    frames = 帧数（默认 8）；width/height = 帧尺寸（默认 192x108）。
+    帧通过 render_effect_preview 渲染并落盘缓存，重复调用直接命中。
+    """
+    kind = str(params.get("kind", "") or "").strip()
+    name = str(params.get("name", "") or "").strip()
+    if kind not in {"effect", "transition"}:
+        raise ValueError("动画类型必须是 effect 或 transition")
+    if not name:
+        raise ValueError("缺少效果名称")
+    frame_count = max(3, min(24, int(params.get("frames", LIBRARY_PREVIEW_FRAMES) or LIBRARY_PREVIEW_FRAMES)))
+    width = max(96, min(480, int(params.get("width", LIBRARY_PREVIEW_WIDTH) or LIBRARY_PREVIEW_WIDTH)))
+    height = max(54, min(270, int(params.get("height", LIBRARY_PREVIEW_HEIGHT) or LIBRARY_PREVIEW_HEIGHT)))
+
+    assets = ensure_effect_library_assets()
+    config = build_default_config()
+    config.update({
+        "duration": 1.0,
+        "fps": 30,
+        "resolution_preset": f"{width}x{height}",
+        "width": width,
+        "height": height,
+        "use_transition": kind == "transition",
+        "transition_type": name if kind == "transition" else "淡入淡出",
+        "random_transition": False,
+        "use_video_effect": kind == "effect",
+        "video_effect_type": name if kind == "effect" else "无特效",
+        "random_video_effect": False,
+        "use_watermark": False,
+        "use_image_watermark": False,
+        "use_bgm": False,
+    })
+    static_duration, transition_duration = preview_phase_timing(config, 1.0, kind == "transition")
+    frame_paths: list[str] = []
+    for index in range(frame_count):
+        ratio = index / max(1, frame_count - 1)
+        if kind == "transition" and transition_duration > 0:
+            time_sec = static_duration + transition_duration * ratio
+        else:
+            time_sec = static_duration * ratio
+        result = render_effect_preview({
+            "path": assets["source_a"],
+            "next_path": assets["source_b"] if kind == "transition" else "",
+            "config": config,
+            "time_sec": time_sec,
+            "max_width": width,
+            "max_height": height,
+        })
+        frame_paths.append(result["preview_path"])
+    return {
+        "kind": kind,
+        "name": name,
+        "frames": frame_paths,
+        "width": width,
+        "height": height,
+        "assets": assets,
+    }
 
 
 class _VideoWatermarkReader:

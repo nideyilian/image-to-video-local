@@ -114,8 +114,8 @@ def test_scan_images_preview_sequence_changes_only_preview_order(tmp_path):
 
 def test_validate_config_reports_missing_paths():
     errors = validate_config({}, check_files=False)
-    assert "请输入输入目录" in errors
-    assert "请输入输出目录" in errors
+    assert "请先选择「输入目录」（存放图片的文件夹），再开始导出。" in errors
+    assert "请先选择「输出目录」（视频保存位置）。" in errors
 
 
 def test_validate_config_reports_invalid_bgm_directory(tmp_path):
@@ -133,7 +133,7 @@ def test_validate_config_reports_invalid_bgm_directory(tmp_path):
         "watermark_audio": "使用BGM",
     })
 
-    assert "BGM目录不存在，请重新选择" in validate_config(config, check_files=True)
+    assert "找不到 BGM 目录，请重新选择存放音频的文件夹。" in validate_config(config, check_files=True)
 
 
 def test_fixed_total_duration_cycles_images():
@@ -253,6 +253,52 @@ def test_bgm_preview_transcodes_audio_for_webview_playback(tmp_path):
     assert result["mime_type"] == "audio/mpeg"
     assert cached_result["preview_path"] == result["preview_path"]
     assert "image-to-video-engine" in Path(result["preview_path"]).parts
+
+
+def test_bgm_preview_uses_explicit_library_files_without_bgm_dir(tmp_path):
+    """素材库选定的 BGM 文件优先于目录扫描，且不要求设置 bgm_dir。"""
+    music = tmp_path / "音乐"
+    music.mkdir()
+    first = music / "第一首.wav"
+    second = music / "第二首.wav"
+    for path in (first, second):
+        with wave.open(str(path), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(8000)
+            output.writeframes(b"\x00\x00" * 800)
+    config = build_default_config()
+    config.update({
+        "use_bgm": True,
+        "bgm_dir": "",
+        "bgm_files": [str(first), str(second)],
+        "watermark_audio": "使用BGM",
+    })
+
+    server = EngineServer(ROOT)
+    result = server._preview_bgm({"config": config, "preview_sequence": 1})
+
+    assert result["enabled"] is True
+    assert Path(result["source"]).resolve() == first.resolve()
+    assert Path(result["preview_path"]).is_file()
+
+
+def test_bgm_preview_reports_missing_explicit_files(tmp_path):
+    """显式选定的 BGM 文件已不存在时给出明确提示，而不是要求重新选择目录。"""
+    config = build_default_config()
+    config.update({
+        "use_bgm": True,
+        "bgm_dir": "",
+        "bgm_files": [str(tmp_path / "不存在.wav")],
+        "watermark_audio": "使用BGM",
+    })
+    server = EngineServer(ROOT)
+    try:
+        server._preview_bgm({"config": config})
+    except ValueError as exc:
+        assert "重新在素材库中选择" in str(exc)
+    else:
+        raise AssertionError("应提示所选 BGM 文件已不存在")
 
 
 def test_bgm_random_preview_cycles_without_changing_config(tmp_path):

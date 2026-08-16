@@ -13,14 +13,13 @@ hiddenimports = [
     "PIL.ImageTk",
     "psutil",
     "tqdm",
-    "pygame",
     "moviepy",
     "moviepy.editor",
     "imageio",
     "imageio_ffmpeg",
 ]
 
-for package in ("moviepy", "pygame", "imageio", "imageio_ffmpeg"):
+for package in ("moviepy", "imageio", "imageio_ffmpeg"):
     datas += collect_data_files(package)
     hiddenimports += collect_submodules(package)
 
@@ -38,7 +37,18 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["matplotlib", "scipy", "pandas"],
+    # 引擎 worker 走 Tk 管线：剔除 Qt 桌面 GUI 与未使用的媒体库，显著减小体积
+    excludes=[
+        "matplotlib",
+        "scipy",
+        "pandas",
+        "PySide6",
+        "shiboken6",
+        "pygame",
+        "pygame.sdl2",
+        "IPython",
+        "notebook",
+    ],
     noarchive=False,
     optimize=0,
 )
