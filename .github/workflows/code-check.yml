@@ -31,9 +31,10 @@ jobs:
           Expand-Archive -Path $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "ffmpeg") -Force
           $ffmpeg = Get-ChildItem (Join-Path $env:RUNNER_TEMP "ffmpeg") -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
           if (-not $ffmpeg) { throw "ffmpeg 下载失败" }
-          Add-Content $env:GITHUB_PATH (Split-Path $ffmpeg.FullName)
-          ffmpeg -version | Select-Object -First 1
-          ffprobe -version | Select-Object -First 1
+          $binDir = Split-Path $ffmpeg.FullName
+          Add-Content $env:GITHUB_PATH $binDir
+          & (Join-Path $binDir "ffmpeg.exe") -version | Select-Object -First 1
+          & (Join-Path $binDir "ffprobe.exe") -version | Select-Object -First 1
 
       - name: 运行引擎测试
         run: python -m pytest tests -q
