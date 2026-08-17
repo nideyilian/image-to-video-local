@@ -28,6 +28,11 @@ for package in ("imageio", "imageio_ffmpeg", "moviepy"):
 
 hiddenimports += collect_submodules("src")
 
+try:
+    hiddenimports += collect_submodules("send2trash")
+except Exception:
+    hiddenimports.append("send2trash")
+
 a = Analysis(
     ["engine_sidecar.py"],
     pathex=[],

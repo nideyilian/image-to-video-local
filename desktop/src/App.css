@@ -2967,6 +2967,14 @@ body.is-rail-dragging {
   border: none;
 }
 
+/* 拖拽移动：目标文件夹高亮 */
+.library-tree-folder.is-drop-target,
+.library-tree-node.is-drop-target {
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 12%, transparent);
+  border-radius: 3px;
+}
+
 .library-tree-folder > span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3142,6 +3150,35 @@ body.is-rail-dragging {
   box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
 }
 
+.library-type-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.library-type-filter button {
+  min-height: 24px;
+  padding: 0 9px;
+  cursor: pointer;
+  color: var(--faint);
+  font-size: 11px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.library-type-filter button.is-active {
+  color: var(--blue);
+  font-weight: 650;
+  background: var(--paper-raised);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
+}
+
 .library-selection-bar {
   display: flex;
   align-items: center;
@@ -3290,6 +3327,14 @@ body.is-rail-dragging {
   background: var(--paper);
   border: 1px dashed var(--line-strong);
   border-radius: 6px;
+}
+
+.library-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .library-grid {
@@ -4494,7 +4539,14 @@ body.is-marquee-active {
   box-shadow: 0 24px 80px rgba(15, 20, 29, 0.32);
 }
 
+/* 竖屏视频：弹窗改为竖板，不再固定成横板黑边 */
+.library-video-player.is-portrait {
+  width: min(430px, 92vw);
+  height: min(720px, 90vh);
+}
+
 .library-video-player-body {
+  position: relative;
   display: grid;
   place-items: center;
   min-height: 0;
@@ -4512,13 +4564,145 @@ body.is-marquee-active {
   border-radius: 4px;
 }
 
+/* 元数据就绪前隐藏画面（仍保持播放以触发 loadedmetadata），避免横/竖板跳变 */
+.library-video-player-media.is-pending {
+  opacity: 0;
+}
+
 .library-video-player-loading {
+  position: absolute;
+  inset: 0;
   display: grid;
   place-items: center;
   gap: 10px;
-  min-height: 220px;
   color: var(--muted);
   font-size: 12px;
+}
+
+/* 图片水印放大预览：棋盘格背景突出透明 PNG */
+.library-image-player-body {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+  background-image:
+    linear-gradient(45deg, #22262e 25%, transparent 25%),
+    linear-gradient(-45deg, #22262e 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #22262e 75%),
+    linear-gradient(-45deg, transparent 75%, #22262e 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  background-color: #181b21;
+}
+
+.library-image-player-media {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.library-image-player-error {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* 删除确认弹窗 */
+.library-confirm-backdrop {
+  z-index: 1300;
+}
+
+.library-confirm-dialog {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  width: min(420px, 92vw);
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--paper-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(15, 20, 29, 0.32);
+}
+
+.library-confirm-body {
+  padding: 14px 16px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.library-accent-button.is-danger {
+  color: #ffffff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.library-rename-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.library-rename-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 9px;
+  color: var(--ink);
+  font-size: 12px;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+
+.library-rename-input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.library-rename-ext {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* BGM 试听进度条 */
+.library-audio-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 3px;
+}
+
+.library-audio-progress-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 4px;
+  cursor: pointer;
+  background: var(--paper-deep);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.library-audio-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--blue);
+  border-radius: 999px;
+}
+
+.library-audio-progress small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .library-thumb-badge {

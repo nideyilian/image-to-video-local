@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -77,6 +77,29 @@ function formatDuration(seconds: number | null | undefined) {
   const minutes = Math.floor(total / 60);
   const rest = total % 60;
   return minutes > 0 ? `${minutes}:${String(rest).padStart(2, "0")}` : `${rest} 秒`;
+}
+
+function formatAddedAt(iso: string | null | undefined) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatClock(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const total = Math.floor(seconds);
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+function recountFolderCounts(items: LibraryItem[], folders: LibraryFolder[]): LibraryFolder[] {
+  return folders.map((folder) => {
+    const count = items.filter((item) => item.folder === folder.relative || item.folder.startsWith(`${folder.relative}/`)).length;
+    return { ...folder, count };
+  });
 }
 
 function loadStoredDirs(): Partial<LibraryDirs> {
@@ -241,10 +264,13 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   const [watermarkFolders, setWatermarkFolders] = useState<LibraryFolder[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [importingCount, setImportingCount] = useState(0);
   const [currentFolder, setCurrentFolder] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<ViewMode>(() => loadViewMode("bgm"));
   const [search, setSearch] = useState("");
+  const [searchDraft, setSearchDraft] = useState("");
+  const [filterType, setFilterType] = useState<"all" | "image" | "video">("all");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDesc, setSortDesc] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -261,8 +287,29 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [videoPreview, setVideoPreview] = useState<{ path: string; name: string } | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  // 视频预览的宽高比（height/width）；null 表示元数据尚未就绪
+  const [videoAspect, setVideoAspect] = useState<number | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const mountedRef = useRef(true);
+  const videoMetaTimerRef = useRef<number | null>(null);
+  const visibleItemsRef = useRef<LibraryItem[]>([]);
+  const searchTimerRef = useRef<number | null>(null);
+  const [imagePreview, setImagePreview] = useState<{ path: string; name: string } | null>(null);
+  const [imageFailed, setImageFailed] = useState(false);
+  const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; onConfirm: () => void } | null>(null);
+  const [renameOpen, setRenameOpen] = useState<{ kind: LibraryKind; path: string; name: string } | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+
+  const closeVideoPreview = useCallback(() => {
+    if (videoMetaTimerRef.current !== null) {
+      window.clearTimeout(videoMetaTimerRef.current);
+      videoMetaTimerRef.current = null;
+    }
+    setVideoPreview(null);
+    setVideoUrl(null);
+    setVideoAspect(null);
+    setPlayingPath(null);
+  }, []);
 
   const desktopRuntime = engine.desktopRuntime;
   const libraryBase = tab === "bgm" ? dirs?.bgm_dir ?? "" : dirs?.watermark_dir ?? "";
@@ -326,21 +373,19 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
     if (!open) return;
     void (async () => {
       if (!engine.desktopRuntime) return;
-      let nextDirs: LibraryDirs | null = dirs;
-      if (!nextDirs) {
-        const stored = loadStoredDirs();
-        const defaults = await engine.call<LibraryDirs>("library_dirs", {}, 15_000);
-        nextDirs = {
-          bgm_dir: stored.bgm_dir || defaults.bgm_dir,
-          watermark_dir: stored.watermark_dir || defaults.watermark_dir,
-          library_root: defaults.library_root,
-        };
-        setDirs(nextDirs);
-      }
+      // 已加载过快照则直接复用，避免每次进入都重新扫描整个库；外部改动可点「刷新」
+      if (dirs) return;
+      const stored = loadStoredDirs();
+      const defaults = await engine.call<LibraryDirs>("library_dirs", {}, 15_000);
+      const nextDirs: LibraryDirs = {
+        bgm_dir: stored.bgm_dir || defaults.bgm_dir,
+        watermark_dir: stored.watermark_dir || defaults.watermark_dir,
+        library_root: defaults.library_root,
+      };
+      setDirs(nextDirs);
       await refresh(nextDirs);
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, dirs, refresh]);
 
   // 响应外部标签页定位请求（检查器「在素材库配置」）
   useEffect(() => {
@@ -352,15 +397,19 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   useEffect(() => {
     if (open) return;
     audioRef.current?.pause();
-    setVideoPreview(null);
-    setVideoUrl(null);
-    setPlayingPath(null);
-  }, [open]);
+    closeVideoPreview();
+    setImagePreview(null);
+    setImageFailed(false);
+    setConfirm(null);
+    setRenameOpen(null);
+  }, [open, closeVideoPreview]);
 
   useEffect(() => {
     setViewMode(loadViewMode(tab === "watermark" ? "watermark" : "bgm"));
     setCurrentFolder("");
     setSearch("");
+    setSearchDraft("");
+    setFilterType("all");
     setSelected(new Set());
   }, [tab]);
 
@@ -423,13 +472,29 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
           document.body.classList.remove("is-marquee-active");
           return;
         }
+        if (imagePreview) {
+          setImagePreview(null);
+          setImageFailed(false);
+          return;
+        }
+        if (renameOpen) {
+          setRenameOpen(null);
+          return;
+        }
+        if (confirm) {
+          setConfirm(null);
+          return;
+        }
         if (videoPreview) {
-          setVideoPreview(null);
-          setVideoUrl(null);
-          setPlayingPath(null);
+          closeVideoPreview();
           return;
         }
         onClose();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        setSelected(new Set(visibleItemsRef.current.map((item) => item.path)));
         return;
       }
       if (event.key !== "Tab" || !dialogRef.current) return;
@@ -453,11 +518,12 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       document.body.classList.remove("is-modal-open");
       previousFocus?.focus();
     };
-  }, [open, onClose, videoPreview]);
+  }, [open, onClose, videoPreview, imagePreview, renameOpen, confirm, closeVideoPreview]);
 
   const selectFolder = useCallback((folder: string) => {
     setCurrentFolder(folder);
     setSearch("");
+    setSearchDraft("");
     setSelected(new Set());
     if (folder) {
       setExpanded((current) => {
@@ -465,6 +531,23 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
         ancestorsOf(folder).forEach((ancestor) => next.add(ancestor));
         return next;
       });
+    }
+  }, []);
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchDraft(value);
+    if (searchTimerRef.current !== null) {
+      window.clearTimeout(searchTimerRef.current);
+    }
+    searchTimerRef.current = window.setTimeout(() => setSearch(value), 150);
+  }, []);
+
+  const clearSearch = useCallback(() => {
+    setSearch("");
+    setSearchDraft("");
+    if (searchTimerRef.current !== null) {
+      window.clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
     }
   }, []);
 
@@ -485,7 +568,11 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       if (!query) return item.folder === currentFolder;
       return item.folder === currentFolder || (currentFolder ? item.folder.startsWith(`${currentFolder}/`) : true);
     };
-    let list = items.filter((item) => inScope(item) && (!query || item.name.toLowerCase().includes(query)));
+    let list = items.filter((item) =>
+      inScope(item)
+      && (filterType === "all" || item.type === filterType)
+      && (!query || `${item.name} ${item.folder}`.toLowerCase().includes(query)),
+    );
     const direction = sortDesc ? -1 : 1;
     list = [...list].sort((a, b) => {
       let result = 0;
@@ -500,7 +587,11 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       return result * direction || a.name.localeCompare(b.name, "zh-Hans-CN");
     });
     return list;
-  }, [currentFolder, items, search, sortDesc, sortKey]);
+  }, [currentFolder, filterType, items, search, sortDesc, sortKey]);
+
+  useEffect(() => {
+    visibleItemsRef.current = visibleItems;
+  }, [visibleItems]);
 
   const toggleSelected = useCallback((path: string) => {
     setSelected((current) => {
@@ -521,48 +612,95 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   const importFiles = useCallback(async (kind: LibraryKind, folder: string) => {
     if (!engine.desktopRuntime) return notify("info", "导入素材需要在 Tauri 桌面窗口中运行");
     if (!dirs) return;
+    if (importingCount > 0) return notify("info", "已有素材正在导入，请稍候");
     const filters = kind === "bgm" ? BGM_FILTERS : WATERMARK_FILTERS;
     const picked = await openDialog({ multiple: true, directory: false, title: kind === "bgm" ? "选择要导入 BGM 库的音频" : "选择要导入水印库的图片", filters });
     if (!picked || !picked.length) return;
-    const result = await engine.call<{ results: LibraryImportResult[] }>(
-      "library_import",
-      {
-        kind,
-        paths: picked,
-        folder,
-        bgm_dir: dirs.bgm_dir,
-        watermark_dir: dirs.watermark_dir,
-      },
-      300_000,
-    );
-    const imported = result.results.filter((item) => item.status === "imported").length;
-    const duplicates = result.results.filter((item) => item.status === "duplicate").length;
-    const failed = result.results.filter((item) => item.status === "failed").length;
-    notify(
-      failed && !imported ? "error" : "success",
-      imported
-        ? `已导入 ${imported} 个素材${duplicates ? `，跳过重复 ${duplicates} 个` : ""}${failed ? `，失败 ${failed} 个` : ""}`
-        : duplicates
-          ? `未导入新素材：${duplicates} 个与库中已有内容重复`
-          : `导入失败 ${failed} 个素材`,
-    );
-    await refresh();
-  }, [dirs, notify, refresh]);
+    setImportingCount(picked.length);
+    notify("info", `正在导入 ${picked.length} 个素材…`);
+    try {
+      const result = await engine.call<{ results: LibraryImportResult[] }>(
+        "library_import",
+        {
+          kind,
+          paths: picked,
+          folder,
+          bgm_dir: dirs.bgm_dir,
+          watermark_dir: dirs.watermark_dir,
+        },
+        300_000,
+      );
+      const imported = result.results.filter((item) => item.status === "imported").length;
+      const duplicates = result.results.filter((item) => item.status === "duplicate").length;
+      const failed = result.results.filter((item) => item.status === "failed").length;
+      notify(
+        failed && !imported ? "error" : "success",
+        imported
+          ? `已导入 ${imported} 个素材${duplicates ? `，跳过重复 ${duplicates} 个` : ""}${failed ? `，失败 ${failed} 个` : ""}`
+          : duplicates
+            ? `未导入新素材：${duplicates} 个与库中已有内容重复`
+            : `导入失败 ${failed} 个素材`,
+      );
+      await refresh();
+    } catch (err) {
+      notify("error", err instanceof Error ? err.message : "导入失败");
+    } finally {
+      setImportingCount(0);
+    }
+  }, [dirs, importingCount, notify, refresh]);
 
   const removeItems = useCallback(async (kind: LibraryKind, paths: string[]) => {
     if (!dirs) return;
-    let removed = 0;
-    for (const path of paths) {
-      try {
-        await engine.call("library_remove", { kind, path, bgm_dir: dirs.bgm_dir, watermark_dir: dirs.watermark_dir });
-        removed += 1;
-      } catch {
-        /* 单个失败继续处理其余 */
+    let removed: Array<{ name: string; path: string; status: string; reason?: string }> = [];
+    try {
+      const result = await engine.call<{ results: Array<{ name: string; path: string; status: string; reason?: string }> }>(
+        "library_remove_batch",
+        { kind, paths, bgm_dir: dirs.bgm_dir, watermark_dir: dirs.watermark_dir },
+        300_000,
+      );
+      removed = result.results.filter((item) => item.status === "removed");
+      const failed = result.results.filter((item) => item.status === "failed").length;
+      const firstError = result.results.find((item) => item.status === "failed")?.reason ?? "";
+      if (removed.length && !failed) {
+        notify("success", `已把 ${removed.length} 个素材移入回收站`);
+      } else if (removed.length && failed) {
+        notify("error", `已把 ${removed.length} 个素材移入回收站，${failed} 个失败：${firstError}`);
+      } else {
+        notify("error", `移入回收站失败：${firstError || "未知错误"}`);
       }
+    } catch (err) {
+      notify("error", err instanceof Error ? err.message : "移入回收站失败");
     }
-    notify("success", `已删除 ${removed} 个素材`);
-    await refresh();
-  }, [dirs, notify, refresh]);
+    if (!removed.length) return;
+    // 本地增量更新，避免删除后全量重扫
+    const removedPaths = new Set(removed.map((item) => item.path));
+    if (kind === "bgm") {
+      const nextItems = bgm.filter((item) => !removedPaths.has(item.path));
+      setBgm(nextItems);
+      setBgmFolders(recountFolderCounts(nextItems, bgmFolders));
+    } else {
+      const nextItems = watermark.filter((item) => !removedPaths.has(item.path));
+      setWatermark(nextItems);
+      setWatermarkFolders(recountFolderCounts(nextItems, watermarkFolders));
+    }
+    setSelected((current) => {
+      const next = new Set(current);
+      removedPaths.forEach((path) => next.delete(path));
+      return next;
+    });
+  }, [bgm, bgmFolders, dirs, notify, watermark, watermarkFolders]);
+
+  const requestRemove = useCallback((kind: LibraryKind, paths: string[]) => {
+    const name = paths.length === 1 ? (paths[0].split(/[\\/]/).pop() ?? paths[0]) : "";
+    setConfirm({
+      title: "删除素材",
+      message: paths.length === 1
+        ? `确定删除「${name}」吗？删除后会移入系统回收站，可在回收站中还原。`
+        : `确定删除这 ${paths.length} 个素材吗？删除后会移入系统回收站，可在回收站中还原。`,
+      confirmLabel: "移入回收站",
+      onConfirm: () => { void removeItems(kind, paths); },
+    });
+  }, [removeItems]);
 
   const moveItems = useCallback(async (kind: LibraryKind, paths: string[], folder: string) => {
     if (!dirs) return;
@@ -596,6 +734,46 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       notify("error", err instanceof Error ? err.message : "移动失败");
     }
   }, [dirs, notify, refresh]);
+
+  // ---------- 拖拽移动：把「移动」按钮当作拖拽手柄，拖到左侧文件夹即移动 ----------
+  const dragPathsRef = useRef<string[]>([]);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+
+  const beginItemDrag = useCallback((item: LibraryItem) => (event: ReactDragEvent<HTMLElement>) => {
+    const paths = selected.has(item.path) ? Array.from(selected) : [item.path];
+    dragPathsRef.current = paths;
+    event.dataTransfer.effectAllowed = "move";
+    try {
+      event.dataTransfer.setData("text/plain", paths.join("\n"));
+    } catch {
+      /* 某些环境不支持 setData，忽略 */
+    }
+  }, [selected]);
+
+  const clearItemDrag = useCallback(() => {
+    dragPathsRef.current = [];
+    setDropTarget(null);
+  }, []);
+
+  const handleFolderDragOver = useCallback((folder: string) => (event: ReactDragEvent<HTMLElement>) => {
+    if (!dragPathsRef.current.length) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setDropTarget(folder);
+  }, []);
+
+  const handleFolderDrop = useCallback((folder: string) => (event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault();
+    const paths = dragPathsRef.current;
+    dragPathsRef.current = [];
+    setDropTarget(null);
+    if (!paths.length || !dirs) return;
+    void moveItems(tab as LibraryKind, paths, folder);
+  }, [dirs, moveItems, tab]);
+
+  const handleFolderDragLeave = useCallback((folder: string) => () => {
+    setDropTarget((current) => (current === folder ? null : current));
+  }, []);
 
   const createFolder = useCallback(async (parent: string, name: string) => {
     if (!dirs) return;
@@ -652,11 +830,68 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       });
       if (currentFolder === folder) setCurrentFolder("");
       await refresh();
-      notify("success", `已删除文件夹 ${folder}`);
+      notify("success", `已把文件夹「${folder}」移入回收站`);
     } catch (err) {
       notify("error", err instanceof Error ? err.message : "删除文件夹失败");
     }
   }, [currentFolder, dirs, notify, refresh, tab]);
+
+  const requestDeleteFolder = useCallback((folder: string) => {
+    const count = folders.find((item) => item.relative === folder)?.count ?? 0;
+    if (count > 0) {
+      notify("info", `「${folder}」内还有 ${count} 个素材，请先移走或删除后再删除该文件夹。`);
+      return;
+    }
+    setConfirm({
+      title: "删除文件夹",
+      message: `确定删除文件夹「${folder}」吗？删除后会移入系统回收站。`,
+      confirmLabel: "移入回收站",
+      onConfirm: () => { void deleteFolder(folder); },
+    });
+  }, [deleteFolder, folders, notify]);
+
+  const renameItem = useCallback(async (kind: LibraryKind, path: string, newName: string) => {
+    if (!dirs) return;
+    try {
+      const result = await engine.call<{ renamed: boolean; name: string; path: string }>(
+        "library_rename",
+        { kind, path, new_name: newName, bgm_dir: dirs.bgm_dir, watermark_dir: dirs.watermark_dir },
+        60_000,
+      );
+      // 本地增量更新：改名字/路径，不重新全量扫描
+      const nextPath = result.path;
+      const updater = (item: LibraryItem) => (item.path === path ? { ...item, name: result.name, path: nextPath } : item);
+      if (kind === "bgm") {
+        setBgm((current) => current.map(updater));
+      } else {
+        setWatermark((current) => current.map(updater));
+      }
+      setSelected((current) => {
+        if (!current.has(path)) return current;
+        const next = new Set(current);
+        next.delete(path);
+        next.add(nextPath);
+        return next;
+      });
+    } catch (err) {
+      notify("error", err instanceof Error ? err.message : "重命名失败");
+    }
+  }, [dirs, notify]);
+
+  const requestRename = useCallback((kind: LibraryKind, item: LibraryItem) => {
+    const stem = item.name.replace(/\.[^.]*$/, "");
+    setRenameOpen({ kind, path: item.path, name: item.name });
+    setRenameDraft(stem);
+  }, []);
+
+  const commitRename = useCallback(() => {
+    if (!renameOpen) return;
+    const stem = renameDraft.trim();
+    if (!stem) return;
+    const target = renameOpen;
+    setRenameOpen(null);
+    void renameItem(target.kind, target.path, stem);
+  }, [renameDraft, renameItem, renameOpen]);
 
   const changeDir = useCallback(async () => {
     if (!engine.desktopRuntime) return notify("info", "更换目录需要在 Tauri 桌面窗口中运行");
@@ -668,6 +903,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
     persistDirs(next);
     setCurrentFolder("");
     await refresh(next);
+    notify("success", `已切换到新的${tab === "bgm" ? " BGM" : "水印"}目录（原目录文件不会被移动或删除）`);
   }, [dirs, notify, persistDirs, refresh, tab]);
 
   const togglePlay = useCallback(async (item: LibraryItem) => {
@@ -683,7 +919,9 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       const audio = audioRef.current;
       if (!audio) return;
       audio.src = engine.toAssetUrl(preview.preview_path);
-      audio.onended = () => setPlayingPath(null);
+      audio.onended = () => {
+        setPlayingPath(null);
+      };
       audio.onerror = () => {
         setPlayingPath(null);
         notify("error", "音频播放失败");
@@ -698,22 +936,41 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
     }
   }, [notify, playingPath]);
 
+  const seekAudio = useCallback((ratio: number) => {
+    const audio = audioRef.current;
+    if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+    audio.currentTime = Math.max(0, Math.min(1, ratio)) * audio.duration;
+  }, []);
+
   // 视频水印素材：点击播放 → 弹出放大播放器（引擎按需转码为 WebView 可播放格式）
   const openVideoPreview = useCallback(async (item: LibraryItem) => {
     if (!engine.desktopRuntime) return notify("info", "视频预览需要在 Tauri 桌面窗口中运行");
     audioRef.current?.pause();
     setVideoPreview({ path: item.path, name: item.name });
     setVideoUrl(null);
+    setVideoAspect(null);
     setPlayingPath(item.path);
+    if (videoMetaTimerRef.current !== null) {
+      window.clearTimeout(videoMetaTimerRef.current);
+      videoMetaTimerRef.current = null;
+    }
     try {
       const preview = await engine.call<{ preview_path: string }>("library_preview_video", { path: item.path }, 130_000);
       setVideoUrl(engine.toAssetUrl(preview.preview_path));
+      // 兜底：元数据迟迟未就绪时按默认横板展示，避免一直停在加载态
+      videoMetaTimerRef.current = window.setTimeout(() => {
+        setVideoAspect((aspect) => (aspect === null ? 0 : aspect));
+      }, 10_000);
     } catch (err) {
-      setVideoPreview(null);
-      setVideoUrl(null);
-      setPlayingPath(null);
+      closeVideoPreview();
       notify("error", err instanceof Error ? err.message : "视频预览失败");
     }
+  }, [closeVideoPreview, notify]);
+
+  const openImagePreview = useCallback((item: LibraryItem) => {
+    if (!engine.desktopRuntime) return notify("info", "图片预览需要在 Tauri 桌面窗口中运行");
+    setImagePreview({ path: item.path, name: item.name });
+    setImageFailed(false);
   }, [notify]);
 
   const applyBgmDir = useCallback(() => {
@@ -1025,7 +1282,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
               <button type="button" className="icon-button" onClick={() => setCreatingUnder("")} aria-label="新建文件夹"><FolderPlus size={14} /></button>
             </div>
             <div className="library-tree-scroll">
-              <button type="button" className={`library-tree-node is-root${currentFolder === "" ? " is-active" : ""}`} onClick={() => selectFolder("")}>
+              <button type="button" className={`library-tree-node is-root${currentFolder === "" ? " is-active" : ""}${dropTarget === "" ? " is-drop-target" : ""}`} onClick={() => selectFolder("")} onDragOver={handleFolderDragOver("")} onDrop={handleFolderDrop("")} onDragLeave={handleFolderDragLeave("")}>
                 <FolderOpen size={14} /><span>全部</span><small>{totalCount}</small>
               </button>
               {creatingUnder === "" ? (
@@ -1046,14 +1303,18 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                 creatingUnder={creatingUnder}
                 renaming={renaming}
                 folderDraft={folderDraft}
+                dropTarget={dropTarget}
                 onFolderDraft={setFolderDraft}
                 onSelect={selectFolder}
                 onToggle={toggleExpanded}
                 onStartCreate={(parent) => { setCreatingUnder(parent); setRenaming(null); setFolderDraft(""); }}
                 onStartRename={(folder) => { setRenaming(folder); setCreatingUnder(null); setFolderDraft(folder.split("/").pop() ?? ""); }}
-                onDelete={deleteFolder}
+                onDelete={requestDeleteFolder}
                 onCommit={commitFolderDraft}
                 onCancelEdit={() => { setCreatingUnder(null); setRenaming(null); setFolderDraft(""); }}
+                onFolderDragOver={handleFolderDragOver}
+                onFolderDrop={handleFolderDrop}
+                onFolderDragLeave={handleFolderDragLeave}
               />
             </div>
           </aside>
@@ -1076,9 +1337,16 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
               <span className="library-toolbar-actions">
                 <span className="library-search">
                   <Search size={13} />
-                  <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索素材" aria-label="搜索素材" />
-                  {search ? <button type="button" className="icon-button" onClick={() => setSearch("")} aria-label="清除搜索"><X size={12} /></button> : null}
+                  <input value={searchDraft} onChange={(event) => handleSearchChange(event.target.value)} placeholder="搜索素材" aria-label="搜索素材" />
+                  {searchDraft ? <button type="button" className="icon-button" onClick={clearSearch} aria-label="清除搜索"><X size={12} /></button> : null}
                 </span>
+                {tab === "watermark" ? (
+                  <span className="library-type-filter" role="group" aria-label="类型筛选">
+                    <button type="button" className={filterType === "all" ? "is-active" : ""} onClick={() => setFilterType("all")}>全部</button>
+                    <button type="button" className={filterType === "image" ? "is-active" : ""} onClick={() => setFilterType("image")}>图片</button>
+                    <button type="button" className={filterType === "video" ? "is-active" : ""} onClick={() => setFilterType("video")}>视频</button>
+                  </span>
+                ) : null}
                 <span className="library-sort">
                   <select value={sortKey} onChange={(event) => setSortKey(event.target.value as SortKey)} aria-label="排序方式">
                     {SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -1097,7 +1365,10 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                 {tab === "bgm" || tab === "watermark" ? (
                   <button type="button" className="quiet-button" onClick={openJianying} disabled={!desktopRuntime || loading}><Clapperboard size={14} />从剪映导入</button>
                 ) : null}
-                <button type="button" className="quiet-button" onClick={() => importFiles(tab, currentFolder)} disabled={!desktopRuntime || loading}><Upload size={14} />导入</button>
+                <button type="button" className="quiet-button" onClick={() => importFiles(tab, currentFolder)} disabled={!desktopRuntime || loading || importingCount > 0}>
+                  {importingCount > 0 ? <Loader2 className="is-spinning" size={14} /> : <Upload size={14} />}
+                  {importingCount > 0 ? `导入中 ${importingCount} 项…` : "导入"}
+                </button>
                 <button type="button" className="quiet-button" onClick={changeDir} disabled={!desktopRuntime}><FolderOpen size={14} />更换目录</button>
                 <button type="button" className="quiet-button" onClick={() => onReveal(currentFolder ? `${libraryBase}\\${currentFolder.replace(/\//g, "\\")}` : libraryBase)} disabled={!libraryBase}><FolderOpen size={14} />打开</button>
                 <button type="button" className="icon-button" onClick={() => void refresh()} disabled={loading} aria-label="刷新素材库"><RefreshCw size={14} className={loading ? "is-spinning" : ""} /></button>
@@ -1112,7 +1383,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                   <button type="button" className="quiet-button" onClick={() => addToBgmFiles(Array.from(selected))}><Music size={14} />选用为BGM</button>
                 ) : null}
                 <button type="button" className="quiet-button" onClick={() => setMoveOpen(true)}><Move size={14} />移动到…</button>
-                <button type="button" className="quiet-button danger-text" onClick={() => void removeItems(tab, Array.from(selected))}><Trash2 size={14} />删除</button>
+                <button type="button" className="quiet-button danger-text" onClick={() => requestRemove(tab, Array.from(selected))}><Trash2 size={14} />删除</button>
                 <button type="button" className="quiet-button" onClick={() => setSelected(new Set())}><X size={14} />取消选择</button>
               </div>
             ) : null}
@@ -1124,9 +1395,13 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                 <ul className="library-list">
                   {!loading && !visibleItems.length ? (
                     <li className="library-empty">
-                      {currentFolder
+                      <span>{currentFolder
                         ? <>这个文件夹还是空的。导入音频会保存到当前文件夹，或点击「批量拆BGM」从视频提取。</>
-                        : <>BGM 库还是空的：点击「导入」，或使用「批量拆BGM」从视频中提取背景音乐。</>}
+                        : <>BGM 库还是空的。</>}</span>
+                      <span className="library-empty-actions">
+                        <button type="button" className="library-accent-button" onClick={() => void importFiles("bgm", currentFolder)} disabled={!desktopRuntime || importingCount > 0}>{importingCount > 0 ? <Loader2 className="is-spinning" size={14} /> : <Upload size={14} />}{importingCount > 0 ? "导入中…" : "导入音频"}</button>
+                        <button type="button" className="quiet-button" onClick={() => setExtract((current) => ({ ...current, open: true, saveFolder: currentFolder }))} disabled={!desktopRuntime}><Scissors size={14} />批量拆BGM</button>
+                      </span>
                     </li>
                   ) : null}
                   {visibleItems.map((item) => {
@@ -1138,15 +1413,17 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                         <BgmCover path={item.path} size="small" />
                         <span className="library-row-main">
                           <strong title={item.path}>{item.name}</strong>
-                          <small>{item.folder ? `${item.folder} · ` : ""}{formatBytes(item.size_bytes)} · {formatDuration(item.duration)}{item.added_at ? ` · 入库于 ${item.added_at}` : ""}</small>
+                          <small>{item.folder ? `${item.folder} · ` : ""}{formatBytes(item.size_bytes)} · {formatDuration(item.duration)}{item.added_at ? ` · 入库于 ${formatAddedAt(item.added_at)}` : ""}</small>
+                          {isPlaying ? <AudioProgressBar audioRef={audioRef} onSeek={seekAudio} /> : null}
                         </span>
                         <span className="library-row-actions">
                           <button type="button" className="icon-button" onClick={() => void togglePlay(item)} aria-label={isPlaying ? "停止试听" : "试听"}>
                             {isPlaying ? <Pause size={15} /> : <Play size={15} />}
                           </button>
                           <button type="button" className="icon-button" onClick={() => addToBgmFiles([item.path])} aria-label={`选用为BGM ${item.name}`} title="选用为当前工作区BGM"><Plus size={14} /></button>
-                          <button type="button" className="icon-button" onClick={() => { setSelected(new Set([item.path])); setMoveOpen(true); }} aria-label={`移动 ${item.name}`}><Move size={14} /></button>
-                          <button type="button" className="icon-button danger" onClick={() => void removeItems("bgm", [item.path])} aria-label={`删除 ${item.name}`}><Trash2 size={15} /></button>
+                          <button type="button" className="icon-button" onClick={() => requestRename("bgm", item)} aria-label={`重命名 ${item.name}`} title="重命名"><Pencil size={14} /></button>
+                          <button type="button" className="icon-button" draggable onClick={() => { setSelected(new Set([item.path])); setMoveOpen(true); }} onDragStart={beginItemDrag(item)} onDragEnd={clearItemDrag} aria-label={`移动 ${item.name}`} title="拖到左侧文件夹移动"><Move size={14} /></button>
+                          <button type="button" className="icon-button danger" onClick={() => requestRemove("bgm", [item.path])} aria-label={`删除 ${item.name}`}><Trash2 size={15} /></button>
                         </span>
                       </li>
                     );
@@ -1156,9 +1433,13 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                 <ul className="library-grid">
                   {!loading && !visibleItems.length ? (
                     <li className="library-empty">
-                      {currentFolder
+                      <span>{currentFolder
                         ? <>这个文件夹还是空的。导入音频会保存到当前文件夹，或点击「批量拆BGM」从视频提取。</>
-                        : <>BGM 库还是空的：点击「导入」，或使用「批量拆BGM」从视频中提取背景音乐。</>}
+                        : <>BGM 库还是空的。</>}</span>
+                      <span className="library-empty-actions">
+                        <button type="button" className="library-accent-button" onClick={() => void importFiles("bgm", currentFolder)} disabled={!desktopRuntime || importingCount > 0}>{importingCount > 0 ? <Loader2 className="is-spinning" size={14} /> : <Upload size={14} />}{importingCount > 0 ? "导入中…" : "导入音频"}</button>
+                        <button type="button" className="quiet-button" onClick={() => setExtract((current) => ({ ...current, open: true, saveFolder: currentFolder }))} disabled={!desktopRuntime}><Scissors size={14} />批量拆BGM</button>
+                      </span>
                     </li>
                   ) : null}
                   {visibleItems.map((item) => {
@@ -1179,14 +1460,16 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                         <span className="library-card-meta">
                           <strong title={item.path}>{item.name}</strong>
                           <small>{item.folder ? `${item.folder} · ` : ""}{formatBytes(item.size_bytes)}</small>
+                          {isPlaying ? <AudioProgressBar audioRef={audioRef} onSeek={seekAudio} /> : null}
                         </span>
                         <span className="library-card-actions">
                           <button type="button" className="icon-button" onClick={() => void togglePlay(item)} aria-label={isPlaying ? "停止试听" : "试听"}>
                             {isPlaying ? <Pause size={14} /> : <Play size={14} />}
                           </button>
                           <button type="button" className="icon-button" onClick={() => addToBgmFiles([item.path])} aria-label={`选用为BGM ${item.name}`} title="选用为当前工作区BGM"><Plus size={13} /></button>
-                          <button type="button" className="icon-button" onClick={() => { setSelected(new Set([item.path])); setMoveOpen(true); }} aria-label={`移动 ${item.name}`}><Move size={13} /></button>
-                          <button type="button" className="icon-button danger" onClick={() => void removeItems("bgm", [item.path])} aria-label={`删除 ${item.name}`}><Trash2 size={14} /></button>
+                          <button type="button" className="icon-button" onClick={() => requestRename("bgm", item)} aria-label={`重命名 ${item.name}`} title="重命名"><Pencil size={13} /></button>
+                          <button type="button" className="icon-button" draggable onClick={() => { setSelected(new Set([item.path])); setMoveOpen(true); }} onDragStart={beginItemDrag(item)} onDragEnd={clearItemDrag} aria-label={`移动 ${item.name}`} title="拖到左侧文件夹移动"><Move size={13} /></button>
+                          <button type="button" className="icon-button danger" onClick={() => requestRemove("bgm", [item.path])} aria-label={`删除 ${item.name}`}><Trash2 size={14} /></button>
                         </span>
                       </li>
                     );
@@ -1197,9 +1480,12 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
               <ul className="library-list">
                 {!loading && !visibleItems.length ? (
                   <li className="library-empty">
-                    {currentFolder
+                    <span>{currentFolder
                       ? <>这个文件夹还是空的。导入的图片会保存到当前文件夹。</>
-                      : <>水印库还是空的：点击「导入」把 Logo / 水印素材放进库中。</>}
+                      : <>水印库还是空的。</>}</span>
+                    <span className="library-empty-actions">
+                      <button type="button" className="library-accent-button" onClick={() => void importFiles("watermark", currentFolder)} disabled={!desktopRuntime || importingCount > 0}>{importingCount > 0 ? <Loader2 className="is-spinning" size={14} /> : <Upload size={14} />}{importingCount > 0 ? "导入中…" : "导入素材"}</button>
+                    </span>
                   </li>
                 ) : null}
                 {visibleItems.map((item) => {
@@ -1219,20 +1505,24 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                           </span>
                         </button>
                       ) : (
-                        <span className="library-thumb-wrap">
-                          <WatermarkThumb path={item.path} size="small" />
-                        </span>
+                        <button type="button" className="library-thumb-play" onClick={() => openImagePreview(item)} aria-label={`放大预览 ${item.name}`} title="点击放大预览">
+                          <span className="library-thumb-play-hint"><Search size={16} /></span>
+                          <span className="library-thumb-wrap">
+                            <WatermarkThumb path={item.path} size="small" />
+                          </span>
+                        </button>
                       )}
                       <span className="library-row-main">
                         <strong title={item.path}>{item.name}</strong>
-                        <small>{item.folder ? `${item.folder} · ` : ""}{isVideo ? `${formatDuration(item.duration)} · ` : ""}{formatBytes(item.size_bytes)}{item.added_at ? ` · 入库于 ${item.added_at}` : ""}</small>
+                        <small>{item.folder ? `${item.folder} · ` : ""}{isVideo ? `${formatDuration(item.duration)} · ` : ""}{formatBytes(item.size_bytes)}{item.added_at ? ` · 入库于 ${formatAddedAt(item.added_at)}` : ""}</small>
                       </span>
                       <span className="library-row-actions">
                         {isVideo ? <button type="button" className="icon-button" onClick={() => void openVideoPreview(item)} aria-label="放大播放预览" title="放大播放预览"><Play size={14} /></button> : null}
                         {isVideo ? <button type="button" className="quiet-button" onClick={() => useAsVideoWatermark(item)}><Stamp size={13} />用作视频水印</button> : null}
                         <button type="button" className="quiet-button" onClick={() => addWatermarkLayer(item)}><Plus size={13} />加入水印图层</button>
-                        <button type="button" className="icon-button" onClick={() => { setSelected(new Set([item.path])); setMoveOpen(true); }} aria-label={`移动 ${item.name}`}><Move size={14} /></button>
-                        <button type="button" className="icon-button danger" onClick={() => void removeItems("watermark", [item.path])} aria-label={`删除 ${item.name}`}><Trash2 size={15} /></button>
+                        <button type="button" className="icon-button" onClick={() => requestRename("watermark", item)} aria-label={`重命名 ${item.name}`} title="重命名"><Pencil size={14} /></button>
+                        <button type="button" className="icon-button" draggable onClick={() => { setSelected(new Set([item.path])); setMoveOpen(true); }} onDragStart={beginItemDrag(item)} onDragEnd={clearItemDrag} aria-label={`移动 ${item.name}`} title="拖到左侧文件夹移动"><Move size={14} /></button>
+                        <button type="button" className="icon-button danger" onClick={() => requestRemove("watermark", [item.path])} aria-label={`删除 ${item.name}`}><Trash2 size={15} /></button>
                       </span>
                     </li>
                   );
@@ -1242,9 +1532,12 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
               <ul className="library-grid">
                 {!loading && !visibleItems.length ? (
                   <li className="library-empty">
-                    {currentFolder
+                    <span>{currentFolder
                       ? <>这个文件夹还是空的。导入的图片会保存到当前文件夹。</>
-                      : <>水印库还是空的：点击「导入」把 Logo / 水印素材放进库中。</>}
+                      : <>水印库还是空的。</>}</span>
+                    <span className="library-empty-actions">
+                      <button type="button" className="library-accent-button" onClick={() => void importFiles("watermark", currentFolder)} disabled={!desktopRuntime || importingCount > 0}>{importingCount > 0 ? <Loader2 className="is-spinning" size={14} /> : <Upload size={14} />}{importingCount > 0 ? "导入中…" : "导入素材"}</button>
+                    </span>
                   </li>
                 ) : null}
                 {visibleItems.map((item) => {
@@ -1264,9 +1557,12 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                           </span>
                         </button>
                       ) : (
-                        <span className="library-thumb-wrap">
-                          <WatermarkThumb path={item.path} />
-                        </span>
+                        <button type="button" className="library-thumb-play" onClick={() => openImagePreview(item)} aria-label={`放大预览 ${item.name}`} title="点击放大预览">
+                          <span className="library-thumb-play-hint"><Search size={16} /></span>
+                          <span className="library-thumb-wrap">
+                            <WatermarkThumb path={item.path} />
+                          </span>
+                        </button>
                       )}
                       <span className="library-card-meta">
                         <strong title={item.path}>{item.name}</strong>
@@ -1275,8 +1571,9 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                       <span className="library-card-actions">
                         {isVideo ? <button type="button" className="icon-button" onClick={() => useAsVideoWatermark(item)} aria-label={`用作视频水印 ${item.name}`} title="用作视频水印（设为导出水印）"><Stamp size={14} /></button> : null}
                         <button type="button" className="icon-button" onClick={() => addWatermarkLayer(item)} aria-label={`加入水印图层 ${item.name}`} title="加入水印图层"><Layers size={14} /></button>
-                        <button type="button" className="icon-button" onClick={() => { setSelected(new Set([item.path])); setMoveOpen(true); }} aria-label={`移动 ${item.name}`} title="移动"><Move size={13} /></button>
-                        <button type="button" className="icon-button danger" onClick={() => void removeItems("watermark", [item.path])} aria-label={`删除 ${item.name}`} title="删除"><Trash2 size={14} /></button>
+                        <button type="button" className="icon-button" onClick={() => requestRename("watermark", item)} aria-label={`重命名 ${item.name}`} title="重命名"><Pencil size={13} /></button>
+                        <button type="button" className="icon-button" draggable onClick={() => { setSelected(new Set([item.path])); setMoveOpen(true); }} onDragStart={beginItemDrag(item)} onDragEnd={clearItemDrag} aria-label={`移动 ${item.name}`} title="拖到左侧文件夹移动"><Move size={13} /></button>
+                        <button type="button" className="icon-button danger" onClick={() => requestRemove("watermark", [item.path])} aria-label={`删除 ${item.name}`} title="删除"><Trash2 size={14} /></button>
                       </span>
                     </li>
                   );
@@ -1316,7 +1613,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       </section>
 
       {moveOpen ? (
-        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={() => setMoveOpen(false)}>
+        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={(event) => { event.stopPropagation(); setMoveOpen(false); }}>
           <section className="library-move-dialog" role="dialog" aria-modal="true" aria-labelledby="library-move-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="library-dialog-heading">
               <span className="library-dialog-icon"><Move size={20} /></span>
@@ -1333,8 +1630,59 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
         </div>
       ) : null}
 
+      {confirm ? (
+        <div className="library-backdrop library-backdrop-inner library-confirm-backdrop" role="presentation" onMouseDown={(event) => { event.stopPropagation(); setConfirm(null); }}>
+          <section className="library-confirm-dialog" role="dialog" aria-modal="true" aria-label={confirm.title} onMouseDown={(event) => event.stopPropagation()}>
+            <header className="library-dialog-heading">
+              <span className="library-dialog-icon"><CircleAlert size={20} /></span>
+              <span><strong id="library-confirm-title">{confirm.title}</strong></span>
+            </header>
+            <div className="library-confirm-body">{confirm.message}</div>
+            <footer className="library-dialog-footer">
+              <span className="library-dialog-footer-hint">删除后可在系统回收站中还原。</span>
+              <span className="library-dialog-footer-actions">
+                <button type="button" className="quiet-button" onClick={() => setConfirm(null)}>取消</button>
+                <button type="button" className="library-accent-button is-danger" onClick={() => { const action = confirm.onConfirm; setConfirm(null); action(); }}>{confirm.confirmLabel}</button>
+              </span>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {renameOpen ? (
+        <div className="library-backdrop library-backdrop-inner library-confirm-backdrop" role="presentation" onMouseDown={(event) => { event.stopPropagation(); setRenameOpen(null); }}>
+          <section className="library-confirm-dialog" role="dialog" aria-modal="true" aria-label="重命名素材" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="library-dialog-heading">
+              <span className="library-dialog-icon"><Pencil size={20} /></span>
+              <span><strong>重命名素材</strong></span>
+            </header>
+            <div className="library-confirm-body">
+              <div className="library-rename-row">
+                <input
+                  className="library-rename-input"
+                  value={renameDraft}
+                  onChange={(event) => setRenameDraft(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") commitRename(); if (event.key === "Escape") setRenameOpen(null); }}
+                  placeholder="新名称"
+                  autoFocus
+                  aria-label="新名称"
+                />
+                <span className="library-rename-ext">{renameOpen.name.slice(renameOpen.name.lastIndexOf("."))}</span>
+              </div>
+            </div>
+            <footer className="library-dialog-footer">
+              <span className="library-dialog-footer-hint">扩展名保持不变。</span>
+              <span className="library-dialog-footer-actions">
+                <button type="button" className="quiet-button" onClick={() => setRenameOpen(null)}>取消</button>
+                <button type="button" className="library-accent-button" onClick={commitRename} disabled={!renameDraft.trim()}>重命名</button>
+              </span>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
       {extract.open ? (
-        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={() => { if (!extract.running) setExtract((current) => ({ ...current, open: false })); }}>
+        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={(event) => { event.stopPropagation(); if (!extract.running) setExtract((current) => ({ ...current, open: false })); }}>
           <section className="library-extract-dialog" role="dialog" aria-modal="true" aria-labelledby="library-extract-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="library-dialog-heading">
               <span className="library-dialog-icon"><Scissors size={21} /></span>
@@ -1430,7 +1778,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       ) : null}
 
       {jianying.open ? (
-        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={() => { if (!jianying.scanning && !jianying.busy) setJianying((current) => ({ ...current, open: false })); }}>
+        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={(event) => { event.stopPropagation(); if (!jianying.scanning && !jianying.busy) setJianying((current) => ({ ...current, open: false })); }}>
           <section className="library-move-dialog library-jianying-dialog" role="dialog" aria-modal="true" aria-labelledby="library-jianying-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="library-dialog-heading">
               <span className="library-dialog-icon"><Clapperboard size={20} /></span>
@@ -1566,28 +1914,81 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
         </div>
       ) : null}
 
+      {imagePreview ? (
+        <div className="library-backdrop library-backdrop-inner library-video-backdrop" role="presentation" onMouseDown={(event) => { event.stopPropagation(); setImagePreview(null); setImageFailed(false); }}>
+          <section className="library-video-player" role="dialog" aria-modal="true" aria-label={`预览图片 ${imagePreview.name}`} onMouseDown={(event) => event.stopPropagation()}>
+            <header className="library-dialog-heading">
+              <span className="library-dialog-icon"><ImageIcon size={20} /></span>
+              <span>
+                <small>图片水印预览</small>
+                <strong title={imagePreview.name}>{imagePreview.name}</strong>
+              </span>
+              <button type="button" className="update-close" onClick={() => { setImagePreview(null); setImageFailed(false); }} aria-label="关闭图片预览"><X size={17} /></button>
+            </header>
+            <div className="library-image-player-body">
+              {imageFailed ? (
+                <div className="library-image-player-error">
+                  <CircleAlert size={20} />
+                  <span>无法预览此格式（如 TIFF 请先转为 PNG / JPG）</span>
+                </div>
+              ) : (
+                <img
+                  key={imagePreview.path}
+                  className="library-image-player-media"
+                  src={engine.toAssetUrl(imagePreview.path)}
+                  alt={imagePreview.name}
+                  onError={() => setImageFailed(true)}
+                />
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       {videoPreview ? (
-        <div className="library-backdrop library-backdrop-inner library-video-backdrop" role="presentation" onMouseDown={() => { setVideoPreview(null); setVideoUrl(null); setPlayingPath(null); }}>
-          <section className="library-video-player" role="dialog" aria-modal="true" aria-label={`播放预览 ${videoPreview.name}`} onMouseDown={(event) => event.stopPropagation()}>
+        <div className="library-backdrop library-backdrop-inner library-video-backdrop" role="presentation" onMouseDown={(event) => { event.stopPropagation(); closeVideoPreview(); }}>
+          <section className={`library-video-player${videoAspect !== null && videoAspect > 1 ? " is-portrait" : ""}`} role="dialog" aria-modal="true" aria-label={`播放预览 ${videoPreview.name}`} onMouseDown={(event) => event.stopPropagation()}>
             <header className="library-dialog-heading">
               <span className="library-dialog-icon"><Clapperboard size={20} /></span>
               <span>
                 <small>视频水印预览</small>
                 <strong title={videoPreview.name}>{videoPreview.name}</strong>
               </span>
-              <button type="button" className="update-close" onClick={() => { setVideoPreview(null); setVideoUrl(null); setPlayingPath(null); }} aria-label="关闭视频预览"><X size={17} /></button>
+              <button type="button" className="update-close" onClick={closeVideoPreview} aria-label="关闭视频预览"><X size={17} /></button>
             </header>
             <div className="library-video-player-body">
               {videoUrl ? (
-                <video
-                  key={videoUrl}
-                  className="library-video-player-media"
-                  src={videoUrl}
-                  controls
-                  autoPlay
-                  playsInline
-                  onEnded={() => setPlayingPath(null)}
-                />
+                <>
+                  <video
+                    key={videoUrl}
+                    className={`library-video-player-media${videoAspect === null ? " is-pending" : ""}`}
+                    src={videoUrl}
+                    controls
+                    autoPlay
+                    playsInline
+                    onLoadedMetadata={(event) => {
+                      const media = event.currentTarget;
+                      if (media.videoWidth && media.videoHeight) {
+                        setVideoAspect(media.videoHeight / media.videoWidth);
+                        if (videoMetaTimerRef.current !== null) {
+                          window.clearTimeout(videoMetaTimerRef.current);
+                          videoMetaTimerRef.current = null;
+                        }
+                      }
+                    }}
+                    onError={() => {
+                      notify("error", "视频预览播放失败（格式不受支持）");
+                      closeVideoPreview();
+                    }}
+                    onEnded={() => setPlayingPath(null)}
+                  />
+                  {videoAspect === null ? (
+                    <div className="library-video-player-loading">
+                      <Loader2 className="is-spinning" size={20} />
+                      <span>正在准备视频预览…</span>
+                    </div>
+                  ) : null}
+                </>
               ) : (
                 <div className="library-video-player-loading">
                   <Loader2 className="is-spinning" size={20} />
@@ -1606,7 +2007,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   return createPortal(dialog, document.body);
 }
 
-function FolderNode({ nodes, depth, currentFolder, expanded, creatingUnder, renaming, folderDraft, onFolderDraft, onSelect, onToggle, onStartCreate, onStartRename, onDelete, onCommit, onCancelEdit }: {
+function FolderNode({ nodes, depth, currentFolder, expanded, creatingUnder, renaming, folderDraft, dropTarget, onFolderDraft, onSelect, onToggle, onStartCreate, onStartRename, onDelete, onCommit, onCancelEdit, onFolderDragOver, onFolderDrop, onFolderDragLeave }: {
   nodes: TreeNode[];
   depth: number;
   currentFolder: string;
@@ -1614,6 +2015,7 @@ function FolderNode({ nodes, depth, currentFolder, expanded, creatingUnder, rena
   creatingUnder: string | null;
   renaming: string | null;
   folderDraft: string;
+  dropTarget: string | null;
   onFolderDraft: (value: string) => void;
   onSelect: (folder: string) => void;
   onToggle: (folder: string) => void;
@@ -1622,6 +2024,9 @@ function FolderNode({ nodes, depth, currentFolder, expanded, creatingUnder, rena
   onDelete: (folder: string) => void;
   onCommit: () => void;
   onCancelEdit: () => void;
+  onFolderDragOver: (folder: string, event: ReactDragEvent<HTMLElement>) => void;
+  onFolderDrop: (folder: string, event: ReactDragEvent<HTMLElement>) => void;
+  onFolderDragLeave: (folder: string) => void;
 }) {
   return (
     <>
@@ -1637,7 +2042,14 @@ function FolderNode({ nodes, depth, currentFolder, expanded, creatingUnder, rena
                   {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </button>
               ) : <span className="library-tree-chevron-empty" />}
-              <button type="button" className="library-tree-folder" onClick={() => onSelect(node.relative)}>
+              <button
+                type="button"
+                className={`library-tree-folder${dropTarget === node.relative ? " is-drop-target" : ""}`}
+                onClick={() => onSelect(node.relative)}
+                onDragOver={(event) => onFolderDragOver(node.relative, event)}
+                onDrop={(event) => onFolderDrop(node.relative, event)}
+                onDragLeave={() => onFolderDragLeave(node.relative)}
+              >
                 {isExpanded ? <FolderOpen size={14} /> : <Folder size={14} />}
                 {isEditing ? (
                   <input
@@ -1679,6 +2091,7 @@ function FolderNode({ nodes, depth, currentFolder, expanded, creatingUnder, rena
                 creatingUnder={creatingUnder}
                 renaming={renaming}
                 folderDraft={folderDraft}
+                dropTarget={dropTarget}
                 onFolderDraft={onFolderDraft}
                 onSelect={onSelect}
                 onToggle={onToggle}
@@ -1687,6 +2100,9 @@ function FolderNode({ nodes, depth, currentFolder, expanded, creatingUnder, rena
                 onDelete={onDelete}
                 onCommit={onCommit}
                 onCancelEdit={onCancelEdit}
+                onFolderDragOver={onFolderDragOver}
+                onFolderDrop={onFolderDrop}
+                onFolderDragLeave={onFolderDragLeave}
               />
             ) : null}
           </div>
@@ -1727,18 +2143,78 @@ function MoveFolderList({ folders, currentFolder, onPick }: {
   );
 }
 
+// 水印缩略图：按 path 缓存提取结果，避免切换视图/搜索时重复调用引擎（同 BgmCover 的策略）
+const watermarkThumbCache = new Map<string, string | null>();
+
+function AudioProgressBar({ audioRef, onSeek }: { audioRef: RefObject<HTMLAudioElement | null>; onSeek: (ratio: number) => void }) {
+  const [progress, setProgress] = useState<{ current: number; duration: number } | null>(null);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const update = () => {
+      const currentTime = audio.currentTime;
+      const duration = audio.duration;
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      // 仅当整秒变化时更新，避免每个 timeupdate 都触发父级重渲染
+      setProgress((prev) => (prev && Math.floor(prev.current) === Math.floor(currentTime) ? prev : { current: currentTime, duration }));
+    };
+    audio.addEventListener("timeupdate", update);
+    audio.addEventListener("loadedmetadata", update);
+    audio.addEventListener("durationchange", update);
+    update();
+    return () => {
+      audio.removeEventListener("timeupdate", update);
+      audio.removeEventListener("loadedmetadata", update);
+      audio.removeEventListener("durationchange", update);
+    };
+  }, [audioRef]);
+
+  const current = progress?.current ?? 0;
+  const duration = progress?.duration ?? 0;
+  const ratio = duration > 0 ? Math.min(1, current / duration) : 0;
+  return (
+    <span className="library-audio-progress">
+      <span
+        className="library-audio-progress-track"
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          onSeek(rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0);
+        }}
+        aria-label="播放进度，点击可定位"
+      >
+        <span className="library-audio-progress-fill" style={{ width: `${ratio * 100}%` }} />
+      </span>
+      <small>{formatClock(current)} / {formatClock(duration)}</small>
+    </span>
+  );
+}
+
 function WatermarkThumb({ path, size = "normal" }: { path: string; size?: "small" | "normal" }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    const cached = watermarkThumbCache.get(path);
+    if (cached !== undefined) {
+      if (cached) setUrl(cached);
+      else setFailed(true);
+      return;
+    }
     void engine.call<{ preview_path: string }>("preview_thumbnail", { path, max_width: 240, max_height: 240 }, 30_000)
       .then((result) => {
-        if (!cancelled) setUrl(engine.toAssetUrl(result.preview_path));
+        if (cancelled) return;
+        const thumbUrl = engine.toAssetUrl(result.preview_path);
+        watermarkThumbCache.set(path, thumbUrl || null);
+        if (thumbUrl) setUrl(thumbUrl);
+        else setFailed(true);
       })
       .catch(() => {
-        if (!cancelled) setFailed(true);
+        if (!cancelled) {
+          watermarkThumbCache.set(path, null);
+          setFailed(true);
+        }
       });
     return () => { cancelled = true; };
   }, [path]);

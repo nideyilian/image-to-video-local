@@ -7,6 +7,7 @@ import gc
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,12 +17,15 @@ from typing import Any
 
 from ..utils.ffmpeg_runtime import configure_ffmpeg_environment, probe_ffmpeg
 from .config import build_default_config, normalize_config, scan_audio_files, scan_images, validate_config, validate_config_detailed
-from .library import LibraryManager, _probe_duration
+from .library import LibraryManager
 from .preview_random import preview_choice, preview_sample
 from .runner import JobManager
 
 
 PROTOCOL_VERSION = 1
+
+# WebView2（Chromium）可直接播放的音频封装格式，无需转码，直接拷贝即可
+_AUDIO_PLAYABLE_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 
 
 def _configure_utf8_stdio() -> None:
@@ -169,6 +173,10 @@ class EngineServer:
             return self.library.import_files(params)
         if method == "library_remove":
             return self.library.remove(params)
+        if method == "library_remove_batch":
+            return self.library.remove_batch(params)
+        if method == "library_rename":
+            return self.library.rename_item(params)
         if method == "library_create_folder":
             return self.library.create_folder(params)
         if method == "library_rename_folder":
@@ -440,81 +448,85 @@ class EngineServer:
         }
 
     def _library_preview_audio(self, params: dict[str, Any]) -> dict[str, Any]:
-        """把素材库中的任意音频转码为浏览器可播放的 MP3 预览。"""
+        """把素材库音频准备为 WebView 可播放的预览。
+
+        已是浏览器可播放的封装格式（mp3/wav/m4a/aac/ogg/flac）时直接拷贝，
+        避免不必要的 FFmpeg 转码；其余格式（wma/aiff 等）转码为 MP3。
+        结果缓存于临时目录。
+        """
         source = Path(str(params.get("path", "") or "")).expanduser()
         if not source.is_file():
             raise ValueError("音频文件不存在")
         stat = source.stat()
-        cache_key = f"mp3-v1:{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+        suffix = source.suffix.lower()
+        playable = suffix in _AUDIO_PLAYABLE_EXTENSIONS
+        cache_key = f"audio-v2:{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
         preview_dir = Path(tempfile.gettempdir()) / "image-to-video-engine" / "audio-previews"
         preview_dir.mkdir(parents=True, exist_ok=True)
-        preview_path = preview_dir / f"{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()}.mp3"
-        if not preview_path.exists():
-            if not self.ffmpeg_path:
-                raise ValueError("未找到 FFmpeg，无法读取音频预览")
-            temporary_path = preview_path.with_name(
-                f".{preview_path.stem}-{os.getpid()}-{threading.get_ident()}.tmp.mp3"
-            )
-            startupinfo = None
-            creationflags = 0
-            if sys.platform == "win32":
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-                creationflags = subprocess.CREATE_NO_WINDOW
-            try:
-                result = subprocess.run(
-                    [
-                        self.ffmpeg_path,
-                        "-hide_banner",
-                        "-loglevel",
-                        "error",
-                        "-nostdin",
-                        "-y",
-                        "-i",
-                        str(source),
-                        "-map",
-                        "0:a:0",
-                        "-vn",
-                        "-c:a",
-                        "libmp3lame",
-                        "-q:a",
-                        "4",
-                        "-ar",
-                        "44100",
-                        "-ac",
-                        "2",
-                        str(temporary_path),
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=120,
-                    check=False,
-                    startupinfo=startupinfo,
-                    creationflags=creationflags,
+        output_ext = suffix if playable else ".mp3"
+        preview_path = preview_dir / f"{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()}{output_ext}"
+        if not preview_path.exists() or preview_path.stat().st_size == 0:
+            if playable:
+                shutil.copy2(source, preview_path)
+            else:
+                if not self.ffmpeg_path:
+                    raise ValueError("未找到 FFmpeg，无法读取音频预览")
+                temporary_path = preview_path.with_name(
+                    f".{preview_path.stem}-{os.getpid()}-{threading.get_ident()}.tmp.mp3"
                 )
-                if result.returncode != 0 or not temporary_path.is_file():
-                    detail = next(
-                        (line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()),
-                        source.name,
+                startupinfo = None
+                creationflags = 0
+                if sys.platform == "win32":
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = subprocess.SW_HIDE
+                    creationflags = subprocess.CREATE_NO_WINDOW
+                try:
+                    result = subprocess.run(
+                        [
+                            self.ffmpeg_path,
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-nostdin",
+                            "-y",
+                            "-i",
+                            str(source),
+                            "-map",
+                            "0:a:0",
+                            "-vn",
+                            "-c:a",
+                            "libmp3lame",
+                            "-q:a",
+                            "4",
+                            "-ar",
+                            "44100",
+                            "-ac",
+                            "2",
+                            str(temporary_path),
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=120,
+                        check=False,
+                        startupinfo=startupinfo,
+                        creationflags=creationflags,
                     )
-                    raise ValueError(f"音频预览转换失败：{detail}")
-                os.replace(temporary_path, preview_path)
-            except subprocess.TimeoutExpired as exc:
-                raise ValueError("音频预览转换超时，请检查音频文件") from exc
-            finally:
-                temporary_path.unlink(missing_ok=True)
-        duration = _probe_duration(self.library._ffprobe(), source)
-        return {
-            "source": str(source.resolve()),
-            "preview_path": str(preview_path.resolve()),
-            "name": source.name,
-            "mime_type": "audio/mpeg",
-            "duration": duration,
-        }
+                    if result.returncode != 0 or not temporary_path.is_file():
+                        detail = next(
+                            (line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()),
+                            source.name,
+                        )
+                        raise ValueError(f"音频预览转换失败：{detail}")
+                    os.replace(temporary_path, preview_path)
+                except subprocess.TimeoutExpired as exc:
+                    raise ValueError("音频预览转换超时，请检查音频文件") from exc
+                finally:
+                    temporary_path.unlink(missing_ok=True)
+        return {"preview_path": str(preview_path.resolve()), "name": source.name, "transcoded": not playable}
 
     def serve(self) -> int:
         # 引擎已就绪，立即通知前端关闭启动屏（无需等待 ffmpeg 探测或配置加载完成）。

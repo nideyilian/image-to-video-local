@@ -45,8 +45,22 @@ def _write_rhythm_wav(path: Path, pattern: list[float], seconds_per_segment: int
 
 
 @pytest.fixture()
-def manager(tmp_path):
+def manager(tmp_path, monkeypatch):
     ffmpeg_path = configure_ffmpeg_environment(ROOT)
+    import src.engine.library as library_module
+
+    class FakeTrash:
+        """测试用回收站：模拟「移走」效果，不污染系统回收站。"""
+
+        @staticmethod
+        def send2trash(path: str):
+            target = Path(path)
+            if target.is_dir():
+                target.rmdir()
+            else:
+                target.unlink()
+
+    monkeypatch.setattr(library_module, "_send2trash", FakeTrash())
     return LibraryManager(ROOT, ffmpeg_path, callback=lambda payload: None)
 
 
@@ -403,6 +417,114 @@ def test_folder_crud_and_move(tmp_path, manager):
     snapshot = manager.snapshot({"bgm_dir": str(bgm_dir), "watermark_dir": str(watermark_dir)})
     assert snapshot["watermark"][0]["folder"] == "成品"
     assert {item["relative"] for item in snapshot["watermark_folders"]} == {"A", "A/B", "成品"}
+
+
+def test_remove_sends_file_to_trash(tmp_path, manager, monkeypatch):
+    """删除素材应走回收站组件，而非直接 unlink。"""
+    import src.engine.library as library_module
+
+    watermark_dir = tmp_path / "水印"
+    watermark_dir.mkdir()
+    target = watermark_dir / "logo.png"
+    target.write_bytes(b"png-bytes")
+
+    calls: list[str] = []
+
+    class Recorder:
+        @staticmethod
+        def send2trash(path: str):
+            calls.append(path)
+
+    monkeypatch.setattr(library_module, "_send2trash", Recorder())
+
+    result = manager.remove({
+        "kind": "watermark",
+        "path": str(target),
+        "watermark_dir": str(watermark_dir),
+    })
+    assert result["removed"] is True
+    # 走的是回收站组件，而不是直接删除文件
+    assert calls == [str(target)]
+    assert target.exists()
+
+
+def test_delete_folder_sends_to_trash(tmp_path, manager, monkeypatch):
+    """删除空文件夹也应走回收站组件。"""
+    import src.engine.library as library_module
+
+    watermark_dir = tmp_path / "水印"
+    watermark_dir.mkdir()
+    folder = watermark_dir / "空文件夹"
+    folder.mkdir()
+
+    calls: list[str] = []
+
+    class Recorder:
+        @staticmethod
+        def send2trash(path: str):
+            calls.append(path)
+
+    monkeypatch.setattr(library_module, "_send2trash", Recorder())
+
+    manager.delete_folder({"kind": "watermark", "folder": "空文件夹", "watermark_dir": str(watermark_dir)})
+    assert calls == [str(folder)]
+    assert folder.exists()
+
+
+def test_remove_batch_routes_to_trash(tmp_path, manager, monkeypatch):
+    """批量删除一次处理多个文件，且都走回收站组件。"""
+    import src.engine.library as library_module
+
+    watermark_dir = tmp_path / "水印"
+    watermark_dir.mkdir()
+    targets = [watermark_dir / f"{index}.png" for index in range(3)]
+    for target in targets:
+        target.write_bytes(b"png")
+
+    calls: list[str] = []
+
+    class Recorder:
+        @staticmethod
+        def send2trash(path: str):
+            calls.append(path)
+
+    monkeypatch.setattr(library_module, "_send2trash", Recorder())
+
+    result = manager.remove_batch({
+        "kind": "watermark",
+        "paths": [str(target) for target in targets],
+        "watermark_dir": str(watermark_dir),
+    })
+    assert [item["status"] for item in result["results"]] == ["removed", "removed", "removed"]
+    assert calls == [str(target) for target in targets]
+    assert all(target.exists() for target in targets)
+
+
+def test_rename_item_keeps_extension(tmp_path, manager):
+    watermark_dir = tmp_path / "水印"
+    watermark_dir.mkdir()
+    target = watermark_dir / "旧名.mp4"
+    target.write_bytes(b"video")
+
+    result = manager.rename_item({
+        "kind": "watermark",
+        "path": str(target),
+        "new_name": "新名字.wav",  # 扩展名会被强制改回 .mp4
+        "watermark_dir": str(watermark_dir),
+    })
+    assert result["name"] == "新名字.mp4"
+    assert (watermark_dir / "新名字.mp4").is_file()
+    assert not target.exists()
+
+    # 无扩展名时自动补原扩展名
+    result = manager.rename_item({
+        "kind": "watermark",
+        "path": str(watermark_dir / "新名字.mp4"),
+        "new_name": "最终名",
+        "watermark_dir": str(watermark_dir),
+    })
+    assert result["name"] == "最终名.mp4"
+    assert (watermark_dir / "最终名.mp4").is_file()
 
 
 def test_move_into_folder_with_same_content_is_duplicate(tmp_path, manager):

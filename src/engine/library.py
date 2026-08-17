@@ -38,6 +38,25 @@ try:
 except Exception:  # pragma: no cover
     resolve_ffprobe_path = None
 
+try:
+    import send2trash as _send2trash
+except Exception:  # pragma: no cover - 无 send2trash 依赖的环境
+    _send2trash = None
+
+
+def _trash(path: Path) -> None:
+    """把文件/文件夹移入系统回收站（Windows），给用户反悔机会。
+
+    未安装 send2trash 或移入失败时抛出明确错误，调用方（前端）据此提示，
+    文件保留在原位，绝不静默回退为永久删除。
+    """
+    if _send2trash is None:
+        raise ValueError("未安装回收站组件（send2trash），无法安全删除")
+    try:
+        _send2trash.send2trash(str(path))
+    except Exception as exc:  # pragma: no cover - 取决于系统环境
+        raise ValueError(f"移入回收站失败：{exc}") from exc
+
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".wma", ".aiff"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff"}
@@ -901,13 +920,97 @@ class LibraryManager:
         target = path if path.is_absolute() else base / path
         if not target.is_file() or not self._inside(base, target):
             raise ValueError("只能删除素材库内的文件")
-        target.unlink()
+        _trash(target)
         directory = target.parent
         with self._index_lock(directory):
             index = self._load_index(directory)
             index.get("entries", {}).pop(target.name, None)
             self._save_index(directory, index)
         return {"removed": True, "path": str(target.resolve())}
+
+    def remove_batch(self, params: dict[str, Any]) -> dict[str, Any]:
+        """批量删除素材：一次调用处理多个文件，逐个送回收站并返回结果。"""
+        kind = str(params.get("kind", "") or "").strip()
+        paths = params.get("paths") or []
+        if kind not in {"bgm", "watermark"}:
+            raise ValueError("素材类型必须是 bgm 或 watermark")
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("没有可删除的素材")
+        bgm_dir, watermark_dir = self._resolve_dirs(
+            params.get("bgm_dir"), params.get("watermark_dir")
+        )
+        base = bgm_dir if kind == "bgm" else watermark_dir
+        results: list[dict[str, Any]] = []
+        for raw in paths:
+            path = Path(str(raw or "")).expanduser()
+            target = path if path.is_absolute() else base / path
+            result: dict[str, Any] = {
+                "name": target.name,
+                "path": str(target),
+                "status": "failed",
+                "reason": "文件不存在",
+            }
+            if not target.is_file():
+                results.append(result)
+                continue
+            if not self._inside(base, target):
+                result["reason"] = "只能删除素材库内的文件"
+                results.append(result)
+                continue
+            try:
+                _trash(target)
+                directory = target.parent
+                with self._index_lock(directory):
+                    index = self._load_index(directory)
+                    index.get("entries", {}).pop(target.name, None)
+                    self._save_index(directory, index)
+                result["status"] = "removed"
+                result["path"] = str(target.resolve())
+                result.pop("reason", None)
+            except (OSError, ValueError) as exc:
+                result["reason"] = str(exc)
+            results.append(result)
+        return {"results": results}
+
+    def rename_item(self, params: dict[str, Any]) -> dict[str, Any]:
+        """重命名素材（仅改文件名，保留原扩展名与所在文件夹）。"""
+        kind = str(params.get("kind", "") or "").strip()
+        path = Path(str(params.get("path", "") or "")).expanduser()
+        new_name = str(params.get("new_name", "") or "").strip()
+        if kind not in {"bgm", "watermark"}:
+            raise ValueError("素材类型必须是 bgm 或 watermark")
+        bgm_dir, watermark_dir = self._resolve_dirs(
+            params.get("bgm_dir"), params.get("watermark_dir")
+        )
+        base = bgm_dir if kind == "bgm" else watermark_dir
+        target = path if path.is_absolute() else base / path
+        if not target.is_file() or not self._inside(base, target):
+            raise ValueError("只能重命名素材库内的文件")
+        if not new_name or new_name in {".", ".."} or "/" in new_name or "\\" in new_name:
+            raise ValueError("请输入合法的文件名")
+        if any(character in new_name for character in '<>:"|?*'):
+            raise ValueError("文件名包含非法字符")
+        # 强制沿用原扩展名，避免改扩展名导致文件不可用
+        final_name = f"{Path(new_name).stem}{target.suffix}"
+        if not Path(new_name).stem:
+            raise ValueError("请输入文件名")
+        new_target = target.parent / final_name
+        if new_target == target:
+            return {"renamed": True, "name": final_name, "path": str(target.resolve())}
+        if new_target.exists():
+            raise ValueError("同名文件已存在")
+        os.rename(target, new_target)
+        directory = target.parent
+        with self._index_lock(directory):
+            index = self._load_index(directory)
+            entries = index.get("entries", {})
+            entry = entries.pop(target.name, None)
+            if isinstance(entry, dict):
+                entry["mtime_ns"] = new_target.stat().st_mtime_ns
+                entry["size"] = new_target.stat().st_size
+                entries[new_target.name] = entry
+            self._save_index(directory, index)
+        return {"renamed": True, "name": final_name, "path": str(new_target.resolve())}
 
     # ---------- 文件夹管理 ----------
 
@@ -959,7 +1062,7 @@ class LibraryManager:
             raise ValueError("文件夹不存在")
         if any(target.iterdir()):
             raise ValueError("文件夹不为空，请先清空或移走其中的文件")
-        target.rmdir()
+        _trash(target)
         return {"deleted": True, "folder": folder}
 
     def move(self, params: dict[str, Any]) -> dict[str, Any]:

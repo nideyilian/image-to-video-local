@@ -8,6 +8,7 @@ pygame>=2.0.0
 customtkinter>=5.2.0
 PySide6
 PyYAML>=6.0
+Send2Trash>=1.8.0
 # Optional dependencies
 # PyQt6>=6.0.0
 # imageio>=2.5.0
