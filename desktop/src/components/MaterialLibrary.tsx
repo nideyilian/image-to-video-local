@@ -29,6 +29,7 @@ import {
   Scissors,
   Search,
   Sparkles,
+  Stamp,
   Trash2,
   Upload,
   X,
@@ -237,6 +238,8 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   const [playingPath, setPlayingPath] = useState<string | null>(null);
   const [extract, setExtract] = useState<ExtractStatus>(IDLE_EXTRACT);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [videoPreview, setVideoPreview] = useState<{ path: string; name: string } | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const mountedRef = useRef(true);
 
@@ -321,6 +324,8 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   useEffect(() => {
     if (open) return;
     audioRef.current?.pause();
+    setVideoPreview(null);
+    setVideoUrl(null);
     setPlayingPath(null);
   }, [open]);
 
@@ -390,6 +395,12 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
           document.body.classList.remove("is-marquee-active");
           return;
         }
+        if (videoPreview) {
+          setVideoPreview(null);
+          setVideoUrl(null);
+          setPlayingPath(null);
+          return;
+        }
         onClose();
         return;
       }
@@ -414,7 +425,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       document.body.classList.remove("is-modal-open");
       previousFocus?.focus();
     };
-  }, [open, onClose]);
+  }, [open, onClose, videoPreview]);
 
   const selectFolder = useCallback((folder: string) => {
     setCurrentFolder(folder);
@@ -638,6 +649,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       setPlayingPath(null);
       return;
     }
+    audioRef.current?.pause();
     try {
       const preview = await engine.call<{ preview_path: string }>("library_preview_audio", { path: item.path }, 130_000);
       const audio = audioRef.current;
@@ -657,6 +669,24 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       notify("error", err instanceof Error ? err.message : "试听失败");
     }
   }, [notify, playingPath]);
+
+  // 视频水印素材：点击播放 → 弹出放大播放器（引擎按需转码为 WebView 可播放格式）
+  const openVideoPreview = useCallback(async (item: LibraryItem) => {
+    if (!engine.desktopRuntime) return notify("info", "视频预览需要在 Tauri 桌面窗口中运行");
+    audioRef.current?.pause();
+    setVideoPreview({ path: item.path, name: item.name });
+    setVideoUrl(null);
+    setPlayingPath(item.path);
+    try {
+      const preview = await engine.call<{ preview_path: string }>("library_preview_video", { path: item.path }, 130_000);
+      setVideoUrl(engine.toAssetUrl(preview.preview_path));
+    } catch (err) {
+      setVideoPreview(null);
+      setVideoUrl(null);
+      setPlayingPath(null);
+      notify("error", err instanceof Error ? err.message : "视频预览失败");
+    }
+  }, [notify]);
 
   const applyBgmDir = useCallback(() => {
     if (!dirs) return;
@@ -1118,19 +1148,31 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                 {visibleItems.map((item) => {
                   const isSelected = selected.has(item.path);
                   const isVideo = item.type === "video";
+                  const isPlaying = playingPath === item.path;
                   return (
                     <li key={item.path} ref={registerItemRef(item.path)} className={`library-row${isSelected ? " is-selected" : ""}`}>
                       <input type="checkbox" className="library-checkbox" checked={isSelected} onChange={() => toggleSelected(item.path)} aria-label={`选择 ${item.name}`} />
-                      <span className="library-thumb-wrap">
-                        <WatermarkThumb path={item.path} size="small" />
-                        {isVideo ? <span className="library-thumb-badge"><Play size={9} />{formatDuration(item.duration)}</span> : null}
-                      </span>
+                      {isVideo ? (
+                        <button type="button" className="library-thumb-play" onClick={() => void openVideoPreview(item)} aria-label={`播放预览 ${item.name}`} title="放大播放预览">
+                          <span className="library-thumb-play-hint"><Play size={16} /></span>
+                          <span className="library-thumb-wrap">
+                            <WatermarkThumb path={item.path} size="small" />
+                            {isPlaying ? <span className="library-thumb-playing"><Pause size={10} /></span> : null}
+                            <span className="library-thumb-badge"><Play size={9} />{formatDuration(item.duration)}</span>
+                          </span>
+                        </button>
+                      ) : (
+                        <span className="library-thumb-wrap">
+                          <WatermarkThumb path={item.path} size="small" />
+                        </span>
+                      )}
                       <span className="library-row-main">
                         <strong title={item.path}>{item.name}</strong>
                         <small>{item.folder ? `${item.folder} · ` : ""}{isVideo ? `${formatDuration(item.duration)} · ` : ""}{formatBytes(item.size_bytes)}{item.added_at ? ` · 入库于 ${item.added_at}` : ""}</small>
                       </span>
                       <span className="library-row-actions">
-                        {isVideo ? <button type="button" className="quiet-button" onClick={() => useAsVideoWatermark(item)}><Play size={13} />用作视频水印</button> : null}
+                        {isVideo ? <button type="button" className="icon-button" onClick={() => void openVideoPreview(item)} aria-label="放大播放预览" title="放大播放预览"><Play size={14} /></button> : null}
+                        {isVideo ? <button type="button" className="quiet-button" onClick={() => useAsVideoWatermark(item)}><Stamp size={13} />用作视频水印</button> : null}
                         <button type="button" className="quiet-button" onClick={() => addWatermarkLayer(item)}><Plus size={13} />加入水印图层</button>
                         <button type="button" className="icon-button" onClick={() => { setSelected(new Set([item.path])); setMoveOpen(true); }} aria-label={`移动 ${item.name}`}><Move size={14} /></button>
                         <button type="button" className="icon-button danger" onClick={() => void removeItems("watermark", [item.path])} aria-label={`删除 ${item.name}`}><Trash2 size={15} /></button>
@@ -1151,19 +1193,30 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                 {visibleItems.map((item) => {
                   const isSelected = selected.has(item.path);
                   const isVideo = item.type === "video";
+                  const isPlaying = playingPath === item.path;
                   return (
                     <li key={item.path} ref={registerItemRef(item.path)} className={`library-card${isSelected ? " is-selected" : ""}`}>
                       <span className="library-card-check"><input type="checkbox" className="library-checkbox" checked={isSelected} onChange={() => toggleSelected(item.path)} aria-label={`选择 ${item.name}`} /></span>
-                      <span className="library-thumb-wrap">
-                        <WatermarkThumb path={item.path} />
-                        {isVideo ? <span className="library-thumb-badge"><Play size={10} />{formatDuration(item.duration)}</span> : null}
-                      </span>
+                      {isVideo ? (
+                        <button type="button" className="library-thumb-play" onClick={() => void openVideoPreview(item)} aria-label={`播放预览 ${item.name}`} title="放大播放预览">
+                          <span className="library-thumb-play-hint"><Play size={16} /></span>
+                          <span className="library-thumb-wrap">
+                            <WatermarkThumb path={item.path} />
+                            {isPlaying ? <span className="library-thumb-playing"><Pause size={12} /></span> : null}
+                            <span className="library-thumb-badge"><Play size={10} />{formatDuration(item.duration)}</span>
+                          </span>
+                        </button>
+                      ) : (
+                        <span className="library-thumb-wrap">
+                          <WatermarkThumb path={item.path} />
+                        </span>
+                      )}
                       <span className="library-card-meta">
                         <strong title={item.path}>{item.name}</strong>
                         <small>{item.folder ? `${item.folder} · ` : ""}{isVideo ? `${formatDuration(item.duration)} · ` : ""}{formatBytes(item.size_bytes)}</small>
                       </span>
                       <span className="library-card-actions">
-                        {isVideo ? <button type="button" className="icon-button" onClick={() => useAsVideoWatermark(item)} aria-label={`用作视频水印 ${item.name}`} title="用作视频水印"><Play size={14} /></button> : null}
+                        {isVideo ? <button type="button" className="icon-button" onClick={() => useAsVideoWatermark(item)} aria-label={`用作视频水印 ${item.name}`} title="用作视频水印（设为导出水印）"><Stamp size={14} /></button> : null}
                         <button type="button" className="icon-button" onClick={() => addWatermarkLayer(item)} aria-label={`加入水印图层 ${item.name}`} title="加入水印图层"><Layers size={14} /></button>
                         <button type="button" className="icon-button" onClick={() => { setSelected(new Set([item.path])); setMoveOpen(true); }} aria-label={`移动 ${item.name}`} title="移动"><Move size={13} /></button>
                         <button type="button" className="icon-button danger" onClick={() => void removeItems("watermark", [item.path])} aria-label={`删除 ${item.name}`} title="删除"><Trash2 size={14} /></button>
@@ -1379,6 +1432,39 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                   </div>
                 </>
               ) : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {videoPreview ? (
+        <div className="library-backdrop library-backdrop-inner library-video-backdrop" role="presentation" onMouseDown={() => { setVideoPreview(null); setVideoUrl(null); setPlayingPath(null); }}>
+          <section className="library-video-player" role="dialog" aria-modal="true" aria-label={`播放预览 ${videoPreview.name}`} onMouseDown={(event) => event.stopPropagation()}>
+            <header className="library-dialog-heading">
+              <span className="library-dialog-icon"><Clapperboard size={20} /></span>
+              <span>
+                <small>视频水印预览</small>
+                <strong title={videoPreview.name}>{videoPreview.name}</strong>
+              </span>
+              <button type="button" className="update-close" onClick={() => { setVideoPreview(null); setVideoUrl(null); setPlayingPath(null); }} aria-label="关闭视频预览"><X size={17} /></button>
+            </header>
+            <div className="library-video-player-body">
+              {videoUrl ? (
+                <video
+                  key={videoUrl}
+                  className="library-video-player-media"
+                  src={videoUrl}
+                  controls
+                  autoPlay
+                  playsInline
+                  onEnded={() => setPlayingPath(null)}
+                />
+              ) : (
+                <div className="library-video-player-loading">
+                  <Loader2 className="is-spinning" size={20} />
+                  <span>正在准备视频预览…</span>
+                </div>
+              )}
             </div>
           </section>
         </div>

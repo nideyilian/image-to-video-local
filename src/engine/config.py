@@ -142,7 +142,7 @@ def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
         config["enabled_video_effects"] = [
             VIDEO_EFFECT_ALIASES.get(str(effect), str(effect)) for effect in enabled_effects
         ]
-    config["custom_prefix"] = str(config.get("custom_prefix") or "video").strip() or "video"
+    config["custom_prefix"] = str(config.get("custom_prefix") or "").strip()
     raw_files = config.get("bgm_files")
     config["bgm_files"] = [
         str(path) for path in raw_files

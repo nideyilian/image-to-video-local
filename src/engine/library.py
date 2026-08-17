@@ -511,6 +511,135 @@ class LibraryManager:
             return {"cover_path": None}
         return {"cover_path": _extract_audio_cover(self.ffmpeg_path, source)}
 
+    def preview_video(self, params: dict[str, Any]) -> dict[str, Any]:
+        """把素材库中的视频准备为 WebView 可播放的预览（缓存于资产作用域内）。
+
+        已经是浏览器可直接播放的格式（h264 mp4/mov、webm 等）时直接拷贝；
+        其余格式用 FFmpeg 转码为 H.264 MP4（丢弃音频）。返回 transcoded 标记。
+        """
+        source = Path(str(params.get("path", "") or "")).expanduser()
+        if not source.is_file():
+            raise ValueError("视频文件不存在")
+        stat = source.stat()
+        cache_key = f"video-preview-v1:{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+        preview_dir = Path(tempfile.gettempdir()) / "image-to-video-engine" / "video-previews"
+        try:
+            preview_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(f"无法创建视频预览目录：{exc}") from exc
+
+        playable, output_ext = self._webview_playable_plan(source)
+        digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()
+        preview_path = preview_dir / f"{digest}{output_ext}"
+        if preview_path.is_file() and preview_path.stat().st_size > 0:
+            return {"preview_path": str(preview_path), "transcoded": not playable}
+
+        temporary = preview_path.with_name(
+            f".{preview_path.stem}-{os.getpid()}-{threading.get_ident()}.tmp{output_ext}"
+        )
+        try:
+            if playable:
+                shutil.copy2(source, temporary)
+            else:
+                if not self.ffmpeg_path:
+                    raise ValueError("未找到 FFmpeg，无法生成视频预览")
+                result = _run_ffmpeg(
+                    [
+                        self.ffmpeg_path,
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-nostdin",
+                        "-y",
+                        "-i",
+                        str(source),
+                        "-map",
+                        "0:v:0",
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        "veryfast",
+                        "-crf",
+                        "23",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-an",
+                        "-movflags",
+                        "+faststart",
+                        str(temporary),
+                    ],
+                    timeout=300,
+                )
+                if result.returncode != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
+                    detail = next(
+                        (line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()),
+                        source.name,
+                    )
+                    raise ValueError(f"视频预览转换失败：{detail}")
+            os.replace(temporary, preview_path)
+        except subprocess.TimeoutExpired as exc:
+            temporary.unlink(missing_ok=True)
+            raise ValueError("视频预览转换超时，请稍后重试") from exc
+        except OSError as exc:
+            temporary.unlink(missing_ok=True)
+            raise ValueError(f"视频预览失败：{exc}") from exc
+        return {"preview_path": str(preview_path), "transcoded": not playable}
+
+    def _webview_playable_plan(self, path: Path) -> tuple[bool, str]:
+        """判断视频是否可直接由 WebView2 播放，返回 (可直接拷贝, 目标扩展名)。"""
+        suffix = path.suffix.lower()
+        if suffix == ".webm":
+            return True, ".webm"
+        if suffix not in {".mp4", ".mov", ".m4v", ".mkv"}:
+            return False, ".mp4"
+        codec = self._probe_video_codec(path)
+        if codec in {"h264", "vp8", "vp9", "hevc"}:
+            return True, suffix
+        if codec == "":
+            # 探测不到编码信息时按原样拷贝，播放失败由前端提示
+            return True, suffix
+        return False, ".mp4"
+
+    def _probe_video_codec(self, path: Path) -> str:
+        """读取视频首个视频流编码名；不可用时返回空字符串。"""
+        ffprobe_path = self._ffprobe()
+        if not ffprobe_path:
+            return ""
+        startupinfo = None
+        creationflags = 0
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            creationflags = subprocess.CREATE_NO_WINDOW
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe_path,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=codec_name",
+                    "-of",
+                    "csv=p=0",
+                    str(path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return result.stdout.strip().lower()
+
     def _scan_tree(
         self,
         base: Path,

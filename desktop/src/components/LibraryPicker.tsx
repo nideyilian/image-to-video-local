@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, CircleAlert, Image as ImageIcon, Layers, Loader2, Music, Play, Search, X } from "lucide-react";
+import { Check, CircleAlert, Image as ImageIcon, Layers, Loader2, Music, Play, Search, Stamp, X } from "lucide-react";
 import { engine } from "../engine";
 import type { LibraryDirs, LibraryItem } from "../types";
 import { BgmCover } from "./BgmCover";
@@ -205,7 +205,7 @@ export function LibraryPicker({ open, onClose, kind, selected, onConfirmBgm, onU
                   </span>
                   <span className="library-row-actions">
                     {!isBgm && isVideo && onUseAsVideo ? (
-                      <button type="button" className="quiet-button" onClick={() => onUseAsVideo(item)}><Play size={13} />用作视频水印</button>
+                      <button type="button" className="quiet-button" onClick={() => onUseAsVideo(item)}><Stamp size={13} />用作视频水印</button>
                     ) : null}
                     {!isBgm && onAddWatermarkLayers ? (
                       <button type="button" className="icon-button" onClick={() => onAddWatermarkLayers([item])} aria-label={`加入水印图层 ${item.name}`} title="加入水印图层"><Layers size={14} /></button>

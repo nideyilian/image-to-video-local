@@ -181,6 +181,8 @@ class EngineServer:
             return self._library_preview_audio(params)
         if method == "library_audio_cover":
             return self.library.audio_cover(params)
+        if method == "library_preview_video":
+            return self.library.preview_video(params)
         if method == "library_extract_bgm":
             return self.library.start_extract(params)
         if method == "library_extract_cancel":

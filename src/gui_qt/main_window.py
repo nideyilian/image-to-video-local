@@ -1462,7 +1462,7 @@ class QtMainWindow(QMainWindow):
             "watermark_layers": self._collect_watermark_layers_from_ui(),
             "use_date_prefix": self.use_date_prefix_check.isChecked(),
             "use_first_image_name": self.use_first_image_name_check.isChecked(),
-            "custom_prefix": self.custom_prefix_edit.text().strip() or "video",
+            "custom_prefix": self.custom_prefix_edit.text().strip(),
             "image_selection_mode": self.image_selection_combo.currentText(),
             "bitrate": int(self.bitrate_spin.value()),
             "_qt_watermark_defaults_v2": True,

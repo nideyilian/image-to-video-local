@@ -8219,21 +8219,21 @@ Turbo图片预处理 - 并行优化版本
                 if hasattr(self, 'progress_info_var'):
                     self.progress_info_var.set(f"视频进度: {video_index + 1}/{video_count}")
                 
-                # 生成输出文件名
-                if self.use_date_prefix.get():
-                    from datetime import datetime
-                    date_prefix = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    if self.use_first_image_name.get() and selected_images:
-                        first_image_name = os.path.splitext(os.path.basename(selected_images[0]))[0]
-                        output_filename = f"{date_prefix}_{first_image_name}.{self.video_format.get()}"
-                    else:
-                        output_filename = f"{date_prefix}_{self.custom_prefix.get()}_{video_index + 1:03d}.{self.video_format.get()}"
-                else:
-                    if self.use_first_image_name.get() and selected_images:
-                        first_image_name = os.path.splitext(os.path.basename(selected_images[0]))[0]
-                        output_filename = f"{first_image_name}_{video_index + 1:03d}.{self.video_format.get()}"
-                    else:
-                        output_filename = f"{self.custom_prefix.get()}_{video_index + 1:03d}.{self.video_format.get()}"
+                # 生成输出文件名：连接符统一为 "-"、末尾序号不补零、
+                # 前缀为空不注入默认文案（见 src/utils/naming.py）
+                from ..utils.naming import compose_output_filename
+
+                first_image_name = ""
+                if selected_images:
+                    first_image_name = os.path.splitext(os.path.basename(selected_images[0]))[0]
+                output_filename = compose_output_filename(
+                    use_date_prefix=self.use_date_prefix.get(),
+                    use_first_image_name=self.use_first_image_name.get(),
+                    first_image_name=first_image_name,
+                    custom_prefix=self.custom_prefix.get(),
+                    index=video_index + 1,
+                    video_format=self.video_format.get(),
+                )
                 
                 output_path = os.path.join(output_dir, output_filename)
                 

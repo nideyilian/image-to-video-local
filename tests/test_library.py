@@ -1031,3 +1031,94 @@ def test_audio_cover_method_handles_missing_and_dispatch():
 
     # 参数缺失时同样安全返回
     assert server.library.audio_cover({})["cover_path"] is None
+
+
+def _ffmpeg_run(ffmpeg_path: str, args: list[str], timeout: int = 60):
+    import subprocess
+    import sys
+
+    startupinfo = None
+    creationflags = 0
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        creationflags = subprocess.CREATE_NO_WINDOW
+    return subprocess.run(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+        startupinfo=startupinfo,
+        creationflags=creationflags,
+    )
+
+
+def _make_test_video(tmp_path, name: str, codec: str) -> Path:
+    """用 PIL 帧 + ffmpeg 生成一段测试视频（h264 mp4 / mpeg4 avi）。"""
+    from PIL import Image
+
+    ffmpeg_path = configure_ffmpeg_environment(ROOT)
+    if not ffmpeg_path:
+        pytest.skip("需要 ffmpeg")
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(exist_ok=True)
+    for index in range(4):
+        Image.new("RGB", (64, 36), (60 + index * 40, 40, 90)).save(frames_dir / f"{index}.png")
+    video = tmp_path / name
+    result = _ffmpeg_run(ffmpeg_path, [
+        ffmpeg_path, "-hide_banner", "-loglevel", "error", "-y",
+        "-framerate", "5", "-i", str(frames_dir / "%d.png"),
+        "-c:v", codec, "-pix_fmt", "yuv420p",
+        str(video),
+    ])
+    if result.returncode != 0 or not video.is_file():
+        pytest.skip(f"ffmpeg 无法生成测试视频 {name}")
+    return video
+
+
+def test_library_preview_video_copies_playable_and_caches(tmp_path, manager):
+    """浏览器可播放的 h264 mp4 直接拷贝为预览，且按内容缓存；缺失文件报错。"""
+    video = _make_test_video(tmp_path, "片段.mp4", "libx264")
+
+    result = manager.preview_video({"path": str(video)})
+    preview = Path(result["preview_path"])
+    assert preview.is_file() and preview.stat().st_size > 0
+    assert "image-to-video-engine" in preview.parts
+    assert "video-previews" in preview.parts
+    assert result["transcoded"] is False
+    assert preview.stat().st_size == video.stat().st_size  # 直接拷贝
+
+    # 缓存命中：再次调用返回同一路径
+    again = manager.preview_video({"path": str(video)})
+    assert again["preview_path"] == result["preview_path"]
+
+    # 缺失文件报错
+    with pytest.raises(ValueError, match="视频文件不存在"):
+        manager.preview_video({"path": str(tmp_path / "不存在的视频.mp4")})
+
+
+def test_library_preview_video_transcodes_avi(tmp_path, manager):
+    """浏览器不可播放的格式（mpeg4 avi）转码为 h264 mp4 预览。"""
+    video = _make_test_video(tmp_path, "旧格式.avi", "mpeg4")
+
+    result = manager.preview_video({"path": str(video)})
+    assert result["transcoded"] is True
+    preview = Path(result["preview_path"])
+    assert preview.is_file() and preview.stat().st_size > 0
+    assert preview.suffix == ".mp4"
+    codec = manager._probe_video_codec(preview)
+    assert codec == "h264"
+
+
+def test_server_dispatches_library_preview_video(tmp_path):
+    server = EngineServer(ROOT)
+    video = _make_test_video(tmp_path, "服务端片段.mp4", "libx264")
+
+    result = server._dispatch("library_preview_video", {"path": str(video)})
+    assert Path(result["preview_path"]).is_file()
+    assert "video-previews" in Path(result["preview_path"]).parts
