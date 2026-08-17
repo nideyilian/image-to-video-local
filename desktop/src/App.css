@@ -3695,6 +3695,48 @@ body.is-rail-dragging {
   gap: 8px;
 }
 
+/* 从剪映导入：导入中 / 结果反馈 */
+.library-jianying-busy {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  color: var(--blue);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--blue) 8%, var(--paper-raised));
+  border: 1px solid color-mix(in srgb, var(--blue) 28%, var(--line));
+  border-radius: 4px;
+}
+
+.library-jianying-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: 4px;
+}
+
+.library-jianying-summary svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.library-jianying-summary.is-success {
+  color: var(--olive);
+  background: color-mix(in srgb, var(--olive) 10%, var(--paper-raised));
+  border: 1px solid color-mix(in srgb, var(--olive) 30%, var(--line));
+}
+
+.library-jianying-summary.is-error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 9%, var(--paper-raised));
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
+}
+
 .library-move-body {
   padding: 10px;
   overflow: auto;

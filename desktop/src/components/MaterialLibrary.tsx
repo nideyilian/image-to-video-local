@@ -176,6 +176,8 @@ type JianyingDialogState = {
   source: "draft" | "cache";
   result: JianyingScanResult | null;
   cacheResult: JianyingCacheResult | null;
+  importing: "bgm" | "watermark" | null;
+  summary: { ok: boolean; text: string } | null;
 };
 
 const IDLE_JIANYING: JianyingDialogState = {
@@ -186,6 +188,8 @@ const IDLE_JIANYING: JianyingDialogState = {
   source: "draft",
   result: null,
   cacheResult: null,
+  importing: null,
+  summary: null,
 };
 
 const IDLE_EXTRACT: ExtractStatus = {
@@ -875,7 +879,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
 
   const scanJianying = useCallback(async (root?: string, source: "draft" | "cache" = jianying.source) => {
     if (!engine.desktopRuntime) return notify("info", "从剪映导入需要在 Tauri 桌面窗口中运行");
-    setJianying((current) => ({ ...current, source, scanning: true, error: null, result: null, cacheResult: null }));
+    setJianying((current) => ({ ...current, source, scanning: true, error: null, result: null, cacheResult: null, summary: null }));
     try {
       if (source === "cache") {
         const result = await engine.call<JianyingCacheResult>("jianying_cache_scan", { cache_root: root ?? "" }, 120_000);
@@ -910,14 +914,25 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   const importJianying = useCallback(async (kind: "bgm" | "watermark") => {
     if (!dirs) return;
     const source = jianying.source === "cache" ? jianying.cacheResult : jianying.result;
-    if (!source) return;
+    if (!source) {
+      notify(
+        "info",
+        jianying.source === "cache"
+          ? "内置资源还没有扫描完成，请稍候或点击「重新扫描」后再导入。"
+          : "草稿素材还没有扫描完成，请稍候或点击「重新扫描」后再导入。",
+      );
+      return;
+    }
     const entries = kind === "bgm"
       ? source.audios
       : jianying.source === "cache" || !("images" in source)
         ? source.videos
         : [...source.videos, ...source.images, ...source.effects, ...source.transitions];
-    if (!entries.length) return;
-    setJianying((current) => ({ ...current, busy: true }));
+    if (!entries.length) {
+      notify("info", kind === "bgm" ? "没有可导入的 BGM / 音效素材。" : "没有可导入的水印素材。");
+      return;
+    }
+    setJianying((current) => ({ ...current, busy: true, importing: kind, summary: null }));
     try {
       const result = await engine.call<{ results: LibraryImportResult[] }>(
         "library_import",
@@ -933,22 +948,23 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       const imported = result.results.filter((item) => item.status === "imported").length;
       const duplicates = result.results.filter((item) => item.status === "duplicate").length;
       const failed = result.results.filter((item) => item.status === "failed").length;
-      notify(
-        failed && !imported ? "error" : "success",
-        kind === "bgm"
-          ? `已从剪映导入 ${imported} 条 BGM${duplicates ? `，跳过重复 ${duplicates} 条` : ""}${failed ? `，失败 ${failed} 条` : ""}`
-          : `已从剪映导入 ${imported} 个素材到水印库${duplicates ? `，跳过重复 ${duplicates} 个` : ""}${failed ? `，失败 ${failed} 个` : ""}`,
-      );
+      const message = kind === "bgm"
+        ? `已从剪映导入 ${imported} 条 BGM${duplicates ? `，跳过重复 ${duplicates} 条` : ""}${failed ? `，失败 ${failed} 条` : ""}`
+        : `已从剪映导入 ${imported} 个素材到水印库${duplicates ? `，跳过重复 ${duplicates} 个` : ""}${failed ? `，失败 ${failed} 个` : ""}`;
+      notify(failed && !imported ? "error" : "success", message);
+      setJianying((current) => ({ ...current, summary: { ok: !failed || imported > 0, text: message } }));
       await refresh();
     } catch (err) {
-      notify("error", err instanceof Error ? err.message : "从剪映导入失败");
+      const message = err instanceof Error ? err.message : "从剪映导入失败";
+      notify("error", message);
+      setJianying((current) => ({ ...current, summary: { ok: false, text: message } }));
     } finally {
-      setJianying((current) => ({ ...current, busy: false }));
+      setJianying((current) => ({ ...current, busy: false, importing: null }));
     }
-  }, [dirs, jianying.result, notify, refresh]);
+  }, [dirs, jianying.source, jianying.result, jianying.cacheResult, notify, refresh]);
 
   const openJianying = useCallback(() => {
-    setJianying((current) => ({ ...current, open: true }));
+    setJianying((current) => ({ ...current, open: true, summary: null }));
     void scanJianying();
   }, [scanJianying]);
 
@@ -1469,6 +1485,18 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                     未下载的云端资源请先在剪映中使用或下载；视频资源导入水印库后可作视频水印叠加（透明视频保留 alpha）。
                     剪映内置模板与曲库资源仅供个人本地使用。
                   </p>
+                  {jianying.busy ? (
+                    <p className="library-jianying-busy">
+                      <Loader2 className="is-spinning" size={13} />
+                      <span>正在导入{jianying.importing === "bgm" ? " BGM / 音效" : "水印素材"}…{jianying.importing === "bgm" ? "（自动避重，请稍候）" : ""}</span>
+                    </p>
+                  ) : null}
+                  {jianying.summary ? (
+                    <p className={`library-jianying-summary${jianying.summary.ok ? " is-success" : " is-error"}`}>
+                      {jianying.summary.ok ? <Check size={13} /> : <CircleAlert size={13} />}
+                      <span>{jianying.summary.text}</span>
+                    </p>
+                  ) : null}
                   <div className="library-jianying-actions">
                     <button type="button" className="library-accent-button" onClick={() => void importJianying("bgm")} disabled={jianying.busy || !jianying.cacheResult.audios.length}>
                       {jianying.busy ? <Loader2 className="is-spinning" size={13} /> : <Music size={13} />}导入 BGM（{jianying.cacheResult.audios.length}）
@@ -1509,6 +1537,18 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                     BGM 导入会自动避重（已有相同内容跳过）；视频 / 图片 / 特效与转场资源导入水印库，可作视频水印叠加使用。
                     剪映内置模板与曲库资源仅供个人本地使用；纯云端模板（无本地文件）无法导入。
                   </p>
+                  {jianying.busy ? (
+                    <p className="library-jianying-busy">
+                      <Loader2 className="is-spinning" size={13} />
+                      <span>正在导入{jianying.importing === "bgm" ? " BGM / 音效" : "水印素材"}…{jianying.importing === "bgm" ? "（自动避重，请稍候）" : ""}</span>
+                    </p>
+                  ) : null}
+                  {jianying.summary ? (
+                    <p className={`library-jianying-summary${jianying.summary.ok ? " is-success" : " is-error"}`}>
+                      {jianying.summary.ok ? <Check size={13} /> : <CircleAlert size={13} />}
+                      <span>{jianying.summary.text}</span>
+                    </p>
+                  ) : null}
                   <div className="library-jianying-actions">
                     <button type="button" className="library-accent-button" onClick={() => void importJianying("bgm")} disabled={jianying.busy || !jianying.result.audios.length}>
                       {jianying.busy ? <Loader2 className="is-spinning" size={13} /> : <Music size={13} />}导入 BGM（{jianying.result.audios.length}）
