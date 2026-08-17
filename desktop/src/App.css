@@ -6,6 +6,8 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  /* 保留滚动条槽位：弹窗开合（body overflow 切换）时界面不再横向跳动 */
+  scrollbar-gutter: stable;
   --paper: #ffffff;
   --paper-raised: #fafafa;
   --paper-deep: #f3f3f3;
@@ -280,6 +282,11 @@ select:disabled {
   padding: 0 !important;
 }
 
+.update-button {
+  /* 文字在「检查更新/正在检查/更新 x.y」间变化，固定宽度避免顶栏跳动 */
+  min-width: 96px;
+}
+
 .update-button.has-update {
   color: var(--blue);
   background: var(--blue-soft);
@@ -299,6 +306,8 @@ select:disabled {
 
 .update-dialog {
   width: min(500px, 100%);
+  /* 固定高度：下载进度等内容出现时弹窗不再上下跳动 */
+  height: min(540px, 90vh);
   overflow: hidden;
   color: var(--ink);
   background: var(--paper-raised);
@@ -366,8 +375,12 @@ select:disabled {
 
 .update-dialog-body {
   display: grid;
+  align-content: start;
   gap: 14px;
+  min-height: 0;
   padding: 18px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .update-state {
@@ -607,16 +620,56 @@ select:disabled {
 }
 
 .validation-banner {
-  grid-row: 2;
+  /* 悬浮小弹窗：不占布局空间，出现/消失不再挤压界面 */
+  position: fixed;
+  top: 62px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 950;
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  min-height: 34px;
-  padding: 6px 16px;
+  width: min(600px, calc(100vw - 32px));
+  max-height: min(340px, 46vh);
+  padding: 10px 12px;
+  overflow: auto;
   color: var(--danger);
   font-size: 11px;
-  background: color-mix(in srgb, var(--danger) 8%, var(--paper-raised));
-  border-bottom: 1px solid color-mix(in srgb, var(--danger) 38%, var(--line));
+  background: var(--paper-raised);
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--line));
+  border-radius: 6px;
+  box-shadow: 0 10px 34px rgba(15, 20, 29, 0.22);
+  animation: validation-drop 0.18s ease;
+}
+
+@keyframes validation-drop {
+  from { opacity: 0; transform: translate(-50%, -6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.validation-banner > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.validation-close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  margin: -2px -2px 0 0;
+  cursor: pointer;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+.validation-close:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--paper-deep);
+  border-color: var(--line);
 }
 
 .validation-spacer {
@@ -2790,6 +2843,7 @@ body.is-rail-dragging {
   max-height: 440px;
   padding: 12px 16px;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .library-body-split {
@@ -2825,6 +2879,7 @@ body.is-rail-dragging {
 
 .library-tree-scroll {
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 0 6px 8px;
 }
 
@@ -2959,6 +3014,7 @@ body.is-rail-dragging {
   flex: 1 1 auto;
   padding: 0 14px;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .library-breadcrumb {
@@ -3098,6 +3154,13 @@ body.is-rail-dragging {
   background: var(--blue-soft);
   border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--line));
   border-radius: 4px;
+  /* 出现/消失时平滑过渡，减少列表突跳 */
+  animation: library-selection-in 0.18s ease;
+}
+
+@keyframes library-selection-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .library-selection-bar .danger-text {
@@ -3437,6 +3500,11 @@ body.is-rail-dragging {
   flex: 0 0 auto;
 }
 
+/* 拆解按钮文字「开始批量拆 BGM ↔ 拆解中…」宽度不同，固定宽度避免弹窗底部跳动 */
+.library-extract-dialog .library-dialog-footer-actions .library-accent-button {
+  min-width: 136px;
+}
+
 .library-field {
   display: inline-flex;
   align-items: center;
@@ -3487,6 +3555,51 @@ body.is-rail-dragging {
   text-align: center;
 }
 
+/* 从剪映导入：来源切换 */
+.library-jianying-source {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.library-jianying-source button {
+  min-height: 26px;
+  padding: 0 12px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.library-jianying-source button.is-active {
+  color: var(--ink);
+  background: var(--paper-raised);
+  border-color: var(--line-strong);
+}
+
+.library-jianying-source button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.library-jianying-warn {
+  margin: 0;
+  padding: 7px 9px;
+  color: var(--amber);
+  font-size: 10px;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--amber) 9%, var(--paper-raised));
+  border: 1px solid color-mix(in srgb, var(--amber) 32%, var(--line));
+  border-radius: 4px;
+}
+
 .library-jianying-note {
   display: grid;
   gap: 2px;
@@ -3530,6 +3643,7 @@ body.is-rail-dragging {
   margin: 0 0 8px;
   padding: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   list-style: none;
 }
 
@@ -3584,6 +3698,7 @@ body.is-rail-dragging {
 .library-move-body {
   padding: 10px;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .library-move-list {
@@ -3653,7 +3768,8 @@ body.is-rail-dragging {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(880px, 94vw);
-  max-height: min(680px, 92vh);
+  /* 固定高度：拆解进度/结果变化时弹窗不再上下跳动 */
+  height: min(680px, 92vh);
   overflow: hidden;
   color: var(--ink);
   background: var(--paper-raised);
@@ -3670,6 +3786,7 @@ body.is-rail-dragging {
   max-height: none;
   padding: 14px 16px;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .library-extract-source {
@@ -3928,6 +4045,7 @@ body.is-rail-dragging {
   min-width: 0;
   flex: 1 1 auto;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .effect-stats-bar {
@@ -3960,6 +4078,71 @@ body.is-rail-dragging {
   font-weight: 700;
   background: color-mix(in srgb, var(--amber) 14%, transparent);
   border-radius: 999px;
+}
+
+/* 随机池管理条（素材库内配置随机池） */
+.effect-pool-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--blue) 6%, var(--paper));
+  border: 1px solid color-mix(in srgb, var(--blue) 26%, var(--line));
+  border-radius: 5px;
+}
+
+.effect-pool-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.effect-pool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.effect-pool-chips li {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 180px;
+  padding: 2px 3px 2px 8px;
+  color: var(--ink);
+  font-size: 10px;
+  background: var(--paper-raised);
+  border: 1px solid color-mix(in srgb, var(--blue) 34%, var(--line));
+  border-radius: 999px;
+}
+
+.effect-pool-chips li > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.effect-pool-chips .icon-button {
+  width: 16px;
+  height: 16px;
+  border-color: transparent;
+}
+
+.effect-pool-bar > .quiet-button {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 10px;
+  flex: 0 0 auto;
 }
 
 .effect-asset-bar {
@@ -4259,7 +4442,8 @@ body.is-marquee-active {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: min(960px, 94vw);
-  max-height: min(88vh, 760px);
+  /* 固定高度：加载态 ↔ 视频就绪时弹窗不再上下跳动 */
+  height: min(700px, 92vh);
   overflow: hidden;
   color: var(--ink);
   background: var(--paper-raised);
@@ -4271,7 +4455,7 @@ body.is-marquee-active {
 .library-video-player-body {
   display: grid;
   place-items: center;
-  min-height: 260px;
+  min-height: 0;
   padding: 12px;
   background: #0a0e15;
 }
@@ -4279,7 +4463,9 @@ body.is-marquee-active {
 .library-video-player-media {
   display: block;
   width: 100%;
-  max-height: calc(min(88vh, 760px) - 86px);
+  height: 100%;
+  max-height: 100%;
+  object-fit: contain;
   background: #000000;
   border-radius: 4px;
 }
@@ -4589,6 +4775,7 @@ body.is-marquee-active {
 
 .log-drawer-body {
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 6px 12px 10px;
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 10.5px;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Check, Image as ImageIcon, Loader2, Plus, RotateCcw, Shuffle, Sparkles, Upload } from "lucide-react";
+import { Check, Image as ImageIcon, Loader2, Plus, RotateCcw, Shuffle, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { FALLBACK_CONFIG, TRANSITIONS, VIDEO_EFFECTS } from "../constants";
 import { engine } from "../engine";
 import type { VideoConfig } from "../types";
@@ -71,6 +71,12 @@ export function EffectLibraryPanel({ kind, config, onChange, notify }: {
     if (isEffect) onChange("enabled_video_effects", next);
     else onChange("enabled_transitions", next);
     notify(inPool ? "info" : "success", inPool ? `已把${isEffect ? "特效" : "转场"}移出随机池：${name}` : `已加入随机池：${name}`);
+  };
+
+  const clearPool = () => {
+    if (isEffect) onChange("enabled_video_effects", []);
+    else onChange("enabled_transitions", []);
+    notify("info", `已清空随机池（共 ${pool.length} 项）`);
   };
 
   // ---------- 自定义演示图 ----------
@@ -175,6 +181,21 @@ export function EffectLibraryPanel({ kind, config, onChange, notify }: {
           ) : null}
         </span>
       </div>
+
+      {pool.length ? (
+        <div className="effect-pool-bar">
+          <span className="effect-pool-label"><Shuffle size={12} />随机池（{pool.length}/{names.length}）</span>
+          <ul className="effect-pool-chips">
+            {pool.map((name) => (
+              <li key={name}>
+                <span title={name}>{name}</span>
+                <button type="button" className="icon-button" onClick={() => togglePool(name)} aria-label={`把 ${name} 移出随机池`} title="移出随机池"><X size={11} /></button>
+              </li>
+            ))}
+          </ul>
+          <button type="button" className="quiet-button" onClick={clearPool}><Trash2 size={12} />清空</button>
+        </div>
+      ) : null}
 
       <ul className="effect-grid">
         {names.map((name) => {

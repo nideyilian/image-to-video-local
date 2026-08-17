@@ -152,10 +152,20 @@ type JianyingEntry = { path: string; name: string; draft: string };
 
 type JianyingScanResult = {
   draft_root: string;
-  drafts: Array<{ name: string; path: string; counts: { audio: number; video: number; image: number } }>;
+  drafts: Array<{ name: string; path: string; counts: { audio: number; video: number; image: number; effect: number; transition: number } }>;
   audios: JianyingEntry[];
   videos: JianyingEntry[];
   images: JianyingEntry[];
+  effects: JianyingEntry[];
+  transitions: JianyingEntry[];
+};
+
+type JianyingCacheResult = {
+  cache_root: string;
+  audios: JianyingEntry[];
+  videos: JianyingEntry[];
+  scanned_files: number;
+  truncated: boolean;
 };
 
 type JianyingDialogState = {
@@ -163,7 +173,9 @@ type JianyingDialogState = {
   scanning: boolean;
   busy: boolean;
   error: string | null;
+  source: "draft" | "cache";
   result: JianyingScanResult | null;
+  cacheResult: JianyingCacheResult | null;
 };
 
 const IDLE_JIANYING: JianyingDialogState = {
@@ -171,7 +183,9 @@ const IDLE_JIANYING: JianyingDialogState = {
   scanning: false,
   busy: false,
   error: null,
+  source: "draft",
   result: null,
+  cacheResult: null,
 };
 
 const IDLE_EXTRACT: ExtractStatus = {
@@ -203,7 +217,7 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
   { value: "added", label: "按入库时间" },
 ];
 
-export function MaterialLibrary({ open, onClose, config, onChange, notify, onReveal, onExtractBusyChange }: {
+export function MaterialLibrary({ open, onClose, config, onChange, notify, onReveal, onExtractBusyChange, requestTab, onConsumeTabRequest }: {
   open: boolean;
   onClose: () => void;
   config: VideoConfig;
@@ -211,6 +225,9 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   notify: (kind: "info" | "success" | "error", message: string) => void;
   onReveal: (path: string) => void;
   onExtractBusyChange?: (busy: boolean) => void;
+  /** 外部请求打开素材库时定位到的标签页（如检查器「在素材库配置」） */
+  requestTab?: "effect" | "transition" | null;
+  onConsumeTabRequest?: () => void;
 }) {
   const [tab, setTab] = useState<LibraryTab>("bgm");
   const [dirs, setDirs] = useState<LibraryDirs | null>(null);
@@ -320,6 +337,13 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // 响应外部标签页定位请求（检查器「在素材库配置」）
+  useEffect(() => {
+    if (!open || !requestTab) return;
+    setTab(requestTab);
+    onConsumeTabRequest?.();
+  }, [open, onConsumeTabRequest, requestTab]);
 
   useEffect(() => {
     if (open) return;
@@ -849,40 +873,57 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
 
   const [jianying, setJianying] = useState<JianyingDialogState>(IDLE_JIANYING);
 
-  const scanJianying = useCallback(async (root?: string) => {
+  const scanJianying = useCallback(async (root?: string, source: "draft" | "cache" = jianying.source) => {
     if (!engine.desktopRuntime) return notify("info", "从剪映导入需要在 Tauri 桌面窗口中运行");
-    setJianying((current) => ({ ...current, scanning: true, error: null, result: null }));
+    setJianying((current) => ({ ...current, source, scanning: true, error: null, result: null, cacheResult: null }));
     try {
-      const result = await engine.call<JianyingScanResult>("jianying_scan", { draft_root: root ?? "" }, 60_000);
-      setJianying((current) => ({ ...current, scanning: false, result }));
+      if (source === "cache") {
+        const result = await engine.call<JianyingCacheResult>("jianying_cache_scan", { cache_root: root ?? "" }, 120_000);
+        setJianying((current) => ({ ...current, scanning: false, cacheResult: result }));
+      } else {
+        const result = await engine.call<JianyingScanResult>("jianying_scan", { draft_root: root ?? "" }, 60_000);
+        setJianying((current) => ({ ...current, scanning: false, result }));
+      }
     } catch (err) {
       setJianying((current) => ({
         ...current,
         scanning: false,
-        error: err instanceof Error ? err.message : "扫描剪映草稿失败",
+        error: err instanceof Error ? err.message : "扫描剪映失败",
       }));
     }
-  }, [notify]);
+  }, [jianying.source, notify]);
+
+  const switchJianyingSource = useCallback((source: "draft" | "cache") => {
+    if (source === jianying.source) return;
+    void scanJianying(undefined, source);
+  }, [jianying.source, scanJianying]);
 
   const pickDraftRoot = useCallback(async () => {
     if (!engine.desktopRuntime) return notify("info", "选择目录需要在 Tauri 桌面窗口中运行");
-    const picked = await openDialog({ directory: true, multiple: false, title: "选择剪映草稿目录（com.lveditor.draft）" });
+    const title = jianying.source === "cache"
+      ? "选择剪映缓存目录（User Data\\Cache）"
+      : "选择剪映草稿目录（com.lveditor.draft）";
+    const picked = await openDialog({ directory: true, multiple: false, title });
     if (typeof picked === "string") await scanJianying(picked);
-  }, [notify, scanJianying]);
+  }, [jianying.source, notify, scanJianying]);
 
   const importJianying = useCallback(async (kind: "bgm" | "watermark") => {
-    if (!dirs || !jianying.result) return;
-    const source = kind === "bgm"
-      ? jianying.result.audios
-      : [...jianying.result.videos, ...jianying.result.images];
-    if (!source.length) return;
+    if (!dirs) return;
+    const source = jianying.source === "cache" ? jianying.cacheResult : jianying.result;
+    if (!source) return;
+    const entries = kind === "bgm"
+      ? source.audios
+      : jianying.source === "cache" || !("images" in source)
+        ? source.videos
+        : [...source.videos, ...source.images, ...source.effects, ...source.transitions];
+    if (!entries.length) return;
     setJianying((current) => ({ ...current, busy: true }));
     try {
       const result = await engine.call<{ results: LibraryImportResult[] }>(
         "library_import",
         {
           kind,
-          paths: source.map((entry) => entry.path),
+          paths: entries.map((entry) => entry.path),
           folder: "",
           bgm_dir: dirs.bgm_dir,
           watermark_dir: dirs.watermark_dir,
@@ -1037,7 +1078,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                 {tab === "bgm" ? (
                   <button type="button" className="library-accent-button" onClick={() => setExtract((current) => ({ ...current, open: true, saveFolder: currentFolder }))} disabled={!desktopRuntime}><Scissors size={14} />批量拆BGM</button>
                 ) : null}
-                {tab === "bgm" ? (
+                {tab === "bgm" || tab === "watermark" ? (
                   <button type="button" className="quiet-button" onClick={openJianying} disabled={!desktopRuntime || loading}><Clapperboard size={14} />从剪映导入</button>
                 ) : null}
                 <button type="button" className="quiet-button" onClick={() => importFiles(tab, currentFolder)} disabled={!desktopRuntime || loading}><Upload size={14} />导入</button>
@@ -1379,24 +1420,67 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
               <span className="library-dialog-icon"><Clapperboard size={20} /></span>
               <span>
                 <small>从剪映导入</small>
-                <strong id="library-jianying-title">读取剪映草稿中的素材</strong>
+                <strong id="library-jianying-title">导入剪映素材到素材库</strong>
               </span>
               <button type="button" className="update-close" onClick={() => setJianying((current) => ({ ...current, open: false }))} disabled={jianying.scanning || jianying.busy} aria-label="关闭从剪映导入窗口"><X size={17} /></button>
             </header>
 
             <div className="library-move-body">
+              <div className="library-jianying-source" role="group" aria-label="导入来源">
+                <button type="button" className={jianying.source === "draft" ? "is-active" : ""} onClick={() => switchJianyingSource("draft")} disabled={jianying.scanning || jianying.busy}>草稿素材</button>
+                <button type="button" className={jianying.source === "cache" ? "is-active" : ""} onClick={() => switchJianyingSource("cache")} disabled={jianying.scanning || jianying.busy}>内置资源（缓存）</button>
+              </div>
+
               {jianying.scanning ? (
                 <div className="library-jianying-empty">
                   <Loader2 className="is-spinning" size={18} />
-                  <span>正在扫描剪映草稿箱…</span>
+                  <span>{jianying.source === "cache" ? "正在扫描剪映内置资源缓存…" : "正在扫描剪映草稿箱…"}</span>
                 </div>
               ) : jianying.error ? (
                 <div className="library-jianying-empty">
                   <CircleAlert size={18} />
                   <span>{jianying.error}</span>
-                  <button type="button" className="quiet-button" onClick={() => void pickDraftRoot()}><FolderOpen size={13} />手动选择剪映草稿目录</button>
+                  <button type="button" className="quiet-button" onClick={() => void pickDraftRoot()}><FolderOpen size={13} />手动选择{jianying.source === "cache" ? "缓存" : "草稿"}目录</button>
                 </div>
-              ) : jianying.result ? (
+              ) : jianying.source === "cache" && jianying.cacheResult ? (
+                <>
+                  <p className="library-jianying-note" title={jianying.cacheResult.cache_root}>
+                    内置资源缓存：{jianying.cacheResult.cache_root}
+                    <small>已扫描 {jianying.cacheResult.scanned_files} 个文件 · 仅包含已下载到本地的内置资源</small>
+                  </p>
+                  {jianying.cacheResult.truncated ? <p className="library-jianying-warn">缓存文件较多，已提前停止扫描，部分资源可能未列出。</p> : null}
+                  <div className="library-jianying-stats">
+                    <span><strong>{jianying.cacheResult.audios.length}</strong> 条内置 BGM / 音效</span>
+                    <span><strong>{jianying.cacheResult.videos.length}</strong> 个内置视频资源（特效 / 转场）</span>
+                  </div>
+                  {jianying.cacheResult.audios.length ? (
+                    <ul className="library-jianying-list">
+                      {jianying.cacheResult.audios.slice(0, 8).map((entry) => (
+                        <li key={entry.path}>
+                          <Music size={12} />
+                          <span title={entry.path}>{entry.name}</span>
+                          <small>{entry.draft}</small>
+                        </li>
+                      ))}
+                      {jianying.cacheResult.audios.length > 8 ? <li className="library-jianying-more">…还有 {jianying.cacheResult.audios.length - 8} 条</li> : null}
+                    </ul>
+                  ) : null}
+                  <p className="library-jianying-hint">
+                    未下载的云端资源请先在剪映中使用或下载；视频资源导入水印库后可作视频水印叠加（透明视频保留 alpha）。
+                    剪映内置模板与曲库资源仅供个人本地使用。
+                  </p>
+                  <div className="library-jianying-actions">
+                    <button type="button" className="library-accent-button" onClick={() => void importJianying("bgm")} disabled={jianying.busy || !jianying.cacheResult.audios.length}>
+                      {jianying.busy ? <Loader2 className="is-spinning" size={13} /> : <Music size={13} />}导入 BGM（{jianying.cacheResult.audios.length}）
+                    </button>
+                    <button type="button" className="library-accent-button" onClick={() => void importJianying("watermark")} disabled={jianying.busy || !jianying.cacheResult.videos.length}>
+                      {jianying.busy ? <Loader2 className="is-spinning" size={13} /> : <ImageIcon size={13} />}导入水印库（{jianying.cacheResult.videos.length}）
+                    </button>
+                    <button type="button" className="quiet-button" onClick={() => void pickDraftRoot()} disabled={jianying.busy}><FolderOpen size={13} />更换目录</button>
+                    <button type="button" className="quiet-button" onClick={() => void scanJianying()} disabled={jianying.busy}><RefreshCw size={13} />重新扫描</button>
+                  </div>
+                </>
+              ) : jianying.source === "draft" && jianying.result ? (
                 <>
                   <p className="library-jianying-note" title={jianying.result.draft_root}>
                     草稿箱：{jianying.result.draft_root}
@@ -1406,6 +1490,8 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                     <span><strong>{jianying.result.audios.length}</strong> 条 BGM / 音效</span>
                     <span><strong>{jianying.result.videos.length}</strong> 个视频</span>
                     <span><strong>{jianying.result.images.length}</strong> 张图片</span>
+                    <span><strong>{jianying.result.effects.length}</strong> 个特效资源</span>
+                    <span><strong>{jianying.result.transitions.length}</strong> 个转场资源</span>
                   </div>
                   {jianying.result.audios.length ? (
                     <ul className="library-jianying-list">
@@ -1419,13 +1505,16 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                       {jianying.result.audios.length > 8 ? <li className="library-jianying-more">…还有 {jianying.result.audios.length - 8} 条</li> : null}
                     </ul>
                   ) : null}
-                  <p className="library-jianying-hint">BGM 导入会自动避重（已有相同内容跳过）；视频 / 图片导入到水印库。剪映内置模板与曲库资源仅供个人本地使用。</p>
+                  <p className="library-jianying-hint">
+                    BGM 导入会自动避重（已有相同内容跳过）；视频 / 图片 / 特效与转场资源导入水印库，可作视频水印叠加使用。
+                    剪映内置模板与曲库资源仅供个人本地使用；纯云端模板（无本地文件）无法导入。
+                  </p>
                   <div className="library-jianying-actions">
                     <button type="button" className="library-accent-button" onClick={() => void importJianying("bgm")} disabled={jianying.busy || !jianying.result.audios.length}>
                       {jianying.busy ? <Loader2 className="is-spinning" size={13} /> : <Music size={13} />}导入 BGM（{jianying.result.audios.length}）
                     </button>
-                    <button type="button" className="library-accent-button" onClick={() => void importJianying("watermark")} disabled={jianying.busy || !(jianying.result.videos.length + jianying.result.images.length)}>
-                      {jianying.busy ? <Loader2 className="is-spinning" size={13} /> : <ImageIcon size={13} />}导入水印库（{jianying.result.videos.length + jianying.result.images.length}）
+                    <button type="button" className="library-accent-button" onClick={() => void importJianying("watermark")} disabled={jianying.busy || !(jianying.result.videos.length + jianying.result.images.length + jianying.result.effects.length + jianying.result.transitions.length)}>
+                      {jianying.busy ? <Loader2 className="is-spinning" size={13} /> : <ImageIcon size={13} />}导入水印库（{jianying.result.videos.length + jianying.result.images.length + jianying.result.effects.length + jianying.result.transitions.length}）
                     </button>
                     <button type="button" className="quiet-button" onClick={() => void pickDraftRoot()} disabled={jianying.busy}><FolderOpen size={13} />更换目录</button>
                     <button type="button" className="quiet-button" onClick={() => void scanJianying()} disabled={jianying.busy}><RefreshCw size={13} />重新扫描</button>

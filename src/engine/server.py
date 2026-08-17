@@ -191,6 +191,10 @@ class EngineServer:
             from .jianying import jianying_scan
 
             return jianying_scan(params)
+        if method == "jianying_cache_scan":
+            from .jianying import jianying_cache_scan
+
+            return jianying_cache_scan(params)
         if method == "shutdown":
             self._running = False
             return {"shutting_down": True}

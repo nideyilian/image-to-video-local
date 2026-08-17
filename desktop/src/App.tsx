@@ -17,6 +17,7 @@ import {
   SlidersHorizontal,
   Sun,
   Terminal,
+  X,
 } from "lucide-react";
 import { FALLBACK_CONFIG } from "./constants";
 import { engine } from "./engine";
@@ -285,10 +286,14 @@ export default function App() {
   const [previewReadySequences, setPreviewReadySequences] = useState<Record<string, number>>({});
   const [inspectorTab, setInspectorTab] = useState<InspectorTabId>("basic");
   const [libraryOpen, setLibraryOpen] = useState(false);
+  // 从检查器「在素材库配置」跳转时指定打开的标签页
+  const [libraryTabRequest, setLibraryTabRequest] = useState<"effect" | "transition" | null>(null);
   const [extractBusy, setExtractBusy] = useState(false);
   const [presetOpen, setPresetOpen] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logOpen, setLogOpen] = useState(false);
+  // 校验提醒为悬浮小弹窗：手动收起后，仅当提醒内容变化时重新出现
+  const [dismissedIssuesKey, setDismissedIssuesKey] = useState<string | null>(null);
   const logSequence = useRef(0);
   const [locate, setLocate] = useState<{ field: string; token: number } | null>(null);
   const locateToken = useRef(0);
@@ -669,7 +674,11 @@ export default function App() {
     updateConfig(key, selected as VideoConfig[typeof key]);
   }, [showNotice, updateConfig]);
 
-  const browseFile = useCallback(async (key: keyof VideoConfig, layerIndex?: number) => {
+  // 检查器「在素材库配置」→ 打开素材库并定位到对应标签页
+  const openLibraryTab = useCallback((tab: "effect" | "transition") => {
+    setLibraryTabRequest(tab);
+    setLibraryOpen(true);
+  }, []);  const browseFile = useCallback(async (key: keyof VideoConfig, layerIndex?: number) => {
     if (!engine.desktopRuntime) return showNotice("info", "文件选择需要在 Tauri 桌面窗口中运行");
     const selected = await openDialog({
       directory: false,
@@ -1009,6 +1018,8 @@ export default function App() {
 
       {activeWorkspace.validationIssues.length ? (() => {
         const issues = activeWorkspace.validationIssues;
+        const issuesKey = issues.map((issue) => `${issue.section}:${issue.field}:${issue.message}`).join("\u0001");
+        if (dismissedIssuesKey === issuesKey) return <div className="validation-spacer" aria-hidden="true" />;
         return (
           <div className="validation-banner" role="alert">
             <CircleAlert size={16} />
@@ -1031,6 +1042,7 @@ export default function App() {
                 ))}
               </ul>
             </div>
+            <button type="button" className="validation-close" onClick={() => setDismissedIssuesKey(issuesKey)} aria-label="收起校验提醒"><X size={14} /></button>
           </div>
         );
       })() : <div className="validation-spacer" aria-hidden="true" />}
@@ -1107,6 +1119,7 @@ export default function App() {
           activeTab={inspectorTab}
           onActiveTabChange={setInspectorTab}
           validationIssues={activeWorkspace.validationIssues}
+          onOpenLibraryTab={openLibraryTab}
         />
       </main>
 
@@ -1157,6 +1170,8 @@ export default function App() {
           notify={showNotice}
           onReveal={revealPath}
           onExtractBusyChange={setExtractBusy}
+          requestTab={libraryTabRequest}
+          onConsumeTabRequest={() => setLibraryTabRequest(null)}
         />
 
         <LogDrawer

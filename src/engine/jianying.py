@@ -35,6 +35,52 @@ def jianying_draft_root() -> Path | None:
     return None
 
 
+def jianying_cache_root() -> Path | None:
+    """自动探测剪映内置资源缓存目录（已下载的 BGM / 特效 / 转场等）。"""
+    if sys.platform != "win32":
+        return None
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        Path(local_appdata) / "JianyingPro" / "User Data" / "Cache",
+        Path(local_appdata) / "JianyingPro" / "Cache",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+# 内置缓存扫描过滤：音乐/音效与视频资源的最小体积（过滤碎片与图标类文件）
+CACHE_AUDIO_MIN_BYTES = 200 * 1024
+CACHE_VIDEO_MIN_BYTES = 50 * 1024
+CACHE_MAX_FILES = 60000
+
+
+def _cache_display_name(path: Path) -> str:
+    """尽力从同目录同名清单 JSON 读取资源名称；失败时回退为文件名。"""
+    candidates = (path.with_suffix(".json"), path.with_name(f"{path.stem}.json"))
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for key in ("name", "display_name", "title"):
+            raw = data.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+        material = data.get("material")
+        if isinstance(material, dict):
+            for key in ("name", "display_name"):
+                raw = material.get(key)
+                if isinstance(raw, str) and raw.strip():
+                    return raw.strip()
+    return path.name
+
+
 def _load_draft_json(draft_dir: Path) -> dict[str, Any] | None:
     """读取草稿主 JSON（新版 draft_content.json 优先，兼容旧版 draft_info.json）。"""
     for name in ("draft_content.json", "draft_info.json"):
@@ -69,8 +115,12 @@ def jianying_scan(params: dict[str, Any] | None = None) -> dict[str, Any]:
     """扫描剪映草稿箱，收集音频 / 视频 / 图片素材（按路径去重、只保留存在的文件）。
 
     参数：draft_root 可选，手动指定草稿箱根目录（默认自动探测）。
-    返回：{draft_root, drafts: [{name, path, counts}], audios, videos, images}，
-    每项素材为 {path, name, draft}。
+    返回：{draft_root, drafts: [{name, path, counts}], audios, videos, images,
+    effects, transitions}，每项素材为 {path, name, draft}。
+
+    特效 / 转场仅收集「本地资源型」条目（path 指向存在的视频 / 图片文件）；
+    纯云端模板（无本地文件）会被跳过——剪映模板是私有格式，本地资源可导入
+    水印库作为视频水印叠加使用。
     """
     raw = (params or {}).get("draft_root", "")
     root_path = Path(str(raw).strip()).expanduser() if str(raw or "").strip() else jianying_draft_root()
@@ -81,6 +131,8 @@ def jianying_scan(params: dict[str, Any] | None = None) -> dict[str, Any]:
     audios: list[dict[str, str]] = []
     videos: list[dict[str, str]] = []
     images: list[dict[str, str]] = []
+    effects: list[dict[str, str]] = []
+    transitions: list[dict[str, str]] = []
     seen: set[str] = set()
 
     def collect(target: list[dict[str, str]], path: Path, draft: str) -> None:
@@ -100,7 +152,7 @@ def jianying_scan(params: dict[str, Any] | None = None) -> dict[str, Any]:
         if payload is None:
             continue
         name = _draft_name(draft_dir, payload)
-        counts = {"audio": 0, "video": 0, "image": 0}
+        counts = {"audio": 0, "video": 0, "image": 0, "effect": 0, "transition": 0}
 
         for item in _draft_materials(payload, "audios"):
             path = Path(str(item.get("path", "") or "").strip())
@@ -122,6 +174,19 @@ def jianying_scan(params: dict[str, Any] | None = None) -> dict[str, Any]:
                 collect(videos, path, name)
                 counts["video"] += 1
 
+        for group, target, counter in (
+            ("effects", effects, "effect"),
+            ("transitions", transitions, "transition"),
+        ):
+            for item in _draft_materials(payload, group):
+                path = Path(str(item.get("path", "") or "").strip())
+                suffix = path.suffix.lower()
+                if not path.is_file():
+                    continue  # 纯云端模板没有本地文件，跳过
+                if suffix in IMAGE_EXTENSIONS or suffix in VIDEO_EXTENSIONS:
+                    collect(target, path, name)
+                    counts[counter] += 1
+
         drafts.append({"name": name, "path": str(draft_dir), "counts": counts})
 
     return {
@@ -130,4 +195,66 @@ def jianying_scan(params: dict[str, Any] | None = None) -> dict[str, Any]:
         "audios": audios,
         "videos": videos,
         "images": images,
+        "effects": effects,
+        "transitions": transitions,
+    }
+
+
+def jianying_cache_scan(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """扫描剪映内置资源缓存，收集已下载的音频（BGM）与视频资源（特效/转场媒体）。
+
+    参数：cache_root 可选，手动指定缓存目录（默认自动探测 User Data\\Cache）。
+    只收集体积达标的音频 / 视频文件（过滤图标与碎片）；图片序列帧不收集，
+    避免导入大量序列帧文件。返回 {cache_root, audios, videos, scanned_files,
+    truncated}，每项素材为 {path, name, draft}，name 尽力从清单 JSON 解析。
+    """
+    raw = (params or {}).get("cache_root", "")
+    root_path = Path(str(raw).strip()).expanduser() if str(raw or "").strip() else jianying_cache_root()
+    if not root_path or not root_path.is_dir():
+        raise ValueError(
+            "未找到剪映内置资源缓存目录。请确认已安装剪映且下载过内置资源，"
+            "或在弹窗中手动选择「User Data\\Cache」目录。"
+        )
+
+    audios: list[dict[str, str]] = []
+    videos: list[dict[str, str]] = []
+    seen: set[str] = set()
+    scanned_files = 0
+    truncated = False
+
+    def collect(target: list[dict[str, str]], path: Path) -> None:
+        key = str(path.resolve())
+        if key in seen:
+            return
+        seen.add(key)
+        target.append({"path": key, "name": _cache_display_name(path), "draft": "内置缓存"})
+
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dirnames.sort(key=str.lower)
+        for filename in filenames:
+            scanned_files += 1
+            if scanned_files > CACHE_MAX_FILES:
+                truncated = True
+                break
+            path = Path(dirpath) / filename
+            suffix = path.suffix.lower()
+            if suffix not in AUDIO_EXTENSIONS and suffix not in VIDEO_EXTENSIONS:
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            if suffix in AUDIO_EXTENSIONS and size >= CACHE_AUDIO_MIN_BYTES:
+                collect(audios, path)
+            elif suffix in VIDEO_EXTENSIONS and size >= CACHE_VIDEO_MIN_BYTES:
+                collect(videos, path)
+        if truncated:
+            break
+
+    return {
+        "cache_root": str(root_path.resolve()),
+        "audios": audios,
+        "videos": videos,
+        "scanned_files": scanned_files,
+        "truncated": truncated,
     }

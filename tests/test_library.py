@@ -783,8 +783,12 @@ def test_jianying_scan_collects_draft_materials(tmp_path):
     video.write_bytes(b"fake")
     photo = media / "封面照片.png"
     photo.write_bytes(b"fake")
+    effect_clip = media / "特效资源.mp4"
+    effect_clip.write_bytes(b"fake")
+    transition_img = media / "转场序列图.png"
+    transition_img.write_bytes(b"fake")
 
-    # 新版草稿：materials.videos / materials.audios
+    # 新版草稿：materials.videos / materials.audios / effects / transitions
     _write_fake_draft(draft_root / "我的草稿", "我的草稿", {
         "name": "我的草稿",
         "materials": {
@@ -796,6 +800,13 @@ def test_jianying_scan_collects_draft_materials(tmp_path):
             "videos": [
                 {"path": str(video), "type": "video"},
                 {"path": str(photo), "type": "photo"},
+            ],
+            "effects": [
+                {"path": str(effect_clip), "type": "video_effect", "name": "特效"},
+                {"id": "cloud-template-001", "name": "云端特效"},  # 无本地文件，跳过
+            ],
+            "transitions": [
+                {"path": str(transition_img), "type": "transition", "name": "转场"},
             ],
         },
         "tracks": [],
@@ -823,9 +834,11 @@ def test_jianying_scan_collects_draft_materials(tmp_path):
 
     assert [entry["path"] for entry in result["videos"]] == [str(video.resolve())]
     assert [entry["path"] for entry in result["images"]] == [str(photo.resolve())]
+    assert [entry["path"] for entry in result["effects"]] == [str(effect_clip.resolve())]
+    assert [entry["path"] for entry in result["transitions"]] == [str(transition_img.resolve())]
 
     draft_a = next(d for d in result["drafts"] if d["name"] == "我的草稿")
-    assert draft_a["counts"] == {"audio": 2, "video": 1, "image": 1}
+    assert draft_a["counts"] == {"audio": 2, "video": 1, "image": 1, "effect": 1, "transition": 1}
 
 
 def test_jianying_scan_rejects_missing_root(tmp_path):
@@ -833,6 +846,64 @@ def test_jianying_scan_rejects_missing_root(tmp_path):
 
     with pytest.raises(ValueError, match="未找到剪映草稿目录"):
         jianying_scan({"draft_root": str(tmp_path / "不存在")})
+
+
+def test_jianying_cache_scan_collects_downloaded_assets(tmp_path):
+    """剪映内置资源缓存扫描：按体积过滤、名称从清单 JSON 解析、跨目录去重。"""
+    import json
+
+    from src.engine.jianying import jianying_cache_scan
+
+    cache = tmp_path / "Cache"
+    (cache / "music").mkdir(parents=True)
+    (cache / "effect").mkdir(parents=True)
+
+    # 内置 BGM：音频 + 同名清单（读取真实名称）
+    song = cache / "music" / "abc123.mp3"
+    song.write_bytes(b"\x00" * (300 * 1024))
+    (cache / "music" / "abc123.json").write_text(json.dumps({"name": "内置歌曲名"}, ensure_ascii=False), encoding="utf-8")
+
+    # 小体积音频（音效碎片/图标类）应被过滤
+    tiny = cache / "music" / "tiny.mp3"
+    tiny.write_bytes(b"\x00" * (10 * 1024))
+
+    # 内置特效/转场视频资源
+    effect_video = cache / "effect" / "fx9876.mp4"
+    effect_video.write_bytes(b"\x00" * (80 * 1024))
+
+    # 非媒体文件忽略
+    (cache / "music" / "notes.txt").write_text("x", encoding="utf-8")
+
+    result = jianying_cache_scan({"cache_root": str(cache)})
+    assert [entry["path"] for entry in result["audios"]] == [str(song.resolve())]
+    assert result["audios"][0]["name"] == "内置歌曲名"  # 从清单 JSON 解析
+    assert [entry["path"] for entry in result["videos"]] == [str(effect_video.resolve())]
+    assert result["audios"][0]["draft"] == "内置缓存"
+    assert result["scanned_files"] >= 4
+    assert result["truncated"] is False
+
+
+def test_jianying_cache_scan_rejects_missing_root(tmp_path):
+    from src.engine.jianying import jianying_cache_scan
+
+    with pytest.raises(ValueError, match="未找到剪映内置资源缓存目录"):
+        jianying_cache_scan({"cache_root": str(tmp_path / "不存在")})
+
+
+def test_server_dispatches_jianying_cache_scan(tmp_path):
+    import json
+
+    server = EngineServer(ROOT)
+
+    cache = tmp_path / "Cache"
+    (cache / "music").mkdir(parents=True)
+    song = cache / "music" / "srv001.m4a"
+    song.write_bytes(b"\x00" * (300 * 1024))
+    (cache / "music" / "srv001.json").write_text(json.dumps({"name": "服务端内置曲"}, ensure_ascii=False), encoding="utf-8")
+
+    result = server._dispatch("jianying_cache_scan", {"cache_root": str(cache)})
+    assert len(result["audios"]) == 1
+    assert result["audios"][0]["name"] == "服务端内置曲"
 
 
 def test_server_dispatches_jianying_scan(tmp_path):

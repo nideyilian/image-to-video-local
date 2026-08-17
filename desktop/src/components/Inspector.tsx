@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { createPortal } from "react-dom";
-import { ChevronLeft, ChevronRight, LibraryBig, Plus, Shuffle, Trash2, X } from "lucide-react";
+import { useId, useState, type KeyboardEvent } from "react";
+import { ChevronLeft, ChevronRight, LibraryBig, Plus, Trash2, X } from "lucide-react";
 import {
   BLEND_MODES,
   DEFAULT_RESOLUTION_PRESETS,
@@ -22,11 +21,9 @@ const INSPECTOR_TABS = [
   { id: "watermark", label: "水印" },
 ] as const;
 
-const POOL_PAGE_SIZE = 12;
 const LAYER_PAGE_SIZE = 1;
 
 export type InspectorTabId = (typeof INSPECTOR_TABS)[number]["id"];
-type InspectorDialogState = "transition-pool" | "effect-pool" | null;
 type FeatureMode = "off" | "fixed" | "random";
 type BgmMode = "off" | "ordered" | "random";
 
@@ -168,63 +165,6 @@ function Checkbox({ label, checked, onChange, disabled = false }: {
   );
 }
 
-function InspectorDialog({ kicker, title, onClose, children }: {
-  kicker: string;
-  title: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  const dialogRef = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const focusTimer = window.setTimeout(() => dialogRef.current?.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled)")?.focus(), 0);
-    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab" || !dialogRef.current) return;
-      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled)"));
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.body.classList.add("is-modal-open");
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.clearTimeout(focusTimer);
-      window.removeEventListener("keydown", handleKeyDown);
-      document.body.classList.remove("is-modal-open");
-      previousFocus?.focus();
-    };
-  }, [onClose]);
-
-  return createPortal(
-    <div className="inspector-dialog-backdrop" role="presentation" onMouseDown={onClose}>
-      <section ref={dialogRef} className="inspector-dialog" role="dialog" aria-modal="true" aria-labelledby="inspector-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
-        <header className="inspector-dialog-heading">
-          <span><small>{kicker}</small><strong id="inspector-dialog-title">{title}</strong></span>
-          <button type="button" className="icon-button" onClick={onClose} aria-label={`关闭${title}`}><X size={16} /></button>
-        </header>
-        <div className="inspector-dialog-body">{children}</div>
-        <footer className="inspector-dialog-footer">
-          <span>仅随机池使用弹窗，其他参数均在右栏直接编辑</span>
-          <button type="button" className="inspector-primary-button" onClick={onClose}>完成</button>
-        </footer>
-      </section>
-    </div>,
-    document.body,
-  );
-}
-
 function Paginator({ page, pageCount, label, onChange }: {
   page: number;
   pageCount: number;
@@ -241,34 +181,6 @@ function Paginator({ page, pageCount, label, onChange }: {
   );
 }
 
-function PagedPool({ values, selected, page, onPageChange, onChange }: {
-  values: string[];
-  selected: string[];
-  page: number;
-  onPageChange: (page: number) => void;
-  onChange: (selected: string[]) => void;
-}) {
-  const pageCount = Math.max(1, Math.ceil(values.length / POOL_PAGE_SIZE));
-  const safePage = Math.min(page, pageCount - 1);
-  const visibleValues = values.slice(safePage * POOL_PAGE_SIZE, (safePage + 1) * POOL_PAGE_SIZE);
-  const toggle = (value: string) => onChange(selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value]);
-
-  return (
-    <div className="dialog-pool">
-      <div className="dialog-pool-heading"><strong>随机池</strong><span>已选 {selected.length} / {values.length}</span></div>
-      <div className="dialog-pool-grid">
-        {visibleValues.map((value) => (
-          <label key={value}>
-            <input type="checkbox" checked={selected.includes(value)} onChange={() => toggle(value)} />
-            <span>{value}</span>
-          </label>
-        ))}
-      </div>
-      <Paginator page={safePage} pageCount={pageCount} label="随机池分页" onChange={onPageChange} />
-    </div>
-  );
-}
-
 export function Inspector({
   config,
   onChange,
@@ -277,6 +189,7 @@ export function Inspector({
   activeTab,
   onActiveTabChange,
   validationIssues,
+  onOpenLibraryTab,
 }: {
   config: VideoConfig;
   onChange: <K extends ConfigKey>(key: K, value: VideoConfig[K]) => void;
@@ -285,14 +198,11 @@ export function Inspector({
   activeTab: InspectorTabId;
   onActiveTabChange: (tab: InspectorTabId) => void;
   validationIssues: ValidationIssue[];
+  onOpenLibraryTab: (tab: "effect" | "transition") => void;
 }) {
-  const [dialog, setDialog] = useState<InspectorDialogState>(null);
   const [bgmPickerOpen, setBgmPickerOpen] = useState(false);
   const [watermarkPickerOpen, setWatermarkPickerOpen] = useState(false);
-  const [transitionPage, setTransitionPage] = useState(0);
-  const [effectPage, setEffectPage] = useState(0);
   const [layerPage, setLayerPage] = useState(0);
-  const closeDialog = useCallback(() => setDialog(null), []);
 
   const updateLayer = (index: number, patch: Partial<WatermarkLayer>) => {
     const next = config.watermark_layers.map((layer, layerIndex) => layerIndex === index ? { ...layer, ...patch } : layer);
@@ -434,7 +344,7 @@ export function Inspector({
             <div className="parameter-grid parameter-grid-motion">
               <Field label="当前转场" wide><select disabled={transitionMode !== "fixed"} value={config.transition_type} onChange={(event) => onChange("transition_type", event.target.value)}>{TRANSITIONS.map((value) => <option key={value}>{value}</option>)}</select></Field>
             </div>
-            <div className="random-pool-row"><span><small>随机转场池</small><strong>已选 {config.enabled_transitions.length} / {TRANSITIONS.length}</strong></span><button type="button" className="inspector-config-button" onClick={() => setDialog("transition-pool")}><Shuffle size={14} />配置随机池</button></div>
+            <div className="random-pool-row"><span><small>随机转场池</small><strong>已选 {config.enabled_transitions.length} / {TRANSITIONS.length}</strong></span><button type="button" className="inspector-config-button" onClick={() => onOpenLibraryTab("transition")}><LibraryBig size={14} />在素材库配置</button></div>
           </section>
 
           <section className="inspector-static-section">
@@ -445,7 +355,7 @@ export function Inspector({
               <Field label="强度（%）"><input disabled={effectMode === "off"} type="number" min={1} max={9999} step={1} value={config.video_effect_intensity} onChange={(event) => onChange("video_effect_intensity", Number(event.target.value))} /></Field>
               <Field label="速度"><input disabled={effectMode === "off"} type="number" min={0.01} max={9999} step={0.1} value={config.video_effect_speed} onChange={(event) => onChange("video_effect_speed", Number(event.target.value))} /></Field>
             </div>
-            <div className="random-pool-row"><span><small>随机特效池</small><strong>已选 {config.enabled_video_effects.length} / {VIDEO_EFFECTS.length}</strong></span><button type="button" className="inspector-config-button" onClick={() => setDialog("effect-pool")}><Shuffle size={14} />配置随机池</button></div>
+            <div className="random-pool-row"><span><small>随机特效池</small><strong>已选 {config.enabled_video_effects.length} / {VIDEO_EFFECTS.length}</strong></span><button type="button" className="inspector-config-button" onClick={() => onOpenLibraryTab("effect")}><LibraryBig size={14} />在素材库配置</button></div>
           </section>
         </div>
 
@@ -495,18 +405,6 @@ export function Inspector({
           </section>
         </div>
       </div>
-
-      {dialog === "transition-pool" ? (
-        <InspectorDialog kicker="随机转场" title="随机转场池" onClose={closeDialog}>
-          <PagedPool values={TRANSITIONS} selected={config.enabled_transitions} page={transitionPage} onPageChange={setTransitionPage} onChange={(value) => onChange("enabled_transitions", value)} />
-        </InspectorDialog>
-      ) : null}
-
-      {dialog === "effect-pool" ? (
-        <InspectorDialog kicker="随机特效" title="随机特效池" onClose={closeDialog}>
-          <PagedPool values={VIDEO_EFFECTS} selected={config.enabled_video_effects} page={effectPage} onPageChange={setEffectPage} onChange={(value) => onChange("enabled_video_effects", value)} />
-        </InspectorDialog>
-      ) : null}
 
       <LibraryPicker
         open={bgmPickerOpen}
