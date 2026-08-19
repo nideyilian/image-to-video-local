@@ -4,6 +4,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDown,
   ArrowLeftRight,
+  ArrowRight,
   ArrowUp,
   Check,
   ChevronDown,
@@ -12,8 +13,10 @@ import {
   Clapperboard,
   FileVideo,
   Folder,
+  FolderCog,
   FolderOpen,
   FolderPlus,
+  GitCompareArrows,
   Image as ImageIcon,
   Layers,
   LayoutGrid,
@@ -28,10 +31,15 @@ import {
   RefreshCw,
   Scissors,
   Search,
+  SlidersHorizontal,
   Sparkles,
   Stamp,
+  Star,
+  StickyNote,
+  Tag,
   Trash2,
   Upload,
+  Wand2,
   X,
 } from "lucide-react";
 import { DEFAULT_WATERMARK_LAYER, TRANSITIONS, VIDEO_EFFECTS } from "../constants";
@@ -41,6 +49,7 @@ import { BgmCover } from "./BgmCover";
 import { EffectLibraryPanel } from "./EffectLibraryPanel";
 import type {
   LibraryDirs,
+  LibraryDupResult,
   LibraryExtractResult,
   LibraryExtractSummary,
   LibraryFolder,
@@ -48,11 +57,29 @@ import type {
   LibraryItem,
   LibraryKind,
   LibraryMoveResult,
+  LibraryRenameBatchResult,
+  LibrarySmartFolder,
+  LibrarySmartFolderCondition,
+  LibraryTagCount,
   VideoConfig,
 } from "../types";
 
 const LIBRARY_KEY = "image-to-video.library.v1";
 const VIEW_KEY = "image-to-video.library.view";
+const THUMB_KEY = "image-to-video.library.thumb";
+
+const THUMB_MIN = 96;
+const THUMB_MAX = 280;
+
+function loadThumbSize(): number {
+  try {
+    const raw = Number(localStorage.getItem(THUMB_KEY));
+    if (Number.isFinite(raw) && raw >= THUMB_MIN && raw <= THUMB_MAX) return Math.round(raw);
+  } catch {
+    /* 忽略 */
+  }
+  return 176;
+}
 
 const BGM_FILTERS = [{ name: "音频文件", extensions: ["mp3", "wav", "m4a", "aac", "ogg", "flac", "wma", "aiff"] }];
 const WATERMARK_FILTERS = [
@@ -155,6 +182,62 @@ function ancestorsOf(folder: string): string[] {
     ancestors.push(prefix);
   }
   return ancestors;
+}
+
+function conditionValue(item: LibraryItem, field: LibrarySmartFolderCondition["field"]): string | number | boolean {
+  if (field === "type") return item.type;
+  if (field === "duration") return item.duration ?? -1;
+  if (field === "size") return item.size_bytes;
+  if (field === "folder") return item.folder;
+  if (field === "name") return item.name;
+  if (field === "tag") return item.tags.join(" ");
+  if (field === "starred") return item.starred;
+  return "";
+}
+
+function matchesCondition(item: LibraryItem, condition: LibrarySmartFolderCondition): boolean {
+  const actual = conditionValue(item, condition.field);
+  const op = condition.op;
+  const expected = condition.value;
+  if (op === "exists") {
+    if (condition.field === "tag") return item.tags.length > 0;
+    if (condition.field === "starred") return item.starred;
+    return String(actual).trim().length > 0;
+  }
+  if (op === "eq") {
+    if (typeof actual === "number") return actual === Number(expected);
+    return String(actual).toLowerCase() === String(expected ?? "").toLowerCase();
+  }
+  if (op === "ne") {
+    if (typeof actual === "number") return actual !== Number(expected);
+    return String(actual).toLowerCase() !== String(expected ?? "").toLowerCase();
+  }
+  if (op === "gt") return Number(actual) > Number(expected);
+  if (op === "lt") return Number(actual) < Number(expected);
+  if (op === "contains") return String(actual).toLowerCase().includes(String(expected ?? "").toLowerCase());
+  return false;
+}
+
+function matchesSmartFolder(item: LibraryItem, folder: LibrarySmartFolder): boolean {
+  return folder.conditions.every((condition) => matchesCondition(item, condition));
+}
+
+const SMART_FIELD_NAMES: Record<string, string> = {
+  type: "类型", duration: "时长(秒)", size: "大小(字节)", folder: "文件夹", name: "名称", tag: "标签", starred: "收藏",
+};
+const SMART_OP_NAMES: Record<string, string> = {
+  eq: "=", ne: "≠", gt: ">", lt: "<", contains: "包含", exists: "存在",
+};
+
+function smartFolderRuleSummary(folder: LibrarySmartFolder): string {
+  if (!folder.conditions.length) return "无条件（显示全部）";
+  return folder.conditions
+    .map((condition) => {
+      const field = SMART_FIELD_NAMES[condition.field] ?? condition.field;
+      const op = SMART_OP_NAMES[condition.op] ?? condition.op;
+      return condition.op === "exists" ? `${field} 存在` : `${field} ${op} ${String(condition.value ?? "")}`;
+    })
+    .join(" 且 ");
 }
 
 type ExtractStatus = {
@@ -299,6 +382,22 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; onConfirm: () => void } | null>(null);
   const [renameOpen, setRenameOpen] = useState<{ kind: LibraryKind; path: string; name: string } | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  // ---------- Eagle 风格素材管理：标签 / 星标 / 备注 / 去重 / 批量重命名 / 缩略图 / 智能文件夹 ----------
+  const [tagFilter, setTagFilter] = useState("");
+  const [starFilter, setStarFilter] = useState(false);
+  const [allTags, setAllTags] = useState<LibraryTagCount[]>([]);
+  const [detail, setDetail] = useState<LibraryItem | null>(null);
+  const [detailDraft, setDetailDraft] = useState<{ tags: string[]; note: string; starred: boolean }>({ tags: [], note: "", starred: false });
+  const [detailTagDraft, setDetailTagDraft] = useState("");
+  const [dupOpen, setDupOpen] = useState(false);
+  const [dupState, setDupState] = useState<{ scanning: boolean; result: LibraryDupResult | null; checked: Set<string> }>({ scanning: false, result: null, checked: new Set() });
+  const [batchRenameOpen, setBatchRenameOpen] = useState(false);
+  const [batchRename, setBatchRename] = useState<{ pattern: string; startIndex: number; items: LibraryItem[]; preview: Array<{ old: string; next: string; ok: boolean; reason?: string }>; applying: boolean }>({ pattern: "", startIndex: 1, items: [], preview: [], applying: false });
+  const [thumbSize, setThumbSize] = useState(() => loadThumbSize());
+  const [smartFolders, setSmartFolders] = useState<LibrarySmartFolder[]>([]);
+  const [smartFolderOpen, setSmartFolderOpen] = useState(false);
+  const [smartFolderEdit, setSmartFolderEdit] = useState<LibrarySmartFolder | null>(null);
+  const [activeSmartFolder, setActiveSmartFolder] = useState<string | null>(null);
 
   const closeVideoPreview = useCallback(() => {
     if (videoMetaTimerRef.current !== null) {
@@ -365,6 +464,47 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
     };
   }, [onExtractBusyChange]);
 
+  const refreshTags = useCallback(async () => {
+    if (!engine.desktopRuntime || !dirs) return;
+    try {
+      const result = await engine.call<{ tags?: LibraryTagCount[] }>(
+        "library_get_tags",
+        { kind: tab, bgm_dir: dirs.bgm_dir, watermark_dir: dirs.watermark_dir },
+        15_000,
+      );
+      if (!mountedRef.current) return;
+      setAllTags(Array.isArray(result?.tags) ? result.tags : []);
+    } catch {
+      /* 标签加载失败不阻塞使用 */
+    }
+  }, [dirs, tab]);
+
+  const loadSmartFolders = useCallback(async () => {
+    if (!engine.desktopRuntime || !dirs) return;
+    try {
+      const result = await engine.call<{ folders?: LibrarySmartFolder[] }>(
+        "library_smart_folders_list",
+        { bgm_dir: dirs.bgm_dir },
+        15_000,
+      );
+      if (!mountedRef.current) return;
+      setSmartFolders(Array.isArray(result?.folders) ? result.folders : []);
+    } catch {
+      /* 智能文件夹读取失败不阻塞使用 */
+    }
+  }, [dirs]);
+
+  useEffect(() => {
+    if (!open) return;
+    void refreshTags();
+    void loadSmartFolders();
+  }, [open, refreshTags, loadSmartFolders]);
+
+  useEffect(() => {
+    if (!open) return;
+    void refreshTags();
+  }, [items, open, refreshTags]);
+
   useEffect(() => {
     localStorage.setItem(`${VIEW_KEY}.${tab}`, viewMode);
   }, [tab, viewMode]);
@@ -402,6 +542,12 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
     setImageFailed(false);
     setConfirm(null);
     setRenameOpen(null);
+    setDetail(null);
+    setDetailTagDraft("");
+    setDupOpen(false);
+    setBatchRenameOpen(false);
+    setSmartFolderOpen(false);
+    setSmartFolderEdit(null);
   }, [open, closeVideoPreview]);
 
   useEffect(() => {
@@ -411,7 +557,18 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
     setSearchDraft("");
     setFilterType("all");
     setSelected(new Set());
+    setTagFilter("");
+    setStarFilter(false);
+    setActiveSmartFolder(null);
   }, [tab]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(THUMB_KEY, String(thumbSize));
+    } catch {
+      /* 忽略 */
+    }
+  }, [thumbSize]);
 
   useEffect(() => {
     if (!engine.desktopRuntime) return;
@@ -489,6 +646,24 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
           closeVideoPreview();
           return;
         }
+        if (detail) {
+          setDetail(null);
+          setDetailTagDraft("");
+          return;
+        }
+        if (dupOpen) {
+          setDupOpen(false);
+          return;
+        }
+        if (batchRenameOpen) {
+          setBatchRenameOpen(false);
+          return;
+        }
+        if (smartFolderOpen) {
+          setSmartFolderOpen(false);
+          setSmartFolderEdit(null);
+          return;
+        }
         onClose();
         return;
       }
@@ -518,7 +693,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       document.body.classList.remove("is-modal-open");
       previousFocus?.focus();
     };
-  }, [open, onClose, videoPreview, imagePreview, renameOpen, confirm, closeVideoPreview]);
+  }, [open, onClose, videoPreview, imagePreview, renameOpen, confirm, closeVideoPreview, detail, dupOpen, batchRenameOpen, smartFolderOpen]);
 
   const selectFolder = useCallback((folder: string) => {
     setCurrentFolder(folder);
@@ -564,14 +739,18 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
 
   const visibleItems = useMemo(() => {
     const query = search.trim().toLowerCase();
+    const activeSmart = activeSmartFolder ? smartFolders.find((folder) => folder.id === activeSmartFolder) ?? null : null;
     const inScope = (item: LibraryItem) => {
+      if (activeSmart) return matchesSmartFolder(item, activeSmart);
       if (!query) return item.folder === currentFolder;
       return item.folder === currentFolder || (currentFolder ? item.folder.startsWith(`${currentFolder}/`) : true);
     };
     let list = items.filter((item) =>
       inScope(item)
       && (filterType === "all" || item.type === filterType)
-      && (!query || `${item.name} ${item.folder}`.toLowerCase().includes(query)),
+      && (!starFilter || item.starred)
+      && (!tagFilter || item.tags.includes(tagFilter))
+      && (!query || `${item.name} ${item.folder} ${(item.tags ?? []).join(" ")}`.toLowerCase().includes(query)),
     );
     const direction = sortDesc ? -1 : 1;
     list = [...list].sort((a, b) => {
@@ -587,7 +766,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       return result * direction || a.name.localeCompare(b.name, "zh-Hans-CN");
     });
     return list;
-  }, [currentFolder, filterType, items, search, sortDesc, sortKey]);
+  }, [activeSmartFolder, currentFolder, filterType, items, search, smartFolders, sortDesc, sortKey, starFilter, tagFilter]);
 
   useEffect(() => {
     visibleItemsRef.current = visibleItems;
@@ -1018,6 +1197,243 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
     setSelected(new Set(visibleItems.map((item) => item.path)));
   }, [visibleItems]);
 
+  // ---------- Eagle 风格素材管理：标签 / 星标 / 备注 / 去重 / 批量重命名 / 智能文件夹 ----------
+
+  const applyMetadata = useCallback(async (item: LibraryItem, patch: { tags?: string[]; starred?: boolean; note?: string }) => {
+    if (!engine.desktopRuntime) return notify("info", "素材元数据需要在 Tauri 桌面窗口中运行");
+    if (!dirs) return;
+    try {
+      const result = await engine.call<{ tags: string[]; starred: boolean; note: string }>("library_set_metadata", {
+        kind: tab,
+        path: item.path,
+        bgm_dir: dirs.bgm_dir,
+        watermark_dir: dirs.watermark_dir,
+        ...patch,
+      }, 30_000);
+      const nextItem: LibraryItem = { ...item, tags: result.tags, starred: result.starred, note: result.note };
+      if (tab === "bgm") setBgm((current) => current.map((entry) => entry.path === item.path ? nextItem : entry));
+      else setWatermark((current) => current.map((entry) => entry.path === item.path ? nextItem : entry));
+      if (detail?.path === item.path) setDetailDraft({ tags: result.tags, note: result.note, starred: result.starred });
+      void refreshTags();
+    } catch (err) {
+      notify("error", err instanceof Error ? err.message : "保存素材元数据失败");
+    }
+  }, [detail, dirs, notify, refreshTags, tab]);
+
+  const toggleStar = useCallback((item: LibraryItem) => {
+    void applyMetadata(item, { starred: !item.starred });
+  }, [applyMetadata]);
+
+  const openDetail = useCallback((item: LibraryItem) => {
+    setDetail(item);
+    setDetailDraft({ tags: item.tags ?? [], note: item.note ?? "", starred: item.starred });
+    setDetailTagDraft("");
+  }, []);
+
+  const closeDetail = useCallback(() => {
+    setDetail(null);
+    setDetailTagDraft("");
+  }, []);
+
+  const saveDetail = useCallback(() => {
+    if (!detail) return;
+    void applyMetadata(detail, { tags: detailDraft.tags, note: detailDraft.note, starred: detailDraft.starred });
+  }, [applyMetadata, detail, detailDraft]);
+
+  const addDetailTag = useCallback(() => {
+    const tag = detailTagDraft.trim();
+    if (!tag) return;
+    setDetailDraft((current) => (current.tags.includes(tag) ? current : { ...current, tags: [...current.tags, tag] }));
+    setDetailTagDraft("");
+  }, [detailTagDraft]);
+
+  const removeDetailTag = useCallback((tag: string) => {
+    setDetailDraft((current) => ({ ...current, tags: current.tags.filter((entry) => entry !== tag) }));
+  }, []);
+
+  const scanDuplicates = useCallback(async () => {
+    if (!engine.desktopRuntime) return notify("info", "查找重复素材需要在 Tauri 桌面窗口中运行");
+    if (!dirs) return;
+    setDupState((current) => ({ ...current, scanning: true }));
+    try {
+      const result = await engine.call<LibraryDupResult>("library_find_duplicates", {
+        kind: tab,
+        bgm_dir: dirs.bgm_dir,
+        watermark_dir: dirs.watermark_dir,
+      }, 300_000);
+      const checked = new Set<string>();
+      for (const group of result.groups) {
+        group.duplicates.forEach((item) => checked.add(item.path));
+      }
+      setDupState({ scanning: false, result, checked });
+    } catch (err) {
+      setDupState((current) => ({ ...current, scanning: false }));
+      notify("error", err instanceof Error ? err.message : "查找重复素材失败");
+    }
+  }, [dirs, notify, tab]);
+
+  const toggleDupChecked = useCallback((path: string) => {
+    setDupState((current) => {
+      const next = new Set(current.checked);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return { ...current, checked: next };
+    });
+  }, []);
+
+  const toggleDupGroup = useCallback((group: LibraryDupResult["groups"][number], checked: boolean) => {
+    setDupState((current) => {
+      const next = new Set(current.checked);
+      const paths = [group.representative, ...group.duplicates].map((item) => item.path);
+      for (const path of paths) {
+        if (checked) next.add(path);
+        else next.delete(path);
+      }
+      return { ...current, checked: next };
+    });
+  }, []);
+
+  const deleteCheckedDuplicates = useCallback(async () => {
+    if (!dirs) return;
+    const paths = Array.from(dupState.checked);
+    if (!paths.length) return notify("info", "没有选中的重复素材");
+    try {
+      const result = await engine.call<{ results: Array<{ status: string }> }>("library_remove_batch", {
+        kind: tab,
+        paths,
+        bgm_dir: dirs.bgm_dir,
+        watermark_dir: dirs.watermark_dir,
+      }, 300_000);
+      const removed = result.results.filter((item) => item.status === "removed").length;
+      notify(removed ? "success" : "error", removed ? `已把 ${removed} 个重复素材移入回收站` : "没有素材被删除");
+      setDupOpen(false);
+      await refresh();
+    } catch (err) {
+      notify("error", err instanceof Error ? err.message : "删除重复素材失败");
+    }
+  }, [dirs, dupState.checked, notify, refresh, tab]);
+
+  const computeRenamePreview = useCallback((items: LibraryItem[], pattern: string, startIndex: number) => {
+    if (!pattern.trim()) return [];
+    const now = new Date();
+    const pad2 = (value: number) => String(value).padStart(2, "0");
+    const dateStamp = `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}`;
+    const padWidth = Math.max(2, String(startIndex + items.length - 1).length);
+    const seen = new Set<string>();
+    return items.map((item, offset) => {
+      const dot = item.name.lastIndexOf(".");
+      const stem = dot > 0 ? item.name.slice(0, dot) : item.name;
+      const suffix = dot > 0 ? item.name.slice(dot) : "";
+      const number = String(startIndex + offset).padStart(padWidth, "0");
+      const nextStem = pattern.replace(/\{name\}/g, stem).replace(/\{n\}/g, number).replace(/\{date\}/g, dateStamp);
+      const next = `${nextStem}${suffix}`;
+      let ok = true;
+      let reason = "";
+      if (!nextStem.trim() || /[<>:"/\\|?*]/.test(nextStem)) {
+        ok = false;
+        reason = "生成的文件名包含非法字符";
+      } else if (seen.has(next)) {
+        ok = false;
+        reason = `与「${next}」重名`;
+      }
+      seen.add(next);
+      return { old: item.name, next, ok, reason };
+    });
+  }, []);
+
+  const openBatchRename = useCallback(() => {
+    const order = visibleItems.filter((item) => selected.has(item.path));
+    if (!order.length) return notify("info", "请先选择要重命名的素材");
+    setBatchRename({
+      pattern: "{n}-{name}",
+      startIndex: 1,
+      items: order,
+      preview: computeRenamePreview(order, "{n}-{name}", 1),
+      applying: false,
+    });
+    setBatchRenameOpen(true);
+  }, [computeRenamePreview, notify, selected, visibleItems]);
+
+  const updateBatchRenameDraft = useCallback((patch: Partial<{ pattern: string; startIndex: number }>) => {
+    setBatchRename((current) => {
+      const next = { ...current, ...patch };
+      next.preview = computeRenamePreview(next.items, next.pattern, next.startIndex);
+      return next;
+    });
+  }, [computeRenamePreview]);
+
+  const applyBatchRename = useCallback(async () => {
+    if (!engine.desktopRuntime) return notify("info", "批量重命名需要在 Tauri 桌面窗口中运行");
+    if (!dirs) return;
+    if (batchRename.preview.some((item) => !item.ok)) return notify("error", "有不可用的名称，请调整模板");
+    setBatchRename((current) => ({ ...current, applying: true }));
+    try {
+      const result = await engine.call<{ results: LibraryRenameBatchResult[] }>("library_rename_batch", {
+        kind: tab,
+        paths: batchRename.items.map((item) => item.path),
+        bgm_dir: dirs.bgm_dir,
+        watermark_dir: dirs.watermark_dir,
+        pattern: batchRename.pattern,
+        start_index: batchRename.startIndex,
+      }, 60_000);
+      const renamed = result.results.filter((item) => item.status === "renamed").length;
+      const failed = result.results.filter((item) => item.status === "failed").length;
+      notify(failed && !renamed ? "error" : "success", `已重命名 ${renamed} 个素材${failed ? `，失败 ${failed} 个` : ""}`);
+      setBatchRenameOpen(false);
+      await refresh();
+    } catch (err) {
+      notify("error", err instanceof Error ? err.message : "批量重命名失败");
+    } finally {
+      setBatchRename((current) => ({ ...current, applying: false }));
+    }
+  }, [batchRename.items, batchRename.pattern, batchRename.preview, dirs, notify, refresh, tab]);
+
+  const persistSmartFolders = useCallback(async (next: LibrarySmartFolder[]) => {
+    if (!engine.desktopRuntime || !dirs) return;
+    try {
+      await engine.call("library_smart_folders_save", { bgm_dir: dirs.bgm_dir, folders: next }, 30_000);
+      setSmartFolders(next);
+      if (activeSmartFolder && !next.some((folder) => folder.id === activeSmartFolder)) {
+        setActiveSmartFolder(null);
+      }
+    } catch (err) {
+      notify("error", err instanceof Error ? err.message : "保存智能文件夹失败");
+    }
+  }, [activeSmartFolder, dirs, notify]);
+
+  const openSmartFolderCreate = useCallback(() => {
+    setSmartFolderEdit({ id: `smart-${Date.now()}`, name: "", kind: tab === "watermark" ? "watermark" : "bgm", conditions: [] });
+    setSmartFolderOpen(true);
+  }, [tab]);
+
+  const saveSmartFolderEdit = useCallback(async () => {
+    if (!smartFolderEdit) return;
+    if (!smartFolderEdit.name.trim()) return notify("error", "请输入智能文件夹名称");
+    const exists = smartFolders.some((folder) => folder.id === smartFolderEdit.id);
+    const next = exists
+      ? smartFolders.map((folder) => (folder.id === smartFolderEdit.id ? smartFolderEdit : folder))
+      : [...smartFolders, smartFolderEdit];
+    await persistSmartFolders(next);
+    setSmartFolderOpen(false);
+    setSmartFolderEdit(null);
+  }, [notify, persistSmartFolders, smartFolderEdit, smartFolders]);
+
+  const deleteSmartFolder = useCallback((id: string) => {
+    void persistSmartFolders(smartFolders.filter((folder) => folder.id !== id));
+  }, [persistSmartFolders, smartFolders]);
+
+  const selectSmartFolder = useCallback((id: string) => {
+    setActiveSmartFolder((current) => (current === id ? null : id));
+    setCurrentFolder("");
+    setSearch("");
+    setSearchDraft("");
+    setSelected(new Set());
+  }, []);
+
+  const changeThumbSize = useCallback((value: number) => {
+    setThumbSize(Math.max(THUMB_MIN, Math.min(THUMB_MAX, Math.round(value))));
+  }, []);
+
   // ---------- 圈选（框选） ----------
 
   const isInteractiveTarget = (target: EventTarget | null) => {
@@ -1317,6 +1733,32 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                 onFolderDragLeave={handleFolderDragLeave}
               />
             </div>
+            <div className="library-smart-list">
+              <div className="library-tree-head">
+                <strong>智能文件夹</strong>
+                <button type="button" className="icon-button" onClick={openSmartFolderCreate} aria-label="新建智能文件夹" title="新建智能文件夹"><FolderCog size={14} /></button>
+              </div>
+              <div className="library-smart-scroll">
+                {smartFolders.filter((folder) => folder.kind === tab).length ? (
+                  smartFolders.filter((folder) => folder.kind === tab).map((folder) => (
+                    <button
+                      key={folder.id}
+                      type="button"
+                      className={`library-smart-item${activeSmartFolder === folder.id ? " is-active" : ""}`}
+                      onClick={() => selectSmartFolder(folder.id)}
+                      title={smartFolderRuleSummary(folder)}
+                    >
+                      <FolderCog size={13} />
+                      <span>{folder.name}</span>
+                      <small>{items.filter((item) => matchesSmartFolder(item, folder)).length}</small>
+                    </button>
+                  ))
+                ) : (
+                  <span className="library-smart-empty">按规则自动归类素材</span>
+                )}
+                <button type="button" className="library-smart-manage" onClick={() => setSmartFolderOpen(true)}>管理智能文件夹…</button>
+              </div>
+            </div>
           </aside>
 
           {/* 内容区 */}
@@ -1355,10 +1797,35 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                     {sortDesc ? <ArrowDown size={14} /> : <ArrowUp size={14} />}
                   </button>
                 </span>
+                <button
+                  type="button"
+                  className={`library-star-filter${starFilter ? " is-active" : ""}`}
+                  onClick={() => setStarFilter((value) => !value)}
+                  aria-label="只看收藏"
+                  title="只看收藏"
+                >
+                  <Star size={14} fill={starFilter ? "currentColor" : "none"} />
+                </button>
+                {allTags.length ? (
+                  <span className="library-tag-filter">
+                    <Tag size={13} />
+                    <select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)} aria-label="按标签筛选">
+                      <option value="">全部标签</option>
+                      {allTags.map((tag) => <option key={tag.name} value={tag.name}>{tag.name}（{tag.count}）</option>)}
+                    </select>
+                  </span>
+                ) : null}
                 <span className="library-view-toggle" role="group" aria-label="视图模式">
                   <button type="button" className={viewMode === "list" ? "is-active" : ""} onClick={() => setViewMode("list")} aria-label="列表模式"><List size={14} /></button>
                   <button type="button" className={viewMode === "card" ? "is-active" : ""} onClick={() => setViewMode("card")} aria-label="卡片模式"><LayoutGrid size={14} /></button>
                 </span>
+                {viewMode === "card" ? (
+                  <span className="library-thumb-slider" title="缩略图大小">
+                    <SlidersHorizontal size={13} />
+                    <input type="range" min={THUMB_MIN} max={THUMB_MAX} step={8} value={thumbSize} onChange={(event) => changeThumbSize(Number(event.target.value))} aria-label="缩略图大小" />
+                  </span>
+                ) : null}
+                <button type="button" className="quiet-button" onClick={scanDuplicates} disabled={!desktopRuntime || loading}><GitCompareArrows size={14} />查找重复</button>
                 {tab === "bgm" ? (
                   <button type="button" className="library-accent-button" onClick={() => setExtract((current) => ({ ...current, open: true, saveFolder: currentFolder }))} disabled={!desktopRuntime}><Scissors size={14} />批量拆BGM</button>
                 ) : null}
@@ -1383,6 +1850,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                   <button type="button" className="quiet-button" onClick={() => addToBgmFiles(Array.from(selected))}><Music size={14} />选用为BGM</button>
                 ) : null}
                 <button type="button" className="quiet-button" onClick={() => setMoveOpen(true)}><Move size={14} />移动到…</button>
+                <button type="button" className="quiet-button" onClick={openBatchRename}><Wand2 size={14} />批量重命名</button>
                 <button type="button" className="quiet-button danger-text" onClick={() => requestRemove(tab, Array.from(selected))}><Trash2 size={14} />删除</button>
                 <button type="button" className="quiet-button" onClick={() => setSelected(new Set())}><X size={14} />取消选择</button>
               </div>
@@ -1412,11 +1880,13 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                         <input type="checkbox" className="library-checkbox" checked={isSelected} onChange={() => toggleSelected(item.path)} aria-label={`选择 ${item.name}`} />
                         <BgmCover path={item.path} size="small" />
                         <span className="library-row-main">
-                          <strong title={item.path}>{item.name}</strong>
+                          <button type="button" className="library-item-name" onClick={() => openDetail(item)} title={item.path}>{item.name}</button>
                           <small>{item.folder ? `${item.folder} · ` : ""}{formatBytes(item.size_bytes)} · {formatDuration(item.duration)}{item.added_at ? ` · 入库于 ${formatAddedAt(item.added_at)}` : ""}</small>
+                          <ItemMetaChips item={item} />
                           {isPlaying ? <AudioProgressBar audioRef={audioRef} onSeek={seekAudio} /> : null}
                         </span>
                         <span className="library-row-actions">
+                          <StarButton item={item} onToggle={toggleStar} />
                           <button type="button" className="icon-button" onClick={() => void togglePlay(item)} aria-label={isPlaying ? "停止试听" : "试听"}>
                             {isPlaying ? <Pause size={15} /> : <Play size={15} />}
                           </button>
@@ -1430,7 +1900,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                   })}
                 </ul>
               ) : (
-                <ul className="library-grid">
+                <ul className="library-grid" style={{ "--library-thumb": `${thumbSize}px` } as Record<string, string>}>
                   {!loading && !visibleItems.length ? (
                     <li className="library-empty">
                       <span>{currentFolder
@@ -1458,11 +1928,13 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                           }
                         />
                         <span className="library-card-meta">
-                          <strong title={item.path}>{item.name}</strong>
+                          <button type="button" className="library-item-name" onClick={() => openDetail(item)} title={item.path}>{item.name}</button>
                           <small>{item.folder ? `${item.folder} · ` : ""}{formatBytes(item.size_bytes)}</small>
+                          <ItemMetaChips item={item} />
                           {isPlaying ? <AudioProgressBar audioRef={audioRef} onSeek={seekAudio} /> : null}
                         </span>
                         <span className="library-card-actions">
+                          <StarButton item={item} onToggle={toggleStar} />
                           <button type="button" className="icon-button" onClick={() => void togglePlay(item)} aria-label={isPlaying ? "停止试听" : "试听"}>
                             {isPlaying ? <Pause size={14} /> : <Play size={14} />}
                           </button>
@@ -1513,10 +1985,12 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                         </button>
                       )}
                       <span className="library-row-main">
-                        <strong title={item.path}>{item.name}</strong>
+                        <button type="button" className="library-item-name" onClick={() => openDetail(item)} title={item.path}>{item.name}</button>
                         <small>{item.folder ? `${item.folder} · ` : ""}{isVideo ? `${formatDuration(item.duration)} · ` : ""}{formatBytes(item.size_bytes)}{item.added_at ? ` · 入库于 ${formatAddedAt(item.added_at)}` : ""}</small>
+                        <ItemMetaChips item={item} />
                       </span>
                       <span className="library-row-actions">
+                        <StarButton item={item} onToggle={toggleStar} />
                         {isVideo ? <button type="button" className="icon-button" onClick={() => void openVideoPreview(item)} aria-label="放大播放预览" title="放大播放预览"><Play size={14} /></button> : null}
                         {isVideo ? <button type="button" className="quiet-button" onClick={() => useAsVideoWatermark(item)}><Stamp size={13} />用作视频水印</button> : null}
                         <button type="button" className="quiet-button" onClick={() => addWatermarkLayer(item)}><Plus size={13} />加入水印图层</button>
@@ -1529,7 +2003,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                 })}
               </ul>
             ) : (
-              <ul className="library-grid">
+              <ul className="library-grid" style={{ "--library-thumb": `${thumbSize}px` } as Record<string, string>}>
                 {!loading && !visibleItems.length ? (
                   <li className="library-empty">
                     <span>{currentFolder
@@ -1565,10 +2039,12 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                         </button>
                       )}
                       <span className="library-card-meta">
-                        <strong title={item.path}>{item.name}</strong>
+                        <button type="button" className="library-item-name" onClick={() => openDetail(item)} title={item.path}>{item.name}</button>
                         <small>{item.folder ? `${item.folder} · ` : ""}{isVideo ? `${formatDuration(item.duration)} · ` : ""}{formatBytes(item.size_bytes)}</small>
+                        <ItemMetaChips item={item} />
                       </span>
                       <span className="library-card-actions">
+                        <StarButton item={item} onToggle={toggleStar} />
                         {isVideo ? <button type="button" className="icon-button" onClick={() => useAsVideoWatermark(item)} aria-label={`用作视频水印 ${item.name}`} title="用作视频水印（设为导出水印）"><Stamp size={14} /></button> : null}
                         <button type="button" className="icon-button" onClick={() => addWatermarkLayer(item)} aria-label={`加入水印图层 ${item.name}`} title="加入水印图层"><Layers size={14} /></button>
                         <button type="button" className="icon-button" onClick={() => requestRename("watermark", item)} aria-label={`重命名 ${item.name}`} title="重命名"><Pencil size={13} /></button>
@@ -2000,6 +2476,251 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
         </div>
       ) : null}
 
+      {detail ? (
+        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={(event) => { event.stopPropagation(); closeDetail(); }}>
+          <section className="library-detail-panel" role="dialog" aria-modal="true" aria-label={`素材详情 ${detail.name}`} onMouseDown={(event) => event.stopPropagation()}>
+            <header className="library-dialog-heading">
+              <span className="library-dialog-icon"><StickyNote size={20} /></span>
+              <span>
+                <small>素材详情</small>
+                <strong className="library-detail-title">{detail.name}</strong>
+              </span>
+              <button type="button" className="update-close" onClick={closeDetail} aria-label="关闭详情"><X size={17} /></button>
+            </header>
+            <div className="library-detail-body">
+              <div className="library-detail-preview">
+                {detail.type === "audio" ? (
+                  <BgmCover path={detail.path} />
+                ) : detail.type === "video" ? (
+                  <button type="button" className="library-detail-preview-media" onClick={() => void openVideoPreview(detail)} aria-label={`放大播放 ${detail.name}`}>
+                    <WatermarkThumb path={detail.path} />
+                    <span className="library-thumb-badge"><Play size={10} />{formatDuration(detail.duration)}</span>
+                    <span className="library-detail-preview-hint">点击放大播放</span>
+                  </button>
+                ) : (
+                  <button type="button" className="library-detail-preview-media" onClick={() => openImagePreview(detail)} aria-label={`放大预览 ${detail.name}`}>
+                    <WatermarkThumb path={detail.path} />
+                    <span className="library-detail-preview-hint">点击放大预览</span>
+                  </button>
+                )}
+              </div>
+              <dl className="library-detail-meta">
+                <div><dt>路径</dt><dd title={detail.path}>{detail.path}</dd></div>
+                <div><dt>所在文件夹</dt><dd>{detail.folder || "库根目录"}</dd></div>
+                <div><dt>类型</dt><dd>{detail.type === "audio" ? "音频" : detail.type === "video" ? "视频" : "图片"}</dd></div>
+                <div><dt>大小</dt><dd>{formatBytes(detail.size_bytes)}</dd></div>
+                {detail.duration != null ? <div><dt>时长</dt><dd>{formatDuration(detail.duration)}</dd></div> : null}
+                <div><dt>入库时间</dt><dd>{detail.added_at ? formatAddedAt(detail.added_at) : "—"}</dd></div>
+              </dl>
+              <div className="library-detail-section">
+                <span className="library-detail-label">收藏</span>
+                <button type="button" className={`library-star-toggle${detailDraft.starred ? " is-starred" : ""}`} onClick={() => setDetailDraft((current) => ({ ...current, starred: !current.starred }))} aria-pressed={detailDraft.starred}>
+                  <Star size={16} fill={detailDraft.starred ? "currentColor" : "none"} />
+                  {detailDraft.starred ? "已收藏" : "点击收藏"}
+                </button>
+              </div>
+              <div className="library-detail-section">
+                <span className="library-detail-label">标签</span>
+                <div className="library-detail-tags">
+                  {detailDraft.tags.map((tag) => (
+                    <span key={tag} className="library-chip is-editable"><Tag size={10} />{tag}<button type="button" onClick={() => removeDetailTag(tag)} aria-label={`移除标签 ${tag}`}><X size={10} /></button></span>
+                  ))}
+                  {!detailDraft.tags.length ? <span className="library-detail-empty">还没有标签</span> : null}
+                </div>
+                <div className="library-detail-tag-input">
+                  <input value={detailTagDraft} onChange={(event) => setDetailTagDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addDetailTag(); }} placeholder="输入标签后回车" aria-label="新增标签" />
+                  <button type="button" className="quiet-button" onClick={addDetailTag} disabled={!detailTagDraft.trim()}><Plus size={13} />添加</button>
+                </div>
+                {allTags.filter((tag) => !detailDraft.tags.includes(tag.name)).slice(0, 8).length ? (
+                  <div className="library-detail-suggest">
+                    {allTags.filter((tag) => !detailDraft.tags.includes(tag.name)).slice(0, 8).map((tag) => (
+                      <button key={tag.name} type="button" className="library-chip" onClick={() => setDetailDraft((current) => (current.tags.includes(tag.name) ? current : { ...current, tags: [...current.tags, tag.name] }))}>+ {tag.name}</button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <div className="library-detail-section">
+                <span className="library-detail-label">备注</span>
+                <textarea className="library-detail-note" value={detailDraft.note} onChange={(event) => setDetailDraft((current) => ({ ...current, note: event.target.value }))} placeholder="记录用途、来源、注意事项…" rows={4} aria-label="素材备注" />
+              </div>
+            </div>
+            <footer className="library-dialog-footer">
+              <span className="library-dialog-footer-hint">标签、收藏与备注保存在素材库索引中，不会修改源文件。</span>
+              <span className="library-dialog-footer-actions">
+                <button type="button" className="quiet-button" onClick={closeDetail}>取消</button>
+                <button type="button" className="library-accent-button" onClick={saveDetail}>保存</button>
+              </span>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {dupOpen ? (
+        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={(event) => { event.stopPropagation(); if (!dupState.scanning) setDupOpen(false); }}>
+          <section className="library-dup-dialog" role="dialog" aria-modal="true" aria-labelledby="library-dup-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="library-dialog-heading">
+              <span className="library-dialog-icon"><GitCompareArrows size={21} /></span>
+              <span>
+                <small>重复 / 相似素材</small>
+                <strong id="library-dup-title">查找重复素材</strong>
+              </span>
+              <button type="button" className="update-close" onClick={() => setDupOpen(false)} disabled={dupState.scanning} aria-label="关闭查找重复窗口"><X size={17} /></button>
+            </header>
+            <div className="library-dup-body">
+              {dupState.scanning ? (
+                <div className="library-dup-empty"><Loader2 className="is-spinning" size={20} />正在扫描素材库…（图片较多时可能需要一些时间）</div>
+              ) : !dupState.result ? (
+                <div className="library-dup-empty">
+                  <span>扫描整个{tab === "bgm" ? "BGM" : "水印"}库，按内容识别重复与相似素材（图片用感知哈希，音频用响度指纹）。</span>
+                  <button type="button" className="library-accent-button" onClick={scanDuplicates}><GitCompareArrows size={14} />开始扫描</button>
+                </div>
+              ) : dupState.result.groups.length === 0 ? (
+                <div className="library-dup-empty"><Check size={18} />没有发现重复素材（共扫描 {dupState.result.scanned} 个）</div>
+              ) : (
+                <>
+                  <p className="library-dup-summary">
+                    发现 {dupState.result.groups.length} 组重复（共扫描 {dupState.result.scanned} 个素材，可释放 {formatBytes(dupState.result.groups.reduce((sum, group) => sum + group.saved_bytes, 0))}）。默认勾选每组保留一个后的其余素材。
+                  </p>
+                  <div className="library-dup-groups">
+                    {dupState.result.groups.map((group, groupIndex) => {
+                      const members = [group.representative, ...group.duplicates];
+                      const checkedCount = members.filter((item) => dupState.checked.has(item.path)).length;
+                      const allChecked = checkedCount === members.length;
+                      return (
+                        <div key={groupIndex} className="library-dup-group">
+                          <div className="library-dup-group-head">
+                            <button type="button" className="quiet-button" onClick={() => toggleDupGroup(group, !allChecked)}>
+                              {allChecked ? <Check size={13} /> : <Plus size={13} />}{allChecked ? "全部取消" : "全部选中"}
+                            </button>
+                            <span>{group.reason} · {group.count} 个素材 · 可释放 {formatBytes(group.saved_bytes)}</span>
+                          </div>
+                          <ul className="library-dup-list">
+                            {members.map((item) => (
+                              <li key={item.path} className={dupState.checked.has(item.path) ? "is-checked" : ""}>
+                                <input type="checkbox" checked={dupState.checked.has(item.path)} onChange={() => toggleDupChecked(item.path)} aria-label={`选择 ${item.name}`} />
+                                <span className="library-dup-thumb">
+                                  {item.type === "audio" ? <BgmCover path={item.path} size="small" /> : <WatermarkThumb path={item.path} size="small" />}
+                                </span>
+                                <span className="library-dup-name">
+                                  <strong>{item.name}</strong>
+                                  <small>{item.folder ? `${item.folder} · ` : ""}{formatBytes(item.size_bytes)}</small>
+                                </span>
+                                {item.path === group.representative.path ? <span className="library-chip is-keep">保留</span> : null}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+            <footer className="library-dialog-footer">
+              <span className="library-dialog-footer-hint">删除会移入系统回收站；每组默认至少保留一个素材。</span>
+              <span className="library-dialog-footer-actions">
+                <button type="button" className="quiet-button" onClick={() => setDupOpen(false)} disabled={dupState.scanning}>关闭</button>
+                {dupState.result && !dupState.scanning ? (
+                  <button type="button" className="library-accent-button is-danger" onClick={() => void deleteCheckedDuplicates()} disabled={!dupState.checked.size}>
+                    <Trash2 size={14} />删除选中（{dupState.checked.size}）
+                  </button>
+                ) : null}
+              </span>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {batchRenameOpen ? (
+        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={(event) => { event.stopPropagation(); if (!batchRename.applying) setBatchRenameOpen(false); }}>
+          <section className="library-rename-batch-dialog" role="dialog" aria-modal="true" aria-labelledby="library-rename-batch-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="library-dialog-heading">
+              <span className="library-dialog-icon"><Wand2 size={20} /></span>
+              <span>
+                <small>批量重命名</small>
+                <strong id="library-rename-batch-title">批量重命名（{batchRename.items.length} 项）</strong>
+              </span>
+              <button type="button" className="update-close" onClick={() => setBatchRenameOpen(false)} disabled={batchRename.applying} aria-label="关闭批量重命名窗口"><X size={17} /></button>
+            </header>
+            <div className="library-rename-batch-body">
+              <div className="library-rename-batch-fields">
+                <label>
+                  <span>模板</span>
+                  <input value={batchRename.pattern} onChange={(event) => updateBatchRenameDraft({ pattern: event.target.value })} placeholder="{n}-{name}" aria-label="重命名模板" />
+                </label>
+                <label>
+                  <span>起始序号</span>
+                  <input type="number" min={1} value={batchRename.startIndex} onChange={(event) => updateBatchRenameDraft({ startIndex: Math.max(1, Number(event.target.value) || 1) })} aria-label="起始序号" />
+                </label>
+              </div>
+              <p className="library-rename-batch-hint">占位符：{'{n}'}=序号（自动补零）、{'{name}'}=原文件名、{'{date}'}=当天日期。扩展名保持不变。</p>
+              <div className="library-rename-batch-list">
+                <div className="library-rename-batch-head"><span>原文件名</span><span>新文件名</span></div>
+                {batchRename.preview.map((row, index) => (
+                  <div key={index} className={`library-rename-batch-row${row.ok ? "" : " is-error"}`}>
+                    <span title={batchRename.items[index]?.path}>{row.old}</span>
+                    <span><ArrowRight size={12} /><em className={row.ok ? "" : "is-invalid"}>{row.next}</em>{!row.ok ? <small>{row.reason}</small> : null}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <footer className="library-dialog-footer">
+              <span className="library-dialog-footer-hint">{batchRename.preview.filter((row) => row.ok).length} 个可重命名，{batchRename.preview.filter((row) => !row.ok).length} 个不可用。</span>
+              <span className="library-dialog-footer-actions">
+                <button type="button" className="quiet-button" onClick={() => setBatchRenameOpen(false)} disabled={batchRename.applying}>取消</button>
+                <button type="button" className="library-accent-button" onClick={() => void applyBatchRename()} disabled={batchRename.applying || !batchRename.preview.some((row) => row.ok)}>
+                  {batchRename.applying ? <Loader2 className="is-spinning" size={14} /> : <Wand2 size={14} />}重命名
+                </button>
+              </span>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {smartFolderOpen ? (
+        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={(event) => { event.stopPropagation(); setSmartFolderOpen(false); setSmartFolderEdit(null); }}>
+          <section className="library-smart-dialog" role="dialog" aria-modal="true" aria-labelledby="library-smart-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="library-dialog-heading">
+              <span className="library-dialog-icon"><FolderCog size={20} /></span>
+              <span>
+                <small>规则虚拟集合</small>
+                <strong id="library-smart-title">智能文件夹</strong>
+              </span>
+              <button type="button" className="update-close" onClick={() => { setSmartFolderOpen(false); setSmartFolderEdit(null); }} aria-label="关闭智能文件夹窗口"><X size={17} /></button>
+            </header>
+            <div className="library-smart-body">
+              {smartFolderEdit ? (
+                <SmartFolderEditor folder={smartFolderEdit} onChange={setSmartFolderEdit} onCancel={() => setSmartFolderEdit(null)} onSave={() => void saveSmartFolderEdit()} />
+              ) : (
+                <>
+                  <div className="library-smart-list-rows">
+                    {smartFolders.length ? smartFolders.map((folder) => (
+                      <div key={folder.id} className="library-smart-row">
+                        <span className="library-smart-row-main">
+                          <strong>{folder.name}</strong>
+                          <small>{folder.kind === "bgm" ? "BGM 库" : "水印库"} · {smartFolderRuleSummary(folder)}</small>
+                        </span>
+                        <span className="library-smart-row-actions">
+                          <button type="button" className="icon-button" onClick={() => setSmartFolderEdit(folder)} aria-label={`编辑 ${folder.name}`} title="编辑"><Pencil size={13} /></button>
+                          <button type="button" className="icon-button danger" onClick={() => deleteSmartFolder(folder.id)} aria-label={`删除 ${folder.name}`} title="删除"><Trash2 size={13} /></button>
+                        </span>
+                      </div>
+                    )) : <span className="library-smart-empty">还没有智能文件夹。点击「新建」按规则自动归类素材。</span>}
+                  </div>
+                  <button type="button" className="library-accent-button" onClick={openSmartFolderCreate}><FolderPlus size={14} />新建智能文件夹</button>
+                </>
+              )}
+            </div>
+            <footer className="library-dialog-footer">
+              <span className="library-dialog-footer-hint">智能文件夹不移动文件，只按条件实时筛选展示。</span>
+              <span className="library-dialog-footer-actions">
+                <button type="button" className="library-primary-button" onClick={() => { setSmartFolderOpen(false); setSmartFolderEdit(null); }}>完成</button>
+              </span>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
       <audio ref={audioRef} className="library-audio" />
     </div>
   );
@@ -2140,6 +2861,115 @@ function MoveFolderList({ folders, currentFolder, onPick }: {
         </li>
       ))}
     </ul>
+  );
+}
+
+function StarButton({ item, onToggle }: { item: LibraryItem; onToggle: (item: LibraryItem) => void }) {
+  return (
+    <button
+      type="button"
+      className={`icon-button library-star-button${item.starred ? " is-starred" : ""}`}
+      onClick={(event) => { event.stopPropagation(); onToggle(item); }}
+      aria-label={item.starred ? `取消收藏 ${item.name}` : `收藏 ${item.name}`}
+      title={item.starred ? "取消收藏" : "收藏"}
+    >
+      <Star size={14} fill={item.starred ? "currentColor" : "none"} />
+    </button>
+  );
+}
+
+function SmartFolderEditor({ folder, onChange, onCancel, onSave }: {
+  folder: LibrarySmartFolder;
+  onChange: (folder: LibrarySmartFolder) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  const updateCondition = (index: number, patch: Partial<LibrarySmartFolderCondition>) => {
+    onChange({ ...folder, conditions: folder.conditions.map((condition, i) => (i === index ? { ...condition, ...patch } : condition)) });
+  };
+  const removeCondition = (index: number) => {
+    onChange({ ...folder, conditions: folder.conditions.filter((_, i) => i !== index) });
+  };
+  const addCondition = () => {
+    onChange({ ...folder, conditions: [...folder.conditions, { field: "type", op: "eq", value: "image" }] });
+  };
+  return (
+    <div className="library-smart-editor">
+      <label className="library-smart-editor-name">
+        <span>名称</span>
+        <input autoFocus value={folder.name} onChange={(event) => onChange({ ...folder, name: event.target.value })} placeholder="如：长视频水印" aria-label="智能文件夹名称" />
+      </label>
+      <div className="library-smart-editor-kind">
+        <span>应用于</span>
+        <select value={folder.kind} onChange={(event) => onChange({ ...folder, kind: event.target.value as LibraryKind })} aria-label="应用于哪个库">
+          <option value="bgm">BGM 库</option>
+          <option value="watermark">水印库</option>
+        </select>
+      </div>
+      <div className="library-smart-editor-conditions">
+        <span>条件（全部满足才显示）</span>
+        {folder.conditions.map((condition, index) => (
+          <div key={index} className="library-smart-condition">
+            <select value={condition.field} onChange={(event) => updateCondition(index, { field: event.target.value as LibrarySmartFolderCondition["field"] })} aria-label="条件字段">
+              <option value="type">类型</option>
+              <option value="duration">时长（秒）</option>
+              <option value="size">大小（字节）</option>
+              <option value="folder">文件夹</option>
+              <option value="name">文件名</option>
+              <option value="tag">标签</option>
+              <option value="starred">收藏</option>
+            </select>
+            <select value={condition.op} onChange={(event) => updateCondition(index, { op: event.target.value as LibrarySmartFolderCondition["op"] })} aria-label="条件操作符">
+              <option value="eq">等于</option>
+              <option value="ne">不等于</option>
+              <option value="gt">大于</option>
+              <option value="lt">小于</option>
+              <option value="contains">包含</option>
+              <option value="exists">存在</option>
+            </select>
+            {condition.op !== "exists" ? (
+              condition.field === "starred" ? (
+                <select value={String(condition.value ?? "")} onChange={(event) => updateCondition(index, { value: event.target.value === "true" })} aria-label="收藏条件值">
+                  <option value="true">是</option>
+                  <option value="false">否</option>
+                </select>
+              ) : condition.field === "type" ? (
+                <select value={String(condition.value ?? "image")} onChange={(event) => updateCondition(index, { value: event.target.value })} aria-label="类型条件值">
+                  <option value="image">图片</option>
+                  <option value="video">视频</option>
+                  <option value="audio">音频</option>
+                </select>
+              ) : (
+                <input value={String(condition.value ?? "")} onChange={(event) => updateCondition(index, { value: event.target.value })} placeholder={condition.field === "duration" ? "秒" : condition.field === "size" ? "字节" : "值"} aria-label="条件值" />
+              )
+            ) : null}
+            <button type="button" className="icon-button danger" onClick={() => removeCondition(index)} aria-label="删除条件"><X size={12} /></button>
+          </div>
+        ))}
+        <button type="button" className="quiet-button" onClick={addCondition}><Plus size={12} />添加条件</button>
+      </div>
+      <footer className="library-dialog-footer">
+        <span className="library-dialog-footer-hint">保存后左侧「智能文件夹」即可按条件筛选。</span>
+        <span className="library-dialog-footer-actions">
+          <button type="button" className="quiet-button" onClick={onCancel}>取消</button>
+          <button type="button" className="library-accent-button" onClick={onSave} disabled={!folder.name.trim()}>保存</button>
+        </span>
+      </footer>
+    </div>
+  );
+}
+
+function ItemMetaChips({ item }: { item: LibraryItem }) {
+  const tags = item.tags ?? [];
+  if (!tags.length && !item.note) return null;
+  return (
+    <span className="library-item-chips">
+      {tags.slice(0, 3).map((tag) => (
+        <span key={tag} className="library-chip"><Tag size={9} />{tag}</span>
+      ))}
+      {tags.length > 3 ? <span className="library-chip is-more">+{tags.length - 3}</span> : null}
+      {item.note ? <span className="library-chip is-note" title={item.note}><StickyNote size={9} />备注</span> : null}
+    </span>
   );
 }
 

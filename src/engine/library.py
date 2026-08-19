@@ -86,6 +86,10 @@ MIN_OVERLAP_FRACTION = 0.5  # 比较时至少需要重叠的比例
 EXTRACT_AUDIO_TIMEOUT = 300
 EXTRACT_BITRATE = "192k"
 
+SMART_FOLDERS_FILE_NAME = ".smart_folders.json"
+DUP_PHASH_THRESHOLD = 8  # dHash 汉明距离阈值：≤8（共 64 位）视为相似图片
+DUP_SCAN_MAX_IMAGES = 2000  # 单次去重扫描最多计算感知哈希的图片数，防止超大库卡顿
+
 
 EventCallback = Callable[[dict[str, Any]], None]
 
@@ -144,6 +148,28 @@ def _file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _image_dhash(path: Path, size: int = 8) -> str | None:
+    """计算图片 dHash（感知哈希），返回 64 位十六进制字符串；失败返回 None。"""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            gray = image.convert("L").resize((size + 1, size), Image.LANCZOS)
+            pixels = list(gray.getdata())
+        bits: list[str] = []
+        for row in range(size):
+            offset = row * (size + 1)
+            for col in range(size):
+                bits.append("1" if pixels[offset + col] > pixels[offset + col + 1] else "0")
+        return hex(int("".join(bits), 2))[2:].zfill(size * size // 4)
+    except Exception:
+        return None
+
+
+def _hamming_distance(first: str, second: str) -> int:
+    return sum(1 for x, y in zip(first, second) if x != y)
 
 
 def _probe_audio_streams(ffprobe_path: str | None, path: Path) -> bool:
@@ -708,6 +734,8 @@ class LibraryManager:
                         "mtime_ns": stat.st_mtime_ns,
                         "size": stat.st_size,
                     }
+                    if kind == "bgm" and fingerprint:
+                        entry["signature"] = fingerprint["signature"]
                     entries[name] = entry
                     changed = True
                 direct_counts[folder] = direct_counts.get(folder, 0) + 1
@@ -720,6 +748,9 @@ class LibraryManager:
                     "duration": entry.get("duration"),
                     "added_at": entry.get("added_at"),
                     "duplicate_key": str(entry.get("sha256", "")),
+                    "tags": entry.get("tags") if isinstance(entry.get("tags"), list) else [],
+                    "starred": bool(entry.get("starred", False)),
+                    "note": str(entry.get("note", "") or ""),
                 })
             if changed:
                 with self._index_lock(Path(directory)):
@@ -1011,6 +1042,339 @@ class LibraryManager:
                 entries[new_target.name] = entry
             self._save_index(directory, index)
         return {"renamed": True, "name": final_name, "path": str(new_target.resolve())}
+
+    # ---------- 素材元数据（标签 / 星标 / 备注） ----------
+
+    def set_metadata(self, params: dict[str, Any]) -> dict[str, Any]:
+        """更新素材元数据：tags（标签列表）/ starred（星标）/ note（备注）。
+
+        只更新传入的字段；标签自动去重、截断（单标签 ≤30 字符、最多 50 个）。
+        """
+        kind = str(params.get("kind", "") or "").strip()
+        path = Path(str(params.get("path", "") or "")).expanduser()
+        if kind not in {"bgm", "watermark"}:
+            raise ValueError("素材类型必须是 bgm 或 watermark")
+        base = self._library_base(kind, params)
+        if not path.is_file() or not self._inside(base, path):
+            raise ValueError("只能编辑素材库内的素材")
+        directory = path.parent
+        with self._index_lock(directory):
+            index = self._load_index(directory)
+            entries = index.setdefault("entries", {})
+            entry = entries.get(path.name)
+            if not isinstance(entry, dict):
+                stat = path.stat()
+                entry = {
+                    "sha256": _file_sha256(path),
+                    "added_at": _now_iso(),
+                    "mtime_ns": stat.st_mtime_ns,
+                    "size": stat.st_size,
+                }
+                entries[path.name] = entry
+            changed = False
+            if "tags" in params:
+                raw = params.get("tags")
+                if not isinstance(raw, list):
+                    raise ValueError("tags 必须是字符串列表")
+                tags: list[str] = []
+                for tag in raw:
+                    cleaned = str(tag or "").strip()
+                    if cleaned and cleaned not in tags:
+                        tags.append(cleaned[:30])
+                entry["tags"] = tags[:50]
+                changed = True
+            if "starred" in params:
+                entry["starred"] = bool(params.get("starred"))
+                changed = True
+            if "note" in params:
+                note = str(params.get("note", "") or "").strip()
+                entry["note"] = note[:500]
+                changed = True
+            if not changed:
+                raise ValueError("没有需要更新的元数据字段")
+            self._save_index(directory, index)
+        return {
+            "path": str(path.resolve()),
+            "tags": entry.get("tags") if isinstance(entry.get("tags"), list) else [],
+            "starred": bool(entry.get("starred", False)),
+            "note": str(entry.get("note", "") or ""),
+        }
+
+    def get_tags(self, params: dict[str, Any]) -> dict[str, Any]:
+        """汇总全库标签及每个标签的素材数量（按数量降序），用于标签筛选与管理。"""
+        kind = str(params.get("kind", "") or "").strip()
+        if kind not in {"bgm", "watermark"}:
+            raise ValueError("素材类型必须是 bgm 或 watermark")
+        base = self._library_base(kind, params)
+        counts: dict[str, int] = {}
+        for _folder, _name, entry in self._all_index_entries(base):
+            for tag in entry.get("tags") if isinstance(entry.get("tags"), list) else []:
+                key = str(tag).strip()
+                if key:
+                    counts[key] = counts.get(key, 0) + 1
+        tags = [
+            {"name": name, "count": count}
+            for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+        return {"tags": tags}
+
+    # ---------- 重复 / 相似素材查找 ----------
+
+    def find_duplicates(self, params: dict[str, Any]) -> dict[str, Any]:
+        """扫描全库，按内容分组重复/相似素材，供前端一键清理。
+
+        - 水印库：先按 SHA-256 精确分组；剩余图片再用 dHash 感知哈希聚类相似组。
+        - BGM 库：先按 SHA-256 精确分组；剩余音频再用响度指纹识别同曲不同版本。
+        每组返回代表项与其余重复项（含可释放字节数）。
+        """
+        kind = str(params.get("kind", "") or "").strip()
+        if kind not in {"bgm", "watermark"}:
+            raise ValueError("素材类型必须是 bgm 或 watermark")
+        base = self._library_base(kind, params)
+        extensions = AUDIO_EXTENSIONS if kind == "bgm" else WATERMARK_EXTENSIONS
+        snapshot_items, _folders = self._scan_tree(base, extensions, kind)
+        groups: list[dict[str, Any]] = []
+        by_sha: dict[str, list[dict[str, Any]]] = {}
+        for item in snapshot_items:
+            by_sha.setdefault(item["duplicate_key"], []).append(item)
+        used_paths: set[str] = set()
+        for members in by_sha.values():
+            if len(members) < 2:
+                continue
+            groups.append(self._make_dup_group(members))
+            used_paths.update(item["path"] for item in members)
+        remaining = [item for item in snapshot_items if item["path"] not in used_paths]
+        if kind == "bgm":
+            groups.extend(self._cluster_bgm_similar(base, remaining))
+        else:
+            groups.extend(self._cluster_image_similar(remaining))
+        groups.sort(key=lambda group: (-group["saved_bytes"], group["representative"]["name"].lower()))
+        return {"groups": groups, "scanned": len(snapshot_items)}
+
+    @staticmethod
+    def _make_dup_group(members: list[dict[str, Any]]) -> dict[str, Any]:
+        """把一组重复素材整理为 {representative, duplicates, ...}，代表项取名称排序首个。"""
+        members = sorted(members, key=lambda item: (item["name"].lower(), item["path"]))
+        representative = members[0]
+        duplicates = members[1:]
+        return {
+            "reason": "内容完全相同",
+            "representative": representative,
+            "duplicates": duplicates,
+            "count": len(members),
+            "saved_bytes": sum(int(item.get("size_bytes") or 0) for item in duplicates),
+        }
+
+    def _cluster_image_similar(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """用 dHash 把相似图片聚类；返回重复组列表。"""
+        clusters: list[list[dict[str, Any]]] = []
+        cluster_hashes: list[str] = []
+        for item in items[:DUP_SCAN_MAX_IMAGES]:
+            if item.get("type") != "image":
+                continue
+            digest = _image_dhash(Path(item["path"]))
+            if not digest:
+                continue
+            matched = next(
+                (
+                    index
+                    for index, reference in enumerate(cluster_hashes)
+                    if _hamming_distance(digest, reference) <= DUP_PHASH_THRESHOLD
+                ),
+                None,
+            )
+            if matched is None:
+                clusters.append([item])
+                cluster_hashes.append(digest)
+            else:
+                clusters[matched].append(item)
+        groups: list[dict[str, Any]] = []
+        for members in clusters:
+            if len(members) < 2:
+                continue
+            group = self._make_dup_group(members)
+            group["reason"] = "图片内容相似"
+            groups.append(group)
+        return groups
+
+    def _cluster_bgm_similar(self, base: Path, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """用音频响度指纹把同曲不同版本聚类；返回重复组列表。"""
+        signatures: dict[str, tuple[list[float], float]] = {}
+        for folder, name, entry in self._all_index_entries(base):
+            signature = entry.get("signature")
+            duration = entry.get("duration")
+            if isinstance(signature, list) and signature and isinstance(duration, (int, float)) and duration:
+                path_key = str((base / folder / name).resolve()) if folder else str((base / name).resolve())
+                signatures[path_key] = (signature, float(duration))
+        clusters: list[list[dict[str, Any]]] = []
+        cluster_sigs: list[tuple[list[float], float]] = []
+        for item in items:
+            signature = signatures.get(str(Path(item["path"]).resolve()))
+            if not signature:
+                continue
+            matched = next(
+                (index for index, reference in enumerate(cluster_sigs) if fingerprints_duplicate(signature[0], signature[1], reference[0], reference[1])),
+                None,
+            )
+            if matched is None:
+                clusters.append([item])
+                cluster_sigs.append(signature)
+            else:
+                clusters[matched].append(item)
+        groups: list[dict[str, Any]] = []
+        for members in clusters:
+            if len(members) < 2:
+                continue
+            group = self._make_dup_group(members)
+            group["reason"] = "音频内容相似（同曲不同版本）"
+            groups.append(group)
+        return groups
+
+    # ---------- 批量重命名 ----------
+
+    def rename_batch(self, params: dict[str, Any]) -> dict[str, Any]:
+        """批量重命名素材：按模板与起始序号生成新文件名（扩展名保持不变）。
+
+        模板占位符：{name}=原文件名（不含扩展名）、{n}=序号（补零）、{date}=当天日期。
+        序号按传入 paths 的顺序依次递增，补零宽度取「总数位数」与 2 的较大值。
+        """
+        kind = str(params.get("kind", "") or "").strip()
+        paths = params.get("paths") or []
+        pattern = str(params.get("pattern", "") or "").strip()
+        if kind not in {"bgm", "watermark"}:
+            raise ValueError("素材类型必须是 bgm 或 watermark")
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("没有可重命名的素材")
+        if not pattern:
+            raise ValueError("请输入重命名模板")
+        try:
+            start_index = max(1, int(params.get("start_index", 1) or 1))
+        except (TypeError, ValueError):
+            start_index = 1
+        base = self._library_base(kind, params)
+        pad = max(2, len(str(start_index + len(paths) - 1)))
+        date_stamp = time.strftime("%Y%m%d")
+        seen_names: set[str] = set()
+        results: list[dict[str, Any]] = []
+        for offset, raw in enumerate(paths):
+            source = Path(str(raw or "")).expanduser()
+            result: dict[str, Any] = {
+                "name": source.name,
+                "path": str(source),
+                "status": "failed",
+                "reason": "文件不存在",
+            }
+            if not source.is_file() or not self._inside(base, source):
+                results.append(result)
+                continue
+            stem = Path(source.name).stem
+            suffix = source.suffix
+            number = str(start_index + offset).zfill(pad)
+            new_stem = (
+                pattern.replace("{name}", stem)
+                .replace("{n}", number)
+                .replace("{date}", date_stamp)
+            )
+            if not new_stem.strip() or any(character in new_stem for character in '<>:"/\\|?*'):
+                result["reason"] = "生成的文件名包含非法字符"
+                results.append(result)
+                continue
+            new_name = f"{new_stem}{suffix}"
+            if new_name in seen_names:
+                result["reason"] = f"与本次批量中的「{new_name}」重名"
+                results.append(result)
+                continue
+            new_target = source.parent / new_name
+            if new_target.exists() and new_target != source:
+                result["reason"] = f"目标文件已存在：{new_name}"
+                results.append(result)
+                continue
+            seen_names.add(new_name)
+            try:
+                if new_target != source:
+                    os.rename(source, new_target)
+                directory = source.parent
+                with self._index_lock(directory):
+                    index = self._load_index(directory)
+                    entries = index.get("entries", {})
+                    entry = entries.pop(source.name, None)
+                    if isinstance(entry, dict):
+                        entry["mtime_ns"] = new_target.stat().st_mtime_ns
+                        entry["size"] = new_target.stat().st_size
+                        entries[new_name] = entry
+                    self._save_index(directory, index)
+                result.update({
+                    "status": "renamed",
+                    "old_name": source.name,
+                    "name": new_name,
+                    "path": str(new_target.resolve()),
+                })
+            except OSError as exc:
+                result["reason"] = str(exc)
+            results.append(result)
+        return {"results": results, "pattern": pattern}
+
+    # ---------- 智能文件夹（规则虚拟集合，仅持久化规则，匹配在前端完成） ----------
+
+    def _smart_file(self, params: dict[str, Any]) -> Path:
+        bgm_dir, _watermark_dir = self._resolve_dirs(params.get("bgm_dir"))
+        parent = bgm_dir.resolve().parent
+        parent.mkdir(parents=True, exist_ok=True)
+        return parent / SMART_FOLDERS_FILE_NAME
+
+    def smart_folders_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """读取已保存的智能文件夹规则列表。"""
+        path = self._smart_file(params)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        folders = data.get("folders") if isinstance(data, dict) else None
+        return {"path": str(path), "folders": folders if isinstance(folders, list) else []}
+
+    def smart_folders_save(self, params: dict[str, Any]) -> dict[str, Any]:
+        """保存智能文件夹规则（整表覆盖）。"""
+        folders = params.get("folders")
+        if not isinstance(folders, list):
+            raise ValueError("folders 必须是列表")
+        cleaned: list[dict[str, Any]] = []
+        for folder in folders:
+            if not isinstance(folder, dict):
+                raise ValueError("智能文件夹必须是对象")
+            name = str(folder.get("name", "") or "").strip()
+            if not name:
+                raise ValueError("智能文件夹名称不能为空")
+            if any(character in name for character in '<>:"/\\|?*'):
+                raise ValueError("智能文件夹名称包含非法字符")
+            kind = str(folder.get("kind", "") or "").strip()
+            if kind not in {"bgm", "watermark"}:
+                raise ValueError("智能文件夹类型必须是 bgm 或 watermark")
+            conditions = folder.get("conditions")
+            if not isinstance(conditions, list):
+                raise ValueError("智能文件夹缺少条件列表")
+            for condition in conditions:
+                if not isinstance(condition, dict):
+                    raise ValueError("条件必须是对象")
+                field = str(condition.get("field", "") or "").strip()
+                op = str(condition.get("op", "") or "").strip()
+                if field not in {"type", "duration", "size", "folder", "name", "tag", "starred"}:
+                    raise ValueError(f"不支持的条件字段: {field}")
+                if op not in {"eq", "ne", "gt", "lt", "contains", "exists"}:
+                    raise ValueError(f"不支持的条件操作符: {op}")
+            cleaned.append({
+                "id": str(folder.get("id", "") or "").strip() or f"smart-{int(time.time() * 1000)}-{len(cleaned)}",
+                "name": name,
+                "kind": kind,
+                "conditions": conditions,
+            })
+        path = self._smart_file(params)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(
+            json.dumps({"version": 1, "folders": cleaned}, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+        return {"path": str(path), "folders": cleaned}
 
     # ---------- 文件夹管理 ----------
 

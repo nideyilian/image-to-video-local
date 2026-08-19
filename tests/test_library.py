@@ -1315,3 +1315,334 @@ def test_server_dispatches_library_preview_video(tmp_path):
     result = server._dispatch("library_preview_video", {"path": str(video)})
     assert Path(result["preview_path"]).is_file()
     assert "video-previews" in Path(result["preview_path"]).parts
+
+
+# ---------- 素材元数据（标签 / 星标 / 备注） ----------
+
+
+def _make_watermark_image(directory: Path, name: str, color: str = "red", size: int = 16) -> Path:
+    from PIL import Image
+
+    path = directory / name
+    Image.new("RGB", (size, size), color).save(path)
+    return path
+
+
+def _make_gradient_image(directory: Path, name: str, offset: int = 0) -> Path:
+    """写一张对角渐变图：相邻像素亮度递增，dHash 有区分度。
+
+    offset 改变像素值但不改变相邻像素的大小关系，用于构造「内容相似但文件不同」。
+    """
+    from PIL import Image
+
+    path = directory / name
+    size = 32
+    pixels = []
+    for y in range(size):
+        for x in range(size):
+            pixels.append((x + y + offset) % 256)
+    image = Image.new("L", (size, size))
+    image.putdata(pixels)
+    image.save(path)
+    return path
+
+
+def test_set_metadata_updates_snapshot_fields(tmp_path, manager):
+    watermark_dir = tmp_path / "水印"
+    watermark_dir.mkdir()
+    _make_watermark_image(watermark_dir, "logo.png")
+
+    result = manager.set_metadata({
+        "kind": "watermark",
+        "path": str(watermark_dir / "logo.png"),
+        "watermark_dir": str(watermark_dir),
+        "tags": ["品牌", " 品牌 ", "透明背景"],
+        "starred": True,
+        "note": "主视觉 logo",
+    })
+    assert result["tags"] == ["品牌", "透明背景"]  # 自动去重
+    assert result["starred"] is True
+    assert result["note"] == "主视觉 logo"
+
+    snapshot = manager.snapshot({"watermark_dir": str(watermark_dir)})
+    item = snapshot["watermark"][0]
+    assert item["tags"] == ["品牌", "透明背景"]
+    assert item["starred"] is True
+    assert item["note"] == "主视觉 logo"
+
+
+def test_set_metadata_partial_update_and_clear(tmp_path, manager):
+    watermark_dir = tmp_path / "水印"
+    watermark_dir.mkdir()
+    _make_watermark_image(watermark_dir, "logo.png")
+
+    manager.set_metadata({
+        "kind": "watermark",
+        "path": str(watermark_dir / "logo.png"),
+        "watermark_dir": str(watermark_dir),
+        "tags": ["a", "b"],
+        "starred": True,
+        "note": "备注",
+    })
+    # 只更新 starred，其余字段保持不变
+    manager.set_metadata({
+        "kind": "watermark",
+        "path": str(watermark_dir / "logo.png"),
+        "watermark_dir": str(watermark_dir),
+        "starred": False,
+    })
+    result = manager.set_metadata({
+        "kind": "watermark",
+        "path": str(watermark_dir / "logo.png"),
+        "watermark_dir": str(watermark_dir),
+        "tags": [],
+        "note": "",
+    })
+    assert result["tags"] == []
+    assert result["starred"] is False
+    assert result["note"] == ""
+
+    with pytest.raises(ValueError, match="没有需要更新的元数据字段"):
+        manager.set_metadata({
+            "kind": "watermark",
+            "path": str(watermark_dir / "logo.png"),
+            "watermark_dir": str(watermark_dir),
+        })
+
+
+def test_set_metadata_rejects_outside_path(tmp_path, manager):
+    outside = _make_watermark_image(tmp_path, "外部.png")
+    with pytest.raises(ValueError, match="只能编辑素材库内的素材"):
+        manager.set_metadata({
+            "kind": "watermark",
+            "path": str(outside),
+            "watermark_dir": str(tmp_path / "水印"),
+            "tags": ["x"],
+        })
+
+
+def test_get_tags_aggregates_counts(tmp_path, manager):
+    watermark_dir = tmp_path / "水印"
+    watermark_dir.mkdir()
+    first = _make_watermark_image(watermark_dir, "a.png", "red")
+    second = _make_watermark_image(watermark_dir, "b.png", "blue")
+    _make_watermark_image(watermark_dir, "c.png", "green")
+    for path, tags in ((first, ["品牌", "方形"]), (second, ["品牌"]), (watermark_dir / "c.png", ["透明背景"])):
+        manager.set_metadata({
+            "kind": "watermark",
+            "path": str(path),
+            "watermark_dir": str(watermark_dir),
+            "tags": tags,
+        })
+
+    result = manager.get_tags({"kind": "watermark", "watermark_dir": str(watermark_dir)})
+    by_name = {tag["name"]: tag["count"] for tag in result["tags"]}
+    assert by_name == {"品牌": 2, "方形": 1, "透明背景": 1}
+
+
+# ---------- 重复 / 相似素材查找 ----------
+
+
+def test_find_duplicates_watermark_exact_and_similar(tmp_path, manager):
+    watermark_dir = tmp_path / "水印"
+    watermark_dir.mkdir()
+    # 三张内容完全相同（精确去重）
+    _make_watermark_image(watermark_dir, "相同1.png", "red", size=32)
+    _make_watermark_image(watermark_dir, "相同2.png", "red", size=32)
+    _make_watermark_image(watermark_dir, "相同3.png", "red", size=32)
+    # 内容相似但像素不同的渐变图（dHash 相同）
+    _make_gradient_image(watermark_dir, "渐变A.png", offset=0)
+    _make_gradient_image(watermark_dir, "渐变B.png", offset=10)
+    # 完全不同的图片（纯蓝，dHash 与渐变图差异大）
+    _make_watermark_image(watermark_dir, "蓝色.png", "blue", size=32)
+
+    result = manager.find_duplicates({"kind": "watermark", "watermark_dir": str(watermark_dir)})
+    groups = result["groups"]
+    assert result["scanned"] == 6
+    assert len(groups) >= 2
+
+    exact = next(group for group in groups if group["reason"] == "内容完全相同")
+    assert exact["count"] == 3
+    assert len(exact["duplicates"]) == 2
+    assert exact["saved_bytes"] > 0
+    assert exact["representative"]["name"] == "相同1.png"
+
+    similar = next((group for group in groups if group["reason"] == "图片内容相似"), None)
+    assert similar is not None
+    names = {item["name"] for item in [similar["representative"]] + similar["duplicates"]}
+    assert {"渐变A.png", "渐变B.png"}.issubset(names)
+
+
+def test_find_duplicates_bgm_similar_versions(tmp_path, manager):
+    bgm_dir = tmp_path / "BGM"
+    bgm_dir.mkdir()
+    # 同一节奏（响度曲线一致）但振幅不同 → 指纹归一化后判为同曲
+    _write_rhythm_wav(bgm_dir / "版本A.wav", [0.9, 0.3, 0.7])
+    _write_rhythm_wav(bgm_dir / "版本B.wav", [0.45, 0.15, 0.35])
+    _write_rhythm_wav(bgm_dir / "其他歌.wav", [0.2, 0.8, 0.4, 0.6])
+
+    result = manager.find_duplicates({"kind": "bgm", "bgm_dir": str(bgm_dir)})
+    assert result["scanned"] == 3
+    assert len(result["groups"]) == 1
+    group = result["groups"][0]
+    assert group["reason"] == "音频内容相似（同曲不同版本）"
+    names = {item["name"] for item in [group["representative"]] + group["duplicates"]}
+    assert {"版本A.wav", "版本B.wav"}.issubset(names)
+
+
+# ---------- 批量重命名 ----------
+
+
+def test_rename_batch_applies_pattern(tmp_path, manager):
+    bgm_dir = tmp_path / "BGM"
+    bgm_dir.mkdir()
+    paths = []
+    for name in ("第一首.wav", "第二首.wav", "第三首.wav"):
+        path = bgm_dir / name
+        _write_wav(path)
+        paths.append(str(path))
+
+    result = manager.rename_batch({
+        "kind": "bgm",
+        "paths": paths,
+        "bgm_dir": str(bgm_dir),
+        "pattern": "专辑-{n}-{name}",
+        "start_index": 1,
+    })
+    assert [item["status"] for item in result["results"]] == ["renamed", "renamed", "renamed"]
+    assert [item["name"] for item in result["results"]] == ["专辑-01-第一首.wav", "专辑-02-第二首.wav", "专辑-03-第三首.wav"]
+    for item in result["results"]:
+        assert Path(item["path"]).is_file()
+
+    # 序号补零宽度取总数位数与 2 的较大值（3 个 → 01/02/03）
+    assert result["results"][0]["name"].startswith("专辑-01-")
+
+
+def test_rename_batch_keeps_extension_and_rejects_collision(tmp_path, manager):
+    bgm_dir = tmp_path / "BGM"
+    bgm_dir.mkdir()
+    paths = []
+    for name in ("a.wav", "b.wav", "c.wav"):
+        path = bgm_dir / name
+        _write_wav(path)
+        paths.append(str(path))
+
+    # 模板不含任何占位符 → 全部生成同名，后续失败
+    result = manager.rename_batch({
+        "kind": "bgm",
+        "paths": paths,
+        "bgm_dir": str(bgm_dir),
+        "pattern": "同名",
+    })
+    assert result["results"][0]["status"] == "renamed"
+    assert all(item["status"] == "failed" for item in result["results"][1:])
+    assert "重名" in result["results"][1]["reason"]
+
+
+# ---------- 智能文件夹 ----------
+
+
+def test_smart_folders_roundtrip(tmp_path, manager):
+    bgm_dir = tmp_path / "BGM"
+    bgm_dir.mkdir()
+    folders = [
+        {
+            "id": "smart-1",
+            "name": "长音频",
+            "kind": "bgm",
+            "conditions": [
+                {"field": "duration", "op": "gt", "value": 60},
+            ],
+        },
+        {
+            "name": "带标签",
+            "kind": "watermark",
+            "conditions": [
+                {"field": "tag", "op": "contains", "value": "品牌"},
+                {"field": "starred", "op": "eq", "value": True},
+            ],
+        },
+    ]
+    saved = manager.smart_folders_save({"bgm_dir": str(bgm_dir), "folders": folders})
+    assert len(saved["folders"]) == 2
+    assert saved["folders"][0]["id"] == "smart-1"
+    assert saved["folders"][1]["id"].startswith("smart-")  # 未传 id 自动生成
+
+    listed = manager.smart_folders_list({"bgm_dir": str(bgm_dir)})
+    assert len(listed["folders"]) == 2
+    assert listed["folders"][0]["name"] == "长音频"
+    assert Path(listed["path"]).is_file()
+
+
+def test_smart_folders_rejects_bad_rules(tmp_path, manager):
+    bgm_dir = tmp_path / "BGM"
+    bgm_dir.mkdir()
+    with pytest.raises(ValueError, match="不支持的"):
+        manager.smart_folders_save({
+            "bgm_dir": str(bgm_dir),
+            "folders": [{
+                "name": "坏规则",
+                "kind": "bgm",
+                "conditions": [{"field": "颜色", "op": "eq", "value": "红"}],
+            }],
+        })
+    with pytest.raises(ValueError, match="名称不能为空"):
+        manager.smart_folders_save({
+            "bgm_dir": str(bgm_dir),
+            "folders": [{"name": "  ", "kind": "bgm", "conditions": []}],
+        })
+
+
+# ---------- 服务端分发 ----------
+
+
+def test_server_dispatches_new_library_methods(tmp_path):
+    server = EngineServer(ROOT)
+    watermark_dir = tmp_path / "水印"
+    watermark_dir.mkdir()
+    _make_watermark_image(watermark_dir, "logo.png")
+
+    updated = server._dispatch("library_set_metadata", {
+        "kind": "watermark",
+        "path": str(watermark_dir / "logo.png"),
+        "watermark_dir": str(watermark_dir),
+        "tags": ["品牌"],
+        "starred": True,
+    })
+    assert updated["tags"] == ["品牌"]
+    assert updated["starred"] is True
+
+    tags = server._dispatch("library_get_tags", {
+        "kind": "watermark",
+        "watermark_dir": str(watermark_dir),
+    })
+    assert tags["tags"] == [{"name": "品牌", "count": 1}]
+
+    duplicates = server._dispatch("library_find_duplicates", {
+        "kind": "watermark",
+        "watermark_dir": str(watermark_dir),
+    })
+    assert duplicates["scanned"] == 1
+    assert duplicates["groups"] == []
+
+    renamed = server._dispatch("library_rename_batch", {
+        "kind": "watermark",
+        "paths": [str(watermark_dir / "logo.png")],
+        "watermark_dir": str(watermark_dir),
+        "pattern": "新版-{n}",
+    })
+    assert renamed["results"][0]["status"] == "renamed"
+    assert renamed["results"][0]["name"] == "新版-01.png"
+
+    saved = server._dispatch("library_smart_folders_save", {
+        "bgm_dir": str(tmp_path / "BGM"),
+        "folders": [{"name": "收藏", "kind": "watermark", "conditions": [{"field": "starred", "op": "eq", "value": True}]}],
+    })
+    listed = server._dispatch("library_smart_folders_list", {"bgm_dir": str(tmp_path / "BGM")})
+    assert [folder["name"] for folder in listed["folders"]] == ["收藏"]
+    assert saved["folders"][0]["name"] == "收藏"
+
+    capabilities = server._dispatch("health", {})["capabilities"]
+    assert "library-metadata" in capabilities
+    assert "library-dedup" in capabilities
+    assert "library-smart-folders" in capabilities

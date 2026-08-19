@@ -1,7 +1,7 @@
 """输出文件名组合规则。
 
 约定：
-- 所有连接符统一为 "-"（含日期前缀内部的时间分隔）；
+- 所有连接符统一为 "-"；
 - 末尾自动序号不补零（1、2、…、10、100）；
 - 只使用用户配置的字段（日期前缀 / 自定义前缀 / 首图名称），
   前缀为空时不注入任何默认文案。
@@ -25,15 +25,15 @@ def compose_output_filename(
 ) -> str:
     """按规则组合输出文件名，例如：
 
-    - 日期 + 自定义前缀 + 序号：20260816-153000-video-1.mp4
+    - 日期 + 自定义前缀 + 序号：20260816-video-1.mp4
     - 仅自定义前缀 + 序号：video-1.mp4
-    - 仅日期 + 序号：20260816-153000-1.mp4（前缀为空时不注入 "video"）
-    - 首图名称模式：20260816-153000-风景-3.mp4
+    - 仅日期 + 序号：20260816-1.mp4（前缀为空时不注入 "video"）
+    - 首图名称模式：20260816-风景-3.mp4
     - 全部为空：1.mp4
     """
     parts: list[str] = []
     if use_date_prefix:
-        stamp = now.strftime("%Y%m%d-%H%M%S") if now is not None else datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = now.strftime("%Y%m%d") if now is not None else datetime.now().strftime("%Y%m%d")
         parts.append(stamp)
     if use_first_image_name:
         if first_image_name.strip():

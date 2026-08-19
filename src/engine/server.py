@@ -97,6 +97,9 @@ class EngineServer:
                     "system-snapshot",
                     "library",
                     "library-audio-cover",
+                    "library-metadata",
+                    "library-dedup",
+                    "library-smart-folders",
                     "jianying",
                 ],
             }
@@ -191,6 +194,18 @@ class EngineServer:
             return self.library.audio_cover(params)
         if method == "library_preview_video":
             return self.library.preview_video(params)
+        if method == "library_set_metadata":
+            return self.library.set_metadata(params)
+        if method == "library_get_tags":
+            return self.library.get_tags(params)
+        if method == "library_find_duplicates":
+            return self.library.find_duplicates(params)
+        if method == "library_rename_batch":
+            return self.library.rename_batch(params)
+        if method == "library_smart_folders_list":
+            return self.library.smart_folders_list(params)
+        if method == "library_smart_folders_save":
+            return self.library.smart_folders_save(params)
         if method == "library_extract_bgm":
             return self.library.start_extract(params)
         if method == "library_extract_cancel":

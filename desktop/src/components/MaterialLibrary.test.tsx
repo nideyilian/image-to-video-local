@@ -93,6 +93,23 @@ function baseImplementation(method: string, params: Record<string, unknown> = {}
     }
     case "library_rename":
       return Promise.resolve({ renamed: true, name: String(params.new_name ?? ""), path: String(params.path ?? "") });
+    case "library_get_tags":
+      return Promise.resolve({ tags: [] });
+    case "library_smart_folders_list":
+      return Promise.resolve({ folders: [] });
+    case "library_set_metadata":
+      return Promise.resolve({
+        path: String(params.path ?? ""),
+        tags: Array.isArray(params.tags) ? params.tags : [],
+        starred: Boolean(params.starred),
+        note: String(params.note ?? ""),
+      });
+    case "library_find_duplicates":
+      return Promise.resolve({ groups: [], scanned: 0 });
+    case "library_rename_batch":
+      return Promise.resolve({ results: [], pattern: String(params.pattern ?? "") });
+    case "library_smart_folders_save":
+      return Promise.resolve({ folders: Array.isArray(params.folders) ? params.folders : [] });
     default:
       return Promise.resolve({});
   }
@@ -734,5 +751,194 @@ describe("导入状态提醒", () => {
     });
     await flush();
     expect(notify).toHaveBeenCalledWith("success", "已导入 2 个素材");
+  });
+});
+
+describe("Eagle 风格素材管理", () => {
+  type MockItem = { name: string; folder?: string; type?: string; starred?: boolean; tags?: string[]; note?: string; duration?: number | null };
+  function mockItems(kind: "bgm" | "watermark", items: MockItem[]) {
+    callMock.mockImplementation((method, params = {}) => {
+      if (method === "library_snapshot") {
+        const base: Record<string, unknown> = {
+          library_root: "C:/lib",
+          bgm_dir: "C:/lib/BGM",
+          watermark_dir: "C:/lib/Watermark",
+          bgm: [],
+          bgm_folders: [],
+          watermark: [],
+          watermark_folders: [],
+        };
+        const list = items.map((item) => ({
+          name: item.name,
+          path: `C:/lib/${kind === "bgm" ? "BGM" : "Watermark"}/${item.name}`,
+          folder: item.folder ?? "",
+          type: item.type ?? (kind === "bgm" ? "audio" : "image"),
+          size_bytes: 2048,
+          duration: item.duration ?? null,
+          added_at: "2026-08-17T00:00:00Z",
+          duplicate_key: item.name,
+          tags: item.tags ?? [],
+          starred: Boolean(item.starred),
+          note: item.note ?? "",
+        }));
+        base[kind === "bgm" ? "bgm" : "watermark"] = list;
+        return Promise.resolve(base);
+      }
+      return baseImplementation(method, params);
+    });
+  }
+
+  it("详情面板：加标签 / 星标 / 备注并保存", async () => {
+    mockItems("watermark", [{ name: "logo.png" }]);
+    renderLibrary();
+    await flush();
+    act(() => { buttonWithText("水印库")!.click(); });
+    await flush();
+
+    // 点击素材名打开详情
+    act(() => { document.querySelector<HTMLButtonElement>(".library-item-name")!.click(); });
+    await flush();
+    expect(document.querySelector(".library-detail-panel")).toBeTruthy();
+
+    // 加标签
+    const tagInput = document.querySelector<HTMLInputElement>("input[aria-label='新增标签']")!;
+    act(() => { setInputValue(tagInput, "品牌"); });
+    act(() => { document.querySelector<HTMLButtonElement>(".library-detail-tag-input button")!.click(); });
+
+    // 收藏
+    act(() => { document.querySelector<HTMLButtonElement>(".library-star-toggle")!.click(); });
+
+    // 备注
+    const note = document.querySelector<HTMLTextAreaElement>(".library-detail-note")!;
+    act(() => {
+      const textareaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      textareaSetter.call(note, "主视觉 logo");
+      note.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    // 保存
+    const saveButton = [...document.querySelectorAll<HTMLButtonElement>(".library-detail-panel button")].find((button) => button.textContent?.includes("保存"));
+    act(() => { saveButton!.click(); });
+    await flush();
+
+    const metadataCalls = callMock.mock.calls.filter(([method]) => method === "library_set_metadata");
+    expect(metadataCalls).toHaveLength(1);
+    expect(metadataCalls[0][1]).toMatchObject({
+      kind: "watermark",
+      path: "C:/lib/Watermark/logo.png",
+      tags: ["品牌"],
+      starred: true,
+      note: "主视觉 logo",
+    });
+  });
+
+  it("星标筛选：只看收藏素材", async () => {
+    mockItems("watermark", [
+      { name: "收藏图.png", starred: true },
+      { name: "普通图.png" },
+    ]);
+    renderLibrary();
+    await flush();
+    act(() => { buttonWithText("水印库")!.click(); });
+    await flush();
+    expect(document.querySelectorAll(".library-row").length).toBe(2);
+
+    act(() => { document.querySelector<HTMLButtonElement>(".library-star-filter")!.click(); });
+    await flush();
+    expect(document.querySelectorAll(".library-row").length).toBe(1);
+    expect(document.querySelector(".library-row")!.textContent).toContain("收藏图.png");
+  });
+
+  it("批量重命名：模板预览并调用引擎", async () => {
+    mockItems("bgm", [{ name: "歌一.wav" }, { name: "歌二.wav" }]);
+    renderLibrary();
+    await flush();
+
+    // 全选两个素材
+    act(() => {
+      const checkboxes = [...document.querySelectorAll<HTMLInputElement>(".library-checkbox")];
+      checkboxes.forEach((checkbox) => checkbox.click());
+    });
+    await flush();
+    const renameButton = buttonWithText("批量重命名");
+    expect(renameButton).toBeTruthy();
+    act(() => { renameButton!.click(); });
+    await flush();
+
+    // 预览：默认模板 {n}-{name} → 01/02（中文按拼音排序，歌二在前）
+    expect(document.querySelector(".library-rename-batch-dialog")).toBeTruthy();
+    expect(document.querySelectorAll(".library-rename-batch-row").length).toBe(2);
+    const previewNames = [...document.querySelectorAll<HTMLElement>(".library-rename-batch-row em")].map((element) => element.textContent ?? "");
+    expect(previewNames.filter((name) => name.startsWith("01-"))).toHaveLength(1);
+    expect(previewNames.join(" ")).toContain("歌一.wav");
+    expect(previewNames.join(" ")).toContain("歌二.wav");
+
+    const applyButton = [...document.querySelectorAll<HTMLButtonElement>(".library-rename-batch-dialog button")].find((button) => button.textContent?.includes("重命名"));
+    act(() => { applyButton!.click(); });
+    await flush();
+
+    const renameCalls = callMock.mock.calls.filter(([method]) => method === "library_rename_batch");
+    expect(renameCalls).toHaveLength(1);
+    expect(renameCalls[0]?.[1]).toMatchObject({ kind: "bgm", pattern: "{n}-{name}", start_index: 1 });
+    expect(renameCalls[0]?.[1]?.paths as string[] | undefined).toHaveLength(2);
+  });
+
+  it("智能文件夹：新建规则、保存并筛选", async () => {
+    mockItems("bgm", [
+      { name: "长歌.wav", duration: 120 },
+      { name: "短歌.wav", duration: 10 },
+    ]);
+    renderLibrary();
+    await flush();
+
+    // 侧栏「智能文件夹」新建按钮 → 编辑器
+    const createButton = document.querySelector<HTMLButtonElement>(".library-smart-list button[aria-label='新建智能文件夹']");
+    expect(createButton).toBeTruthy();
+    act(() => { createButton!.click(); });
+    await flush();
+
+    const nameInput = document.querySelector<HTMLInputElement>("input[aria-label='智能文件夹名称']")!;
+    act(() => { setInputValue(nameInput, "长音频"); });
+    await flush();
+
+    // 添加一条条件（默认「类型=图片」），再改为「时长 > 60」
+    act(() => {
+      [...document.querySelectorAll<HTMLButtonElement>(".library-smart-editor button")].find((button) => button.textContent?.includes("添加条件"))!.click();
+    });
+    await flush();
+    act(() => {
+      const fieldSelect = document.querySelector<HTMLSelectElement>(".library-smart-condition select")!;
+      const selectSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      selectSetter.call(fieldSelect, "duration");
+      fieldSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    act(() => {
+      const opSelect = document.querySelectorAll<HTMLSelectElement>(".library-smart-condition select")[1]!;
+      const selectSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      selectSetter.call(opSelect, "gt");
+      opSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    const valueInput = document.querySelector<HTMLInputElement>(".library-smart-condition input")!;
+    expect(valueInput).toBeTruthy();
+    act(() => { setInputValue(valueInput, "60"); });
+    await flush();
+
+    const saveButton = [...document.querySelectorAll<HTMLButtonElement>(".library-smart-editor button")].find((button) => button.textContent?.includes("保存"));
+    act(() => { saveButton!.click(); });
+    await flush();
+
+    const saveCalls = callMock.mock.calls.filter(([method]) => method === "library_smart_folders_save");
+    expect(saveCalls).toHaveLength(1);
+    expect(saveCalls[0][1]).toMatchObject({
+      folders: [{ name: "长音频", kind: "bgm", conditions: [{ field: "duration", op: "gt", value: "60" }] }],
+    });
+
+    // 点击智能文件夹 → 只显示时长 > 60 的素材
+    act(() => { document.querySelector<HTMLButtonElement>(".library-smart-item")!.click(); });
+    await flush();
+    expect(document.querySelectorAll(".library-row").length).toBe(1);
+    expect(document.querySelector(".library-row")!.textContent).toContain("长歌.wav");
   });
 });

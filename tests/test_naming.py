@@ -16,7 +16,7 @@ def test_all_separators_are_dash():
         video_format="mp4",
         now=STAMP,
     )
-    assert name == "20260816-153000-video-1.mp4"
+    assert name == "20260816-video-1.mp4"
     assert "_" not in name
 
 
@@ -42,7 +42,7 @@ def test_empty_prefix_injects_no_default_text():
         video_format="mp4",
         now=STAMP,
     )
-    assert name == "20260816-153000-1.mp4"
+    assert name == "20260816-1.mp4"
 
     bare = compose_output_filename(
         use_date_prefix=False,
@@ -65,7 +65,7 @@ def test_first_image_name_mode():
         video_format="mp4",
         now=STAMP,
     )
-    assert name == "20260816-153000-海边日落-3.mp4"
+    assert name == "20260816-海边日落-3.mp4"
 
     no_date = compose_output_filename(
         use_date_prefix=False,

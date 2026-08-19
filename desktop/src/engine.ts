@@ -189,6 +189,12 @@ export class EngineBridge {
       return { library_root: "", bgm_dir: "", watermark_dir: "", bgm: [], bgm_folders: [], watermark: [], watermark_folders: [] } as T;
     }
     if (method === "library_import") return { results: [] } as T;
+    if (method === "library_set_metadata") return { path: "", tags: [], starred: false, note: "" } as T;
+    if (method === "library_get_tags") return { tags: [] } as T;
+    if (method === "library_find_duplicates") return { groups: [], scanned: 0 } as T;
+    if (method === "library_rename_batch") return { results: [], pattern: "" } as T;
+    if (method === "library_smart_folders_list") return { path: "", folders: [] } as T;
+    if (method === "library_smart_folders_save") return { path: "", folders: [] } as T;
     if (method === "library_preview_audio") {
       throw new Error("音频试听需要在 Tauri 桌面窗口中运行");
     }

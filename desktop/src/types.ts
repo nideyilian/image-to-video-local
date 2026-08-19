@@ -168,6 +168,45 @@ export type LibraryItem = {
   duration: number | null;
   added_at: string | null;
   duplicate_key: string;
+  tags: string[];
+  starred: boolean;
+  note: string;
+};
+
+export type LibraryTagCount = { name: string; count: number };
+
+export type LibraryDupGroup = {
+  reason: string;
+  representative: LibraryItem;
+  duplicates: LibraryItem[];
+  count: number;
+  saved_bytes: number;
+};
+
+export type LibraryDupResult = {
+  groups: LibraryDupGroup[];
+  scanned: number;
+};
+
+export type LibraryRenameBatchResult = {
+  name: string;
+  path: string;
+  status: "renamed" | "failed";
+  reason?: string;
+  old_name?: string;
+};
+
+export type LibrarySmartFolderCondition = {
+  field: "type" | "duration" | "size" | "folder" | "name" | "tag" | "starred";
+  op: "eq" | "ne" | "gt" | "lt" | "contains" | "exists";
+  value?: string | number | boolean;
+};
+
+export type LibrarySmartFolder = {
+  id: string;
+  name: string;
+  kind: LibraryKind;
+  conditions: LibrarySmartFolderCondition[];
 };
 
 export type LibraryFolder = {
