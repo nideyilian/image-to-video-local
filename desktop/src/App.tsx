@@ -667,12 +667,17 @@ export default function App() {
     patchWorkspace,
   ]);
 
-  const browseDirectory = useCallback(async (key: keyof VideoConfig) => {
+  const browseDirectory = useCallback(async (key: keyof VideoConfig, layerIndex?: number) => {
     if (!engine.desktopRuntime) return showNotice("info", "目录选择需要在 Tauri 桌面窗口中运行");
     const selected = await openDialog({ directory: true, multiple: false, title: "选择目录" });
     if (typeof selected !== "string") return;
-    updateConfig(key, selected as VideoConfig[typeof key]);
-  }, [showNotice, updateConfig]);
+    if (key === "watermark_layers" && typeof layerIndex === "number") {
+      const layers = activeWorkspace.config.watermark_layers.map((layer, index) => index === layerIndex ? { ...layer, path: selected } : layer);
+      updateConfig("watermark_layers", layers);
+    } else {
+      updateConfig(key, selected as VideoConfig[typeof key]);
+    }
+  }, [activeWorkspace, showNotice, updateConfig]);
 
   // 检查器「在素材库配置」→ 打开素材库并定位到对应标签页
   const openLibraryTab = useCallback((tab: "effect" | "transition") => {
@@ -1114,7 +1119,7 @@ export default function App() {
         <Inspector
           config={activeWorkspace.config}
           onChange={updateConfig}
-          onBrowseDirectory={(key) => void browseDirectory(key)}
+          onBrowseDirectory={(key, layerIndex) => void browseDirectory(key, layerIndex)}
           onBrowseFile={(key, layerIndex) => void browseFile(key, layerIndex)}
           activeTab={inspectorTab}
           onActiveTabChange={setInspectorTab}

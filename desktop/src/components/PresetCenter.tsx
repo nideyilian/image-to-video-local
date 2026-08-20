@@ -3,14 +3,13 @@ import { createPortal } from "react-dom";
 import { Check, Clock3, Save, Trash2, X } from "lucide-react";
 import type { VideoConfig } from "../types";
 
-// 预设不包含路径类字段（路径属于工作区专属）
+// 预设不包含工作区目录类字段（输入/输出目录属于工作区专属）。
+// 水印图层（watermark_layers）、视频水印路径（watermark_path）、素材库 BGM
+// 文件（bgm_files）属于参数配置，随预设一起保存，保证预设完整可复现。
 const PATH_KEYS = new Set([
   "input_dir",
   "output_dir",
   "bgm_dir",
-  "bgm_files",
-  "watermark_path",
-  "watermark_layers",
   "width",
   "height",
   "_qt_watermark_defaults_v2",
@@ -139,7 +138,7 @@ export function PresetCenter({ open, onClose, config, onApply, notify }: {
               <Save size={14} />保存当前参数
             </button>
           </div>
-          <p className="preset-hint">预设保存分辨率、帧率、转场特效、BGM 与水印等参数（不含目录路径）。</p>
+          <p className="preset-hint">预设保存分辨率、帧率、转场特效、BGM 与水印（含图片水印图层）等参数（不含输入/输出目录）。</p>
 
           {sorted.length ? (
             <ul className="preset-list">

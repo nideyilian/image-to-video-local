@@ -816,6 +816,38 @@ class MultiTabApp:
 
 
 # 修改原来的 ImageToVideoApp 类为 ImageToVideoTab
+def compute_video_frame_plan(total_images: int, duration: float, fps: int,
+                             transition_frames: int = 0, transition_type: str = "无转场"):
+    """按用户设置时长精确计算帧计划（三处渲染入口共用，保证输出时长严格按设置）。
+
+    Returns:
+        (frames_per_img, transition_frames, display_frames_per_img, last_img_frames)
+        - frames_per_img:      每图基准总帧数（静态 + 转场）
+        - transition_frames:   每段转场帧数（只减不增，不会把总时长撑大）
+        - display_frames_per_img: 每图静态帧数（非最后一张）
+        - last_img_frames:     最后一图应写的总帧数（吸收总时长取整的余数）
+
+    规则：
+    1. 每图帧数用 round 而非 int()，消除截断与浮点误差；
+    2. 总帧数 = round(图片数 × 时长 × 帧率)，余数由最后一张吸收，
+       使实际总时长与设置偏差不超过半帧；
+    3. 不做"每图至少 0.5 秒静态显示"的钳制，避免每图时长 < 0.5 秒时
+       视频被强制撑长。
+    """
+    frames_per_img = max(1, int(round(duration * fps)))
+    if transition_frames > 0 and transition_type != "无转场":
+        transition_frames = min(transition_frames, max(0, frames_per_img // 3))
+        display_frames_per_img = max(0, frames_per_img - transition_frames)
+    else:
+        transition_frames = 0
+        display_frames_per_img = frames_per_img
+    total_frames = max(total_images, int(round(total_images * duration * fps)))
+    last_img_frames = total_frames - (total_images - 1) * frames_per_img
+    if last_img_frames < 1:
+        last_img_frames = 1
+    return frames_per_img, transition_frames, display_frames_per_img, last_img_frames
+
+
 class ImageToVideoTab:
     def __init__(self, parent, parent_update_status=None, config_file=None, main_app=None, tab_name_var=None):
         """初始化"""
@@ -1042,6 +1074,7 @@ class ImageToVideoTab:
                 "effect_preview_time": self.effect_preview_time.get(),
                 "use_bgm": self.use_bgm.get(),
                 "bgm_dir": self.bgm_dir.get(),
+                "bgm_files": list(getattr(self, "_bgm_files", None) or []),
                 "random_bgm": self.random_bgm.get(),
                 "bgm_volume": self.bgm_volume.get(),
                 "loop_bgm": self.loop_bgm.get(),
@@ -1050,6 +1083,7 @@ class ImageToVideoTab:
                 "use_watermark": self.use_watermark.get(),
                 "watermark_path": self.watermark_path.get(),
                 "watermark_type": self.watermark_type.get(),
+                "watermark_mode": self.watermark_mode.get(),
                 "watermark_position": self.watermark_position.get(),
                 "watermark_match_method": self.watermark_match_method.get(),
                 "watermark_audio": self.watermark_audio.get(),
@@ -1157,6 +1191,12 @@ class ImageToVideoTab:
                     self.use_bgm.set(value)
                 elif key == "bgm_dir" and hasattr(self, "bgm_dir"):
                     self.bgm_dir.set(value)
+                elif key == "bgm_files":
+                    # 素材库显式选定的 BGM 文件列表
+                    self._bgm_files = [
+                        str(path) for path in (value or [])
+                        if isinstance(path, str) and str(path).strip()
+                    ]
                 elif key == "random_bgm" and hasattr(self, "random_bgm"):
                     self.random_bgm.set(value)
                 elif key == "bgm_volume" and hasattr(self, "bgm_volume"):
@@ -1172,6 +1212,11 @@ class ImageToVideoTab:
                     self.watermark_path.set(value)
                 elif key == "watermark_type" and hasattr(self, "watermark_type"):
                     self.watermark_type.set(value)
+                elif key == "watermark_mode" and hasattr(self, "watermark_mode"):
+                    # 水印模式："单文件" 或 "文件夹"
+                    mode = str(value)
+                    if mode in ("单文件", "文件夹"):
+                        self.watermark_mode.set(mode)
                 elif key == "watermark_position" and hasattr(self, "watermark_position"):
                     self.watermark_position.set(value)
                 elif key == "watermark_match_method" and hasattr(self, "watermark_match_method"):
@@ -2949,14 +2994,28 @@ class ImageToVideoTab:
         ttk.Checkbutton(row, text="启用", variable=enabled_var).grid(row=0, column=0, sticky="w", padx=(0, 8))
         ttk.Label(row, text="路径").grid(row=0, column=1, sticky="w", padx=(0, 8))
         ttk.Entry(row, textvariable=path_var, width=22).grid(row=0, column=2, sticky="ew", padx=(0, 8))
-        ttk.Button(
-            row, text="浏览",
-            command=lambda v=path_var: v.set(filedialog.askopenfilename(
-                title="选择水印图片",
-                filetypes=[("图片文件", "*.png;*.jpg;*.jpeg;*.bmp;*.gif"), ("所有文件", "*.*")]
-            ) or v.get()),
-            width=4
-        ).grid(row=0, column=3, sticky="w", padx=(0, 8))
+        def browse_path(v=path_var):
+            """浏览：可选择单个水印图片文件，或选择文件夹（目录内随机/轮转贴图）"""
+            menu = tk.Menu(row, tearoff=0)
+            menu.add_command(
+                label="选择图片文件…",
+                command=lambda: v.set(filedialog.askopenfilename(
+                    title="选择水印图片",
+                    filetypes=[("图片文件", "*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tiff"), ("所有文件", "*.*")]
+                ) or v.get())
+            )
+            menu.add_command(
+                label="选择文件夹（目录内贴图）…",
+                command=lambda: v.set(filedialog.askdirectory(
+                    title="选择水印图片文件夹"
+                ) or v.get())
+            )
+            try:
+                menu.tk_popup(row.winfo_rootx() + 20, row.winfo_rooty() + 20)
+            finally:
+                menu.grab_release()
+
+        ttk.Button(row, text="浏览", command=browse_path, width=4).grid(row=0, column=3, sticky="w", padx=(0, 8))
 
         ttk.Label(row, text="位置").grid(row=0, column=4, sticky="w", padx=(0, 8))
         ttk.Combobox(row, textvariable=position_var,
@@ -4629,18 +4688,11 @@ class ImageToVideoTab:
                 return False
             # 修改：每张图片的总时间包含转场时间，而不是额外添加
             total_time_per_img = duration  # 用户设置的每张图片总时间
-            total_frames_per_img = int(total_time_per_img * fps)
-
-            # 计算转场帧数（包含在每张图片时间内）
-            transition_frames = min(transition_frames, total_frames_per_img // 3)  # 转场时间不超过1/3
-
-            # 每张图片的静态显示帧数 = 总帧数 - 转场帧数
-            display_frames_per_img = total_frames_per_img - transition_frames
-
-            # 确保静态显示帧数不会太少
-            if display_frames_per_img < fps // 2:  # 至少0.5秒静态显示
-                display_frames_per_img = fps // 2
-                transition_frames = total_frames_per_img - display_frames_per_img
+            # 统一帧计划：总时长严格按设置（round 取整，余数由最后一张吸收）
+            total_frames_per_img, transition_frames, display_frames_per_img, last_img_frames = compute_video_frame_plan(
+                total_images, duration, fps, transition_frames, transition_type
+            )
+            total_frames = (total_images - 1) * total_frames_per_img + last_img_frames
 
             # 添加日志输出来确认时间计算
             static_time = display_frames_per_img / fps
@@ -4744,10 +4796,7 @@ class ImageToVideoTab:
                     return success
                 return False
                 
-            # 计算视频总帧数 - 新逻辑：每张图片都占用相同的时间
-            # 所有图片都占用 total_frames_per_img 帧，包括最后一张
-            total_frames = total_images * total_frames_per_img
-
+            # 计算视频总帧数（统一帧计划已给出精确总帧数，含最后一图余数）
             msg = f"每张图片帧数: {total_frames_per_img} (静态: {display_frames_per_img}, 转场: {transition_frames}), 总帧数: {total_frames}, 实际视频时长: {total_frames/fps:.2f}秒"
             self.update_status(msg)
             log(msg)
@@ -4761,6 +4810,7 @@ class ImageToVideoTab:
                 and self.use_video_effect.get()
                 and effect_type_for_video != "无特效"
             )
+            last_good_frame = None
             for img_index, img_path in enumerate(images):
                 msg = f"处理图片 {img_index+1}/{total_images}: {os.path.basename(img_path)}"
                 self.update_status(msg)
@@ -4768,10 +4818,19 @@ class ImageToVideoTab:
                 try:
                     current_img = self.safe_read_image(img_path)
                     if current_img is None:
-                        msg = f"无法加载图片: {img_path}"
+                        # 图片加载失败：用上一张成功帧补位，保证总时长严格按设置生成
+                        if last_good_frame is None:
+                            msg = f"首图加载失败，无法按设定时长生成视频: {img_path}"
+                            self.update_status(msg)
+                            log(msg)
+                            video_writer.release()
+                            return False
+                        current_img = last_good_frame
+                        msg = f"图片加载失败，用相邻帧补位保持时长: {img_path}"
                         self.update_status(msg)
                         log(msg)
-                        continue
+                    else:
+                        last_good_frame = current_img
                     msg = f"图片{img_index+1} shape: {current_img.shape}"
                     self.update_status(msg)
                     log(msg)
@@ -4786,9 +4845,13 @@ class ImageToVideoTab:
                         current_img = self.apply_image_watermark_layers(current_img, follow_layers, image_index=img_index)
                     current_img_processed = current_img
 
+                    # 最后一图静态帧数含总时长取整的余数（last_img_frames）
+                    is_last_img = (img_index == total_images - 1)
+                    static_frames = last_img_frames if is_last_img else display_frames_per_img
+
                     # 特效帧：按每张图的静态展示阶段应用，支持多图视频
                     if effect_enabled:
-                        effect_frames = max(1, display_frames_per_img)
+                        effect_frames = max(1, static_frames)
                         duration_sec = max(0.001, effect_frames / max(1, fps))
                         for frame_idx in range(effect_frames):
                             time_sec = frame_idx / max(1, fps)
@@ -4805,38 +4868,33 @@ class ImageToVideoTab:
                             self.update_progress(frames_written)
                     else:
                         # 写入静态显示帧
-                        for _ in range(display_frames_per_img):
+                        for _ in range(static_frames):
                             video_writer.write(current_img_processed)
                             frames_written += 1
                             self.update_progress(frames_written)
 
-                    # 处理转场或补齐时间
-                    if img_index < total_images - 1:
+                    # 处理转场；最后一图无需补帧（静态帧已含全部帧数）
+                    if not is_last_img:
                         next_img_path = images[img_index + 1]
                         next_img = self.safe_read_image(next_img_path)
                         if next_img is None:
-                            msg = f"无法加载下一张图片: {next_img_path}"
+                            # 下一张图加载失败：用当前帧占位，保证转场帧数不缺失（时长不变）
+                            msg = f"无法加载下一张图片，用当前帧补位保持时长: {next_img_path}"
                             self.update_status(msg)
                             log(msg)
-                            continue
-                        if resize_mode != "原始尺寸":
+                            next_img = current_img_processed
+                        elif resize_mode != "原始尺寸":
                             next_img = self.resize_image(next_img, out_w, out_h, resize_mode, maintain_aspect)
                             if next_img is None:
-                                msg = f"下一张图片resize失败: {next_img_path}"
+                                msg = f"下一张图片resize失败，用当前帧补位保持时长: {next_img_path}"
                                 self.update_status(msg)
                                 log(msg)
-                                continue
+                                next_img = current_img_processed
                         if follow_layers:
                             next_img = self.apply_image_watermark_layers(next_img, follow_layers, image_index=img_index + 1)
                         self.apply_transition(current_img_processed, next_img, video_writer, transition_frames, transition_type)
                         frames_written += transition_frames
                         self.update_progress(frames_written)
-                    else:
-                        # 最后一张图片：补齐剩余时间（相当于转场时间）
-                        for _ in range(transition_frames):
-                            video_writer.write(current_img_processed)
-                            frames_written += 1
-                            self.update_progress(frames_written)
                 except Exception as e:
                     msg = f"处理图片 {img_path} 时出错: {str(e)}\n{traceback.format_exc()}"
                     self.update_status(msg)
@@ -4907,21 +4965,12 @@ class ImageToVideoTab:
                 log("至少需要一张图片")
                 return False
             
-            # 计算帧数和转场设置
+            # 计算帧数和转场设置（统一帧计划：总时长严格按设置，余数由最后一张吸收）
             total_time_per_img = duration
-            total_frames_per_img = int(total_time_per_img * fps)
-            
-            # 根据转场设置计算帧数
-            if transition_frames > 0 and transition_type != "无转场":
-                transition_frames = min(transition_frames, total_frames_per_img // 3)
-                display_frames_per_img = total_frames_per_img - transition_frames
-                if display_frames_per_img < fps // 2:
-                    display_frames_per_img = fps // 2
-                    transition_frames = total_frames_per_img - display_frames_per_img
-            else:
-                # 无转场模式
-                transition_frames = 0
-                display_frames_per_img = total_frames_per_img
+            total_frames_per_img, transition_frames, display_frames_per_img, last_img_frames = compute_video_frame_plan(
+                total_images, duration, fps, transition_frames, transition_type
+            )
+            total_frames = (total_images - 1) * total_frames_per_img + last_img_frames
             
             static_time = display_frames_per_img / fps
             transition_time = transition_frames / fps
@@ -4962,18 +5011,14 @@ class ImageToVideoTab:
                     )
                     processed_images.append(processed_img)
             
-            # 过滤无效图片，同时保留路径与预处理帧的一一对应关系
-            valid_pairs = [
-                (images[idx], img)
-                for idx, img in enumerate(processed_images)
-                if img is not None
-            ]
-            valid_image_paths = [pair[0] for pair in valid_pairs]
-            valid_images = [pair[1] for pair in valid_pairs]
-            if len(valid_images) != total_images:
-                log(f"警告: {total_images - len(valid_images)} 张图片加载失败")
-                total_images = len(valid_images)
-                if total_images == 0:
+            # 不再过滤失败图片：保留完整路径列表，失败项以 None 占位，
+            # 渲染层用相邻帧补位，保证输出时长严格按设置生成（不会因缺图变短）。
+            valid_image_paths = list(images)
+            valid_images = list(processed_images)
+            failed_count = sum(1 for img in valid_images if img is None)
+            if failed_count:
+                log(f"警告: {failed_count} 张图片加载失败，将用相邻帧补位以保持设定时长")
+                if failed_count == total_images:
                     log("所有图片都加载失败")
                     return False
             
@@ -4981,9 +5026,13 @@ class ImageToVideoTab:
             log(f"Turbo预加载完成: {preload_time:.2f}秒, 成功加载 {len(valid_images)} 张图片")
             
             # 创建视频写入器
-            if resize_mode == "原始尺寸" and valid_images:
-                h, w = valid_images[0].shape[:2]
-                out_w, out_h = w, h
+            if resize_mode == "原始尺寸":
+                first_valid = next((img for img in valid_images if img is not None), None)
+                if first_valid is not None:
+                    h, w = first_valid.shape[:2]
+                    out_w, out_h = w, h
+                else:
+                    out_w, out_h = width, height
             else:
                 out_w, out_h = width, height
             
@@ -5043,8 +5092,7 @@ class ImageToVideoTab:
                     return success
                 return False
             
-            # 计算总帧数
-            total_frames = total_images * total_frames_per_img
+            # 计算总帧数（统一帧计划已给出精确总帧数，含最后一图余数）
             log(f"开始视频生成: 总帧数 {total_frames}")
             
             if hasattr(self, 'progress_var'):
@@ -5060,14 +5108,29 @@ class ImageToVideoTab:
             )
             
             # 高效帧写入循环
+            last_good_frame = None
             for img_index, current_img in enumerate(valid_images):
                 if not self._wait_for_processing_control():
                     raise InterruptedError("用户取消处理")
+                # 图片加载失败的槽位用上一张成功帧补位，保证总时长严格按设置生成
+                if current_img is None:
+                    if last_good_frame is None:
+                        log(f"首图加载失败，无法生成视频: {valid_image_paths[img_index]}")
+                        video_writer.release()
+                        return False
+                    current_img = last_good_frame
+                    log(f"图片加载失败，用相邻帧补位保持时长: {valid_image_paths[img_index]}")
+                else:
+                    last_good_frame = current_img
                 log(f"处理图片 {img_index+1}/{total_images}")
+
+                # 最后一图静态帧数含总时长取整的余数（last_img_frames）
+                is_last_img = (img_index == total_images - 1)
+                static_frames = last_img_frames if is_last_img else display_frames_per_img
 
                 # 特效帧：按每张图的静态展示阶段应用，支持多图视频
                 if effect_enabled:
-                    effect_frames = max(1, display_frames_per_img)
+                    effect_frames = max(1, static_frames)
                     duration_sec = max(0.001, effect_frames / max(1, fps))
                     for frame_idx in range(effect_frames):
                         if not self._wait_for_processing_control():
@@ -5088,7 +5151,7 @@ class ImageToVideoTab:
                     self.update_progress(frames_written)
                 else:
                     # 批量写入静态帧
-                    for _ in range(display_frames_per_img):
+                    for _ in range(static_frames):
                         if not self._wait_for_processing_control():
                             raise InterruptedError("用户取消处理")
                         video_writer.write(current_img)
@@ -5096,9 +5159,11 @@ class ImageToVideoTab:
                         if frames_written % 30 == 0:  # 每30帧更新一次进度
                             self.update_progress(frames_written)
                 
-                # 处理转场（当前视频统一使用同一种转场）
-                if transition_frames > 0 and img_index < total_images - 1:
+                # 处理转场（当前视频统一使用同一种转场）；最后一图无需补帧
+                if transition_frames > 0 and not is_last_img:
                     next_img = valid_images[img_index + 1]
+                    if next_img is None:
+                        next_img = current_img  # 加载失败用当前帧占位，保持帧数不变
                     written_transition = self._turbo_write_transition_frames(
                         video_writer, current_img, next_img, 
                         transition_frames, transition_type
@@ -5106,13 +5171,6 @@ class ImageToVideoTab:
                     frames_written += written_transition
                     if written_transition < transition_frames and self.cancel_requested:
                         raise InterruptedError("用户取消处理")
-                    self.update_progress(frames_written)
-                elif transition_frames > 0:  # 最后一张图片补齐时间
-                    for _ in range(transition_frames):
-                        if not self._wait_for_processing_control():
-                            raise InterruptedError("用户取消处理")
-                        video_writer.write(current_img)
-                        frames_written += 1
                     self.update_progress(frames_written)
             
             video_writer.release()
@@ -5276,9 +5334,25 @@ Turbo图片预处理 - 并行优化版本
                 "-filter_complex", f"[1:a]volume={volume_str}[a]",  # 设置音量
                 "-map", "0:v", "-map", "[a]",  # 使用原视频和处理后的音频
                 "-c:v", "copy",  # 复制视频流
-                "-shortest",  # 使用最短流的长度（视频）
-                temp_output
             ]
+            if loop_audio:
+                # 循环音频无限长，-shortest 以视频时长为准
+                cmd += ["-shortest"]
+            else:
+                # 非循环：用 -t 硬性限定输出时长 = 视频时长，
+                # 避免 BGM 比视频短时 -shortest 把视频截短。
+                duration_sec = 0.0
+                try:
+                    meta = self._probe_video_meta(video_path)
+                    if meta:
+                        duration_sec = float(meta.get("duration") or 0.0)
+                except Exception:
+                    duration_sec = 0.0
+                if duration_sec > 0:
+                    cmd += ["-t", f"{duration_sec:.3f}"]
+                else:
+                    cmd += ["-shortest"]
+            cmd += [temp_output]
             
             # 打印完整命令方便调试
             cmd_str = " ".join(str(c) for c in cmd)
@@ -6148,7 +6222,8 @@ Turbo图片预处理 - 并行优化版本
 
         # BGM
         if bgm_file and os.path.isfile(bgm_file):
-            if hasattr(self, "loop_bgm") and bool(self.loop_bgm.get()):
+            bgm_loop = bool(self.loop_bgm.get()) if hasattr(self, "loop_bgm") else True
+            if bgm_loop:
                 base_cmd += ["-stream_loop", "-1"]
             base_cmd += ["-i", bgm_file]
             audio_label = "bgm_a"
@@ -6165,7 +6240,18 @@ Turbo图片预处理 - 并行优化版本
             cmd += ["-map", video_map]
             if audio_label:
                 a_codec = self._get_container_compatible_acodec(output_path)
-                cmd += ["-map", f"[{audio_label}]", "-c:a", a_codec, "-b:a", "192k", "-shortest"]
+                cmd += ["-map", f"[{audio_label}]", "-c:a", a_codec, "-b:a", "192k"]
+                if bgm_loop:
+                    # 循环音频无限长，-shortest 以视频时长为准
+                    cmd += ["-shortest"]
+                else:
+                    # 非循环：用 -t 硬性限定输出时长 = 主视频时长，
+                    # 避免 BGM 比视频短时 -shortest 把视频截短。
+                    main_duration = float(main_meta.get("duration") or 0.0) if main_meta else 0.0
+                    if main_duration > 0:
+                        cmd += ["-t", f"{main_duration:.3f}"]
+                    else:
+                        cmd += ["-shortest"]
             else:
                 cmd += ["-map", "0:a?", "-c:a", "copy"]
             cmd += ["-c:v", vcodec]
@@ -6675,7 +6761,7 @@ Turbo图片预处理 - 并行优化版本
         return layers
 
     def _get_image_files_in_dir(self, directory):
-        extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.gif')
+        extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tiff')
         try:
             return [
                 os.path.join(directory, f)
@@ -6730,7 +6816,13 @@ Turbo图片预处理 - 并行优化版本
         wm_images = layer.get("images", [])
         if not wm_images:
             return image
-        wm_img = wm_images[image_index % len(wm_images)]
+        # 文件夹多图水印：随机贴（每次从目录水印中随机选一张）。
+        # 勾选"目录随机1个"时，_prepare_image_watermark_layers 已随机缩减为单张，
+        # 整条视频固定使用该张；未勾选时每张图片/每帧随机贴一张。
+        if len(wm_images) == 1:
+            wm_img = wm_images[0]
+        else:
+            wm_img = random.choice(wm_images)
 
         wm_h, wm_w = wm_img.shape[:2]
         watermark_ratio = wm_w / max(1, wm_h)
@@ -7884,13 +7976,11 @@ Turbo图片预处理 - 并行优化版本
 
             total_images = len(images)
             total_time_per_img = duration
-            total_frames_per_img = int(total_time_per_img * fps)
-            transition_frames = min(transition_frames, total_frames_per_img // 3)
-            display_frames_per_img = total_frames_per_img - transition_frames
-            if display_frames_per_img < fps // 2:
-                display_frames_per_img = fps // 2
-                transition_frames = total_frames_per_img - display_frames_per_img
-            total_frames = total_images * total_frames_per_img
+            # 统一帧计划：总时长严格按设置（round 取整，余数由最后一张吸收）
+            total_frames_per_img, transition_frames, display_frames_per_img, last_img_frames = compute_video_frame_plan(
+                total_images, duration, fps, transition_frames, transition_type
+            )
+            total_frames = (total_images - 1) * total_frames_per_img + last_img_frames
             static_time = display_frames_per_img / fps
             transition_time = transition_frames / fps
             log_func(
@@ -7966,15 +8056,26 @@ Turbo图片预处理 - 并行优化版本
                     )
                 return self._ensure_even_frame(frame)
 
+            last_good_frame = None
             for img_index, img_path in enumerate(images):
                 ensure_runtime_control()
                 log_func(f"处理图片 {img_index + 1}/{total_images}: {os.path.basename(img_path)}")
                 current_img = load_processed_frame(img_path, img_index)
                 if current_img is None:
-                    continue
+                    # 图片加载失败：用上一张成功帧补位，保证总时长严格按设置生成
+                    if last_good_frame is None:
+                        log_func(f"首图加载失败，无法按设定时长生成视频: {img_path}")
+                        return False
+                    current_img = last_good_frame
+                    log_func(f"图片加载失败，用相邻帧补位保持时长: {img_path}")
+                else:
+                    last_good_frame = current_img
+
+                is_last_img = (img_index == total_images - 1)
+                static_frames = last_img_frames if is_last_img else display_frames_per_img
 
                 if effect_enabled:
-                    effect_frames = max(1, display_frames_per_img)
+                    effect_frames = max(1, static_frames)
                     duration_sec = max(0.001, effect_frames / max(1, fps))
                     for frame_idx in range(effect_frames):
                         ensure_runtime_control()
@@ -7990,47 +8091,45 @@ Turbo图片预处理 - 并行优化版本
                         if not write_frame(frame):
                             raise BrokenPipeError("FFmpeg管道写入失败")
                 else:
-                    for _ in range(display_frames_per_img):
+                    for _ in range(static_frames):
                         ensure_runtime_control()
                         if not write_frame(current_img):
                             raise BrokenPipeError("FFmpeg管道写入失败")
 
-                if img_index < total_images - 1:
+                # 最后一张图：静态帧已含全部帧数（last_img_frames），无需再补帧
+                if not is_last_img:
                     ensure_runtime_control()
                     next_img_path = images[img_index + 1]
                     next_img = load_processed_frame(next_img_path, img_index + 1)
-                    if next_img is not None:
-                        if transition_frames > 0 and transition_type != "无转场":
-                            transition_frames_list = None
-                            if self.transition_engine:
-                                try:
-                                    transition_frames_list = self.transition_engine.generate_transition_frames(
-                                        current_img, next_img, transition_type, transition_frames, use_cache=True
-                                    )
-                                except Exception as trans_err:
-                                    log_func(f"转场引擎失败，回退基础转场: {str(trans_err)}")
-                                    transition_frames_list = None
+                    if next_img is None:
+                        # 下一张图加载失败：用当前帧占位，保证转场帧数不缺失（时长不变）
+                        next_img = current_img
+                    if transition_frames > 0 and transition_type != "无转场":
+                        transition_frames_list = None
+                        if self.transition_engine:
+                            try:
+                                transition_frames_list = self.transition_engine.generate_transition_frames(
+                                    current_img, next_img, transition_type, transition_frames, use_cache=True
+                                )
+                            except Exception as trans_err:
+                                log_func(f"转场引擎失败，回退基础转场: {str(trans_err)}")
+                                transition_frames_list = None
 
-                            if transition_frames_list:
-                                for transition_frame in transition_frames_list:
-                                    ensure_runtime_control()
-                                    if not write_frame(transition_frame):
-                                        raise BrokenPipeError("FFmpeg管道写入失败")
-                            else:
-                                # 回退：至少保持可见过渡
-                                for t_frame in range(transition_frames):
-                                    ensure_runtime_control()
-                                    progress = (t_frame + 1) / (transition_frames + 1)
-                                    transition_frame = cv2.addWeighted(
-                                        current_img, 1 - progress, next_img, progress, 0
-                                    )
-                                    if not write_frame(transition_frame):
-                                        raise BrokenPipeError("FFmpeg管道写入失败")
-                else:
-                    for _ in range(transition_frames):
-                        ensure_runtime_control()
-                        if not write_frame(current_img):
-                            raise BrokenPipeError("FFmpeg管道写入失败")
+                        if transition_frames_list:
+                            for transition_frame in transition_frames_list:
+                                ensure_runtime_control()
+                                if not write_frame(transition_frame):
+                                    raise BrokenPipeError("FFmpeg管道写入失败")
+                        else:
+                            # 回退：至少保持可见过渡
+                            for t_frame in range(transition_frames):
+                                ensure_runtime_control()
+                                progress = (t_frame + 1) / (transition_frames + 1)
+                                transition_frame = cv2.addWeighted(
+                                    current_img, 1 - progress, next_img, progress, 0
+                                )
+                                if not write_frame(transition_frame):
+                                    raise BrokenPipeError("FFmpeg管道写入失败")
 
             if ffmpeg_proc.stdin:
                 ffmpeg_proc.stdin.close()

@@ -59,9 +59,13 @@ Thumbs.db
 # Local release tooling & scratch files (never commit secrets!)
 _updater_private.key
 _updater_private.key.pub
+_updater_key2
+_updater_key2.pub
 _commit_msg.txt
 bridge_out.txt
 build_local.err
 full_out.txt
 desktop/tsc-out.txt
+desktop/_gen_err.txt
+desktop/_gen_out.txt
 releases/

@@ -1838,14 +1838,28 @@ class QtMainWindow(QMainWindow):
         self._sync_watermark_advanced_state()
 
     def _browse_watermark_layer_path(self, target_edit: QLineEdit) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择图层文件",
-            target_edit.text() or os.getcwd(),
-            "视频/图片 (*.mp4 *.mov *.avi *.png *.jpg *.jpeg *.webp);;所有文件 (*.*)",
-        )
-        if file_path:
-            target_edit.setText(file_path)
+        """浏览：可选择单个水印文件，或选择文件夹（目录内随机/轮转贴图）"""
+        menu = QMenu(self)
+        file_action = menu.addAction("选择图片/视频文件…")
+        dir_action = menu.addAction("选择文件夹（目录内贴图）…")
+        chosen = menu.exec()
+        if chosen == file_action:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "选择图层文件",
+                target_edit.text() or os.getcwd(),
+                "视频/图片 (*.mp4 *.mov *.avi *.png *.jpg *.jpeg *.webp);;所有文件 (*.*)",
+            )
+            if file_path:
+                target_edit.setText(file_path)
+        elif chosen == dir_action:
+            dir_path = QFileDialog.getExistingDirectory(
+                self,
+                "选择水印图片文件夹",
+                target_edit.text() or os.getcwd(),
+            )
+            if dir_path:
+                target_edit.setText(dir_path)
 
     def _remove_watermark_layer_row(self, row: Dict[str, Any]) -> None:
         rows = getattr(self, "_watermark_layer_rows", [])
@@ -3257,7 +3271,8 @@ class QtMainWindow(QMainWindow):
                             chosen = random.choice(candidates)
                             self._preview_selected_image_watermarks[layer_key] = chosen
                     else:
-                        chosen = candidates[self._preview_frame_index % len(candidates)]
+                        # 文件夹多图水印：随机贴（与 Tk 渲染引擎行为一致）
+                        chosen = random.choice(candidates)
                     if self._is_image_file(chosen):
                         src = self._load_image_asset(chosen)
                     else:

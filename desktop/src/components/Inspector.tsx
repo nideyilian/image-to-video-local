@@ -193,7 +193,7 @@ export function Inspector({
 }: {
   config: VideoConfig;
   onChange: <K extends ConfigKey>(key: K, value: VideoConfig[K]) => void;
-  onBrowseDirectory: (key: ConfigKey) => void;
+  onBrowseDirectory: (key: ConfigKey, layerIndex?: number) => void;
   onBrowseFile: (key: ConfigKey, layerIndex?: number) => void;
   activeTab: InspectorTabId;
   onActiveTabChange: (tab: InspectorTabId) => void;
@@ -390,7 +390,7 @@ export function Inspector({
             {visibleLayers.length ? visibleLayers.map(({ layer, index }) => (
               <div className="layer-editor-inline" key={index}>
                 <div className="layer-title"><Checkbox label={`图层 ${index + 1}`} checked={layer.enabled} onChange={(value) => updateLayer(index, { enabled: value })} /><button type="button" className="icon-button danger" onClick={() => removeLayer(index)} aria-label={`删除图层 ${index + 1}`}><Trash2 size={14} /></button></div>
-                <PathField label="素材" value={layer.path} placeholder="选择图片、视频或目录" onChange={(value) => updateLayer(index, { path: value })} onBrowse={() => onBrowseFile("watermark_layers", index)} />
+                <PathField label="素材" value={layer.path} placeholder="选择图片、视频或目录" onChange={(value) => updateLayer(index, { path: value })} onBrowse={() => onBrowseFile("watermark_layers", index)} onBrowseFolder={() => onBrowseDirectory("watermark_layers", index)} />
                 <div className="parameter-grid">
                   <Field label="位置"><select value={layer.position} onChange={(event) => updateLayer(index, { position: event.target.value })}>{WATERMARK_POSITIONS.map((value) => <option key={value}>{value}</option>)}</select></Field>
                   <Field label="大小"><select value={layer.size_mode} onChange={(event) => updateLayer(index, { size_mode: event.target.value })}>{WATERMARK_SIZE_MODES.map((value) => <option key={value}>{value}</option>)}</select></Field>

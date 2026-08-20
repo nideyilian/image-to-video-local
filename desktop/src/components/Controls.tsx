@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronDown, FolderOpen } from "lucide-react";
+import { ChevronDown, FolderOpen, FolderTree } from "lucide-react";
 
 export function InspectorSection({
   title,
@@ -46,6 +46,7 @@ export function PathField({
   placeholder,
   onChange,
   onBrowse,
+  onBrowseFolder,
   name,
 }: {
   label: string;
@@ -53,15 +54,22 @@ export function PathField({
   placeholder: string;
   onChange: (value: string) => void;
   onBrowse: () => void;
+  /** 可选：第二个"选择目录"按钮（文件夹模式素材） */
+  onBrowseFolder?: () => void;
   name?: string;
 }) {
   return (
     <Field label={label} wide name={name}>
       <span className="path-control">
         <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
-        <button type="button" className="icon-button" onClick={onBrowse} aria-label={`浏览${label}`} title={`浏览${label}`}>
+        <button type="button" className="icon-button" onClick={onBrowse} aria-label={`浏览${label}`} title={`浏览${label}（文件）`}>
           <FolderOpen size={16} aria-hidden="true" />
         </button>
+        {onBrowseFolder ? (
+          <button type="button" className="icon-button" onClick={onBrowseFolder} aria-label={`选择${label}目录`} title={`选择${label}目录（文件夹模式）`}>
+            <FolderTree size={16} aria-hidden="true" />
+          </button>
+        ) : null}
       </span>
     </Field>
   );
