@@ -100,6 +100,7 @@ class EngineServer:
                     "library-metadata",
                     "library-dedup",
                     "library-smart-folders",
+                    "library-taint-scan",
                     "jianying",
                 ],
             }
@@ -206,6 +207,10 @@ class EngineServer:
             return self.library.smart_folders_list(params)
         if method == "library_smart_folders_save":
             return self.library.smart_folders_save(params)
+        if method == "library_scan_tainted":
+            return self.library.scan_tainted(params)
+        if method == "library_clean_tainted":
+            return self.library.clean_tainted(params)
         if method == "library_extract_bgm":
             return self.library.start_extract(params)
         if method == "library_extract_cancel":

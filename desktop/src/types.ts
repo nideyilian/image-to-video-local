@@ -188,6 +188,33 @@ export type LibraryDupResult = {
   scanned: number;
 };
 
+export type LibraryTaintedStream = {
+  index: number;
+  codec_type: string;
+  codec_name: string;
+  duration: number | null;
+  attached_pic: boolean;
+};
+
+export type LibraryTaintedItem = {
+  path: string;
+  name: string;
+  folder: string;
+  size_bytes: number;
+  taint: string;
+  streams: LibraryTaintedStream[];
+};
+
+export type LibraryTaintScanResult = {
+  scanned: number;
+  tainted: LibraryTaintedItem[];
+};
+
+export type LibraryCleanTaintResult = {
+  results: Array<{ path: string; ok: boolean; reason?: string }>;
+  cleaned: number;
+};
+
 export type LibraryRenameBatchResult = {
   name: string;
   path: string;

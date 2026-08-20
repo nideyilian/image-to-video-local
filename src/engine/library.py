@@ -33,6 +33,8 @@ try:
 except Exception:  # pragma: no cover - 纯 Python 环境回退
     _np = None
 
+from . import mp4_strip  # noqa: F401  # box 级「去假轨」清洗（处理 chap 章节引用轨）
+
 try:
     from ..utils.ffmpeg_runtime import resolve_ffprobe_path
 except Exception:  # pragma: no cover
@@ -69,6 +71,7 @@ WATERMARK_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 LIBRARY_ROOT_NAME = "图转视频素材库"
 INDEX_FILE_NAME = ".library_index.json"
+SMART_FOLDERS_FILE_NAME = ".smart_folders.json"
 
 # 指纹参数
 FINGERPRINT_SAMPLE_RATE = 16000
@@ -86,7 +89,10 @@ MIN_OVERLAP_FRACTION = 0.5  # 比较时至少需要重叠的比例
 EXTRACT_AUDIO_TIMEOUT = 300
 EXTRACT_BITRATE = "192k"
 
-SMART_FOLDERS_FILE_NAME = ".smart_folders.json"
+try:
+    from ..utils.ffmpeg_runtime import resolve_ffprobe_path
+except Exception:  # pragma: no cover
+    resolve_ffprobe_path = None
 DUP_PHASH_THRESHOLD = 8  # dHash 汉明距离阈值：≤8（共 64 位）视为相似图片
 DUP_SCAN_MAX_IMAGES = 2000  # 单次去重扫描最多计算感知哈希的图片数，防止超大库卡顿
 
@@ -244,6 +250,167 @@ def _probe_duration(ffprobe_path: str | None, path: Path) -> float | None:
         return float(result.stdout.strip())
     except ValueError:
         return None
+
+
+def _probe_streams(ffprobe_path: str | None, path: Path) -> list[dict[str, Any]]:
+    """探测文件的所有流（index / codec_type / codec_name / duration / attached_pic）。
+
+    失败返回空列表（调用方按“无法探测”处理，不阻断扫描）。
+    """
+    if not ffprobe_path or not path.is_file():
+        return []
+    startupinfo = None
+    creationflags = 0
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        creationflags = subprocess.CREATE_NO_WINDOW
+    try:
+        result = subprocess.run(
+            [
+                ffprobe_path,
+                "-v", "error",
+                "-show_entries",
+                "stream=index,codec_type,codec_name,duration:stream_disposition=attached_pic",
+                "-of", "json",
+                str(path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+            startupinfo=startupinfo,
+            creationflags=creationflags,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    try:
+        data = json.loads(result.stdout or "{}")
+    except ValueError:
+        return []
+    streams: list[dict[str, Any]] = []
+    for raw in data.get("streams") or []:
+        if not isinstance(raw, dict):
+            continue
+        disposition = raw.get("disposition")
+        attached_pic = bool(isinstance(disposition, dict) and disposition.get("attached_pic"))
+        streams.append({
+            "index": int(raw.get("index", 0) or 0),
+            "codec_type": str(raw.get("codec_type") or ""),
+            "codec_name": str(raw.get("codec_name") or ""),
+            "duration": raw.get("duration"),
+            "attached_pic": attached_pic,
+        })
+    return streams
+
+
+def _taint_reason(streams: list[dict[str, Any]], kind: str) -> str | None:
+    """判断文件是否含“假字幕轨/异常数据轨”。
+
+    - 字幕轨（subtitle / mov_text / srt 等）：异常；
+    - bin_data / text 数据轨（如部分后期软件写入的 encd 假时长轨）：异常；
+    - 音频文件（BGM）里出现非封面（attached_pic）的视频轨：异常；
+    - 内嵌封面（attached_pic 视频轨）属于正常内容，不视为异常。
+    返回异常原因描述；没有异常返回 None。
+    """
+    for stream in streams:
+        codec_type = stream.get("codec_type") or ""
+        codec_name = stream.get("codec_name") or ""
+        duration = stream.get("duration")
+        duration_text = f"{float(duration):.1f} 秒" if isinstance(duration, (int, float)) else "未知时长"
+        if codec_type == "subtitle":
+            return f"含字幕轨（{codec_name}，{duration_text}）"
+        if codec_type == "data" or codec_name == "bin_data" or codec_name == "text":
+            return f"含异常数据轨（{codec_name or codec_type}，{duration_text}）"
+        if kind == "bgm" and codec_type == "video" and not stream.get("attached_pic"):
+            return f"音频文件含视频轨（{codec_name}，{duration_text}）"
+    return None
+
+
+def _tainted_indexes(streams: list[dict[str, Any]], kind: str) -> set[int]:
+    """返回异常流的序号集合（与 _taint_reason 判定一致）。"""
+    indexes: set[int] = set()
+    for stream in streams:
+        codec_type = stream.get("codec_type") or ""
+        codec_name = stream.get("codec_name") or ""
+        if codec_type == "subtitle":
+            indexes.add(int(stream.get("index", 0)))
+        elif codec_type == "data" or codec_name == "bin_data" or codec_name == "text":
+            indexes.add(int(stream.get("index", 0)))
+        elif kind == "bgm" and codec_type == "video" and not stream.get("attached_pic"):
+            indexes.add(int(stream.get("index", 0)))
+    return indexes
+
+
+def _clean_tainted_file(ffmpeg_path: str | None, ffprobe_path: str | None, path: Path) -> dict[str, Any]:
+    """清洗单个文件：丢弃字幕/数据轨（无损）。
+
+    - mp4/mov/m4a 等 moov 容器：直接重写 moov 删除假轨与章节引用（不动媒体数据，
+      连 ffmpeg -map 都拦不住的 chap 引用轨也能去掉）；
+    - 其他容器：FFmpeg 流复制重封装（只保留正常音视频轨）。
+
+    成功后原文件先移入回收站（可还原），干净版本占用原文件名；
+    失败时临时文件清理、原文件保持不动。
+    """
+    streams = _probe_streams(ffprobe_path, path)
+    kind = "bgm" if path.suffix.lower() in AUDIO_EXTENSIONS else "watermark"
+    indexes = _tainted_indexes(streams, kind)
+    if not indexes:
+        return {"ok": False, "reason": "未检测到异常轨，跳过"}
+
+    temporary = path.with_name(f".{path.stem}.clean-{os.getpid()}.tmp{path.suffix}")
+    try:
+        if mp4_strip.has_moov_container(path.suffix):
+            if not indexes:
+                return {"ok": False, "reason": "未检测到异常轨，跳过"}
+            ok, message = mp4_strip.strip_tainted_tracks(path, indexes, temporary)
+            if not ok or not temporary.is_file() or temporary.stat().st_size == 0:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return {"ok": False, "reason": f"清洗失败: {message}"}
+        else:
+            if not ffmpeg_path:
+                return {"ok": False, "reason": "FFmpeg 不可用"}
+            suffix = path.suffix.lower()
+            if suffix in AUDIO_EXTENSIONS:
+                maps = ["-map", "0:a", "-map", "0:v?"]  # 音频 + 内嵌封面（若有）
+            elif suffix in VIDEO_EXTENSIONS:
+                maps = ["-map", "0:v", "-map", "0:a?"]  # 视频 + 音频（若有）
+            else:
+                return {"ok": False, "reason": f"不支持的文件类型: {suffix}"}
+            result = _run_ffmpeg(
+                [ffmpeg_path, "-y", "-i", str(path), *maps, "-c", "copy",
+                 "-map_metadata", "0", "-movflags", "+faststart", str(temporary)],
+                timeout=240,
+            )
+            if result is None or result.returncode != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return {"ok": False, "reason": "重封装失败"}
+    except Exception as exc:  # noqa: BLE001 - 统一转为失败原因
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {"ok": False, "reason": f"清洗异常: {exc}"}
+    try:
+        _trash(path)
+        os.replace(temporary, path)
+        return {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {"ok": False, "reason": f"替换原文件失败: {exc}"}
 
 
 def _extract_audio_cover(ffmpeg_path: str | None, path: Path) -> str | None:
@@ -547,6 +714,65 @@ class LibraryManager:
             "watermark": watermark_items,
             "watermark_folders": watermark_folders,
         }
+
+    # ---------- 假字幕轨体检与清洗 ----------
+
+    def scan_tainted(self, params: dict[str, Any]) -> dict[str, Any]:
+        """扫描素材库（kind=bgm/watermark），找出含异常字幕轨/数据轨的文件。
+
+        返回 {"scanned": 扫描文件数, "tainted": [{path, name, folder, size_bytes,
+        taint, streams}]}；无异常时 tainted 为空列表。
+        """
+        kind = str(params.get("kind", "bgm") or "bgm")
+        if kind not in ("bgm", "watermark"):
+            raise ValueError("kind 必须是 bgm 或 watermark")
+        bgm_dir, watermark_dir = self._resolve_dirs(
+            params.get("bgm_dir"), params.get("watermark_dir")
+        )
+        base = bgm_dir if kind == "bgm" else watermark_dir
+        if not base.is_dir():
+            return {"scanned": 0, "tainted": []}
+        extensions = AUDIO_EXTENSIONS if kind == "bgm" else WATERMARK_EXTENSIONS
+        ffprobe = self._ffprobe()
+        findings: list[dict[str, Any]] = []
+        scanned = 0
+        for path in sorted(base.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in extensions:
+                continue
+            scanned += 1
+            streams = _probe_streams(ffprobe, path)
+            taint = _taint_reason(streams, kind)
+            if taint:
+                folder = str(path.parent.relative_to(base)).replace("\\", "/")
+                findings.append({
+                    "path": str(path),
+                    "name": path.name,
+                    "folder": "" if folder == "." else folder,
+                    "size_bytes": path.stat().st_size,
+                    "taint": taint,
+                    "streams": streams,
+                })
+        return {"scanned": scanned, "tainted": findings}
+
+    def clean_tainted(self, params: dict[str, Any]) -> dict[str, Any]:
+        """清洗指定素材文件：重封装去掉字幕/数据轨（流复制，不重编码）。
+
+        每个文件处理前会重新探测确认确有异常，避免误清洗；
+        原文件移入回收站（可还原），干净版本以原文件名落盘。
+        返回 {"results": [{path, ok, reason}], "cleaned": N}。
+        """
+        raw_paths = params.get("paths") or []
+        if not isinstance(raw_paths, list) or not raw_paths:
+            raise ValueError("请先选择要清洗的文件")
+        results: list[dict[str, Any]] = []
+        for raw in raw_paths:
+            path = Path(str(raw or "")).expanduser()
+            if not path.is_file():
+                results.append({"path": str(raw or ""), "ok": False, "reason": "文件不存在"})
+                continue
+            outcome = _clean_tainted_file(self.ffmpeg_path, self._ffprobe(), path)
+            results.append({"path": str(path), **outcome})
+        return {"results": results, "cleaned": sum(1 for item in results if item.get("ok"))}
 
     def audio_cover(self, params: dict[str, Any]) -> dict[str, Any]:
         """提取音频内嵌封面（如有）并返回缓存路径；没有封面返回 cover_path=None。"""

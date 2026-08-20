@@ -942,3 +942,81 @@ describe("Eagle 风格素材管理", () => {
     expect(document.querySelector(".library-row")!.textContent).toContain("长歌.wav");
   });
 });
+
+describe("假字幕轨体检清洗", () => {
+  const TAINTED = [{
+    path: "C:/lib/BGM/bad.m4a",
+    name: "bad.m4a",
+    folder: "",
+    size_bytes: 12345,
+    taint: "含字幕轨（mov_text，326.4 秒）",
+    streams: [{ index: 1, codec_type: "subtitle", codec_name: "mov_text", duration: 326.4, attached_pic: false }],
+  }];
+
+  it("扫描发现异常文件后，一键清洗并刷新", async () => {
+    callMock.mockImplementation((method, params) => {
+      if (method === "library_scan_tainted") {
+        return Promise.resolve({ scanned: 3, tainted: TAINTED });
+      }
+      if (method === "library_clean_tainted") {
+        return Promise.resolve({ results: [{ path: TAINTED[0].path, ok: true }], cleaned: 1 });
+      }
+      return baseImplementation(method, params);
+    });
+    const { notify } = renderLibrary();
+    await flush();
+
+    act(() => { buttonWithText("体检清洗")!.click(); });
+    await flush();
+
+    // 扫描结果展示异常文件与原因
+    expect(document.body.textContent).toContain("bad.m4a");
+    expect(document.body.textContent).toContain("字幕轨");
+
+    act(() => { buttonWithText("清洗选中")!.click(); });
+    await flush();
+
+    const cleanCalls = callMock.mock.calls.filter(([method]) => method === "library_clean_tainted");
+    expect(cleanCalls).toHaveLength(1);
+    expect(cleanCalls[0][1]).toEqual({ paths: [TAINTED[0].path] });
+    expect(notify).toHaveBeenCalledWith("success", expect.stringContaining("已清洗 1 个文件"));
+    // 清洗后重新刷新素材库
+    expect(snapshotCalls().length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("无异常文件时提示未发现", async () => {
+    callMock.mockImplementation((method, params) => {
+      if (method === "library_scan_tainted") {
+        return Promise.resolve({ scanned: 3, tainted: [] });
+      }
+      return baseImplementation(method, params);
+    });
+    renderLibrary();
+    await flush();
+
+    act(() => { buttonWithText("体检清洗")!.click(); });
+    await flush();
+
+    expect(document.body.textContent).toContain("未发现异常文件（共扫描 3 个素材）");
+  });
+
+  it("未选中文件时清洗按钮禁用", async () => {
+    callMock.mockImplementation((method, params) => {
+      if (method === "library_scan_tainted") {
+        return Promise.resolve({ scanned: 1, tainted: TAINTED });
+      }
+      return baseImplementation(method, params);
+    });
+    renderLibrary();
+    await flush();
+
+    act(() => { buttonWithText("体检清洗")!.click(); });
+    await flush();
+
+    // 默认全选 → 取消全部勾选后按钮应禁用
+    act(() => { buttonWithText("全部取消")!.click(); });
+    await flush();
+    const cleanButton = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("清洗选中"));
+    expect(cleanButton!.disabled).toBe(true);
+  });
+});

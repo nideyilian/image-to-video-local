@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "image-to-video-desktop"
-version = "3.0.0-local.18"
+version = "3.0.0-local.19"
 dependencies = [
  "serde",
  "serde_json",

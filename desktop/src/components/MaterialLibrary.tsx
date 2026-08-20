@@ -41,6 +41,7 @@ import {
   Upload,
   Wand2,
   X,
+  ShieldAlert,
 } from "lucide-react";
 import { DEFAULT_WATERMARK_LAYER, TRANSITIONS, VIDEO_EFFECTS } from "../constants";
 import { engine } from "../engine";
@@ -48,6 +49,7 @@ import { AddVideoSource } from "./AddVideoSource";
 import { BgmCover } from "./BgmCover";
 import { EffectLibraryPanel } from "./EffectLibraryPanel";
 import type {
+  LibraryCleanTaintResult,
   LibraryDirs,
   LibraryDupResult,
   LibraryExtractResult,
@@ -60,6 +62,8 @@ import type {
   LibraryRenameBatchResult,
   LibrarySmartFolder,
   LibrarySmartFolderCondition,
+  LibraryTaintedItem,
+  LibraryTaintScanResult,
   LibraryTagCount,
   VideoConfig,
 } from "../types";
@@ -391,6 +395,8 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   const [detailTagDraft, setDetailTagDraft] = useState("");
   const [dupOpen, setDupOpen] = useState(false);
   const [dupState, setDupState] = useState<{ scanning: boolean; result: LibraryDupResult | null; checked: Set<string> }>({ scanning: false, result: null, checked: new Set() });
+  const [taintOpen, setTaintOpen] = useState(false);
+  const [taintState, setTaintState] = useState<{ scanning: boolean; cleaning: boolean; result: LibraryTaintScanResult | null; checked: Set<string> }>({ scanning: false, cleaning: false, result: null, checked: new Set() });
   const [batchRenameOpen, setBatchRenameOpen] = useState(false);
   const [batchRename, setBatchRename] = useState<{ pattern: string; startIndex: number; items: LibraryItem[]; preview: Array<{ old: string; next: string; ok: boolean; reason?: string }>; applying: boolean }>({ pattern: "", startIndex: 1, items: [], preview: [], applying: false });
   const [thumbSize, setThumbSize] = useState(() => loadThumbSize());
@@ -655,6 +661,10 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
           setDupOpen(false);
           return;
         }
+        if (taintOpen) {
+          if (!taintState.scanning && !taintState.cleaning) setTaintOpen(false);
+          return;
+        }
         if (batchRenameOpen) {
           setBatchRenameOpen(false);
           return;
@@ -693,7 +703,7 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
       document.body.classList.remove("is-modal-open");
       previousFocus?.focus();
     };
-  }, [open, onClose, videoPreview, imagePreview, renameOpen, confirm, closeVideoPreview, detail, dupOpen, batchRenameOpen, smartFolderOpen]);
+  }, [open, onClose, videoPreview, imagePreview, renameOpen, confirm, closeVideoPreview, detail, dupOpen, taintOpen, taintState.scanning, taintState.cleaning, batchRenameOpen, smartFolderOpen]);
 
   const selectFolder = useCallback((folder: string) => {
     setCurrentFolder(folder);
@@ -1313,6 +1323,68 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
     }
   }, [dirs, dupState.checked, notify, refresh, tab]);
 
+  // ---------- 假字幕轨体检与清洗 ----------
+
+  const scanTainted = useCallback(async () => {
+    if (!engine.desktopRuntime) return notify("info", "体检假字幕轨需要在 Tauri 桌面窗口中运行");
+    if (!dirs) return;
+    setTaintState((current) => ({ ...current, scanning: true }));
+    try {
+      const result = await engine.call<LibraryTaintScanResult>("library_scan_tainted", {
+        kind: tab,
+        bgm_dir: dirs.bgm_dir,
+        watermark_dir: dirs.watermark_dir,
+      }, 300_000);
+      setTaintState({
+        scanning: false,
+        cleaning: false,
+        result,
+        checked: new Set(result.tainted.map((item) => item.path)),
+      });
+    } catch (err) {
+      setTaintState((current) => ({ ...current, scanning: false }));
+      notify("error", err instanceof Error ? err.message : "体检假字幕轨失败");
+    }
+  }, [dirs, notify, tab]);
+
+  const toggleTaintChecked = useCallback((path: string) => {
+    setTaintState((current) => {
+      const next = new Set(current.checked);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return { ...current, checked: next };
+    });
+  }, []);
+
+  const toggleTaintAll = useCallback((items: LibraryTaintedItem[], checked: boolean) => {
+    setTaintState((current) => {
+      const next = new Set(current.checked);
+      for (const item of items) {
+        if (checked) next.add(item.path);
+        else next.delete(item.path);
+      }
+      return { ...current, checked: next };
+    });
+  }, []);
+
+  const cleanTainted = useCallback(async () => {
+    const paths = Array.from(taintState.checked);
+    if (!paths.length) return notify("info", "没有选中的文件");
+    setTaintState((current) => ({ ...current, cleaning: true }));
+    try {
+      const result = await engine.call<LibraryCleanTaintResult>("library_clean_tainted", { paths }, 300_000);
+      notify(
+        result.cleaned ? "success" : "error",
+        result.cleaned ? `已清洗 ${result.cleaned} 个文件（原文件已移入回收站）` : "没有文件被清洗",
+      );
+      setTaintOpen(false);
+      await refresh();
+    } catch (err) {
+      notify("error", err instanceof Error ? err.message : "清洗假字幕轨失败");
+      setTaintState((current) => ({ ...current, cleaning: false }));
+    }
+  }, [notify, refresh, taintState.checked]);
+
   const computeRenamePreview = useCallback((items: LibraryItem[], pattern: string, startIndex: number) => {
     if (!pattern.trim()) return [];
     const now = new Date();
@@ -1826,6 +1898,17 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                   </span>
                 ) : null}
                 <button type="button" className="quiet-button" onClick={scanDuplicates} disabled={!desktopRuntime || loading}><GitCompareArrows size={14} />查找重复</button>
+                {tab === "bgm" || tab === "watermark" ? (
+                  <button
+                    type="button"
+                    className="quiet-button"
+                    onClick={() => { setTaintOpen(true); void scanTainted(); }}
+                    disabled={!desktopRuntime || loading}
+                    title="扫描素材文件里的假字幕轨/异常数据轨（会导致播放器与资源管理器显示错误时长）"
+                  >
+                    <ShieldAlert size={14} />体检清洗
+                  </button>
+                ) : null}
                 {tab === "bgm" ? (
                   <button type="button" className="library-accent-button" onClick={() => setExtract((current) => ({ ...current, open: true, saveFolder: currentFolder }))} disabled={!desktopRuntime}><Scissors size={14} />批量拆BGM</button>
                 ) : null}
@@ -2623,6 +2706,72 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
                 {dupState.result && !dupState.scanning ? (
                   <button type="button" className="library-accent-button is-danger" onClick={() => void deleteCheckedDuplicates()} disabled={!dupState.checked.size}>
                     <Trash2 size={14} />删除选中（{dupState.checked.size}）
+                  </button>
+                ) : null}
+              </span>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {taintOpen ? (
+        <div className="library-backdrop library-backdrop-inner" role="presentation" onMouseDown={(event) => { event.stopPropagation(); if (!taintState.scanning && !taintState.cleaning) setTaintOpen(false); }}>
+          <section className="library-dup-dialog" role="dialog" aria-modal="true" aria-labelledby="library-taint-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="library-dialog-heading">
+              <span className="library-dialog-icon"><ShieldAlert size={21} /></span>
+              <span>
+                <small>假字幕轨 / 异常数据轨</small>
+                <strong id="library-taint-title">体检清洗</strong>
+              </span>
+              <button type="button" className="update-close" onClick={() => setTaintOpen(false)} disabled={taintState.scanning || taintState.cleaning} aria-label="关闭体检清洗窗口"><X size={17} /></button>
+            </header>
+            <div className="library-dup-body">
+              {taintState.scanning ? (
+                <div className="library-dup-empty"><Loader2 className="is-spinning" size={20} />正在扫描{tab === "bgm" ? "BGM" : "水印"}库…</div>
+              ) : !taintState.result ? (
+                <div className="library-dup-empty">
+                  <span>扫描整个{tab === "bgm" ? "BGM" : "水印"}库，找出带字幕轨 / 异常数据轨的文件。这类“假时长轨”会让播放器与资源管理器显示错误的视频时长。</span>
+                  <button type="button" className="library-accent-button" onClick={() => void scanTainted()}><ShieldAlert size={14} />开始扫描</button>
+                </div>
+              ) : taintState.result.tainted.length === 0 ? (
+                <div className="library-dup-empty"><Check size={18} />未发现异常文件（共扫描 {taintState.result.scanned} 个素材）</div>
+              ) : (
+                <>
+                  <p className="library-dup-summary">
+                    发现 {taintState.result.tainted.length} 个带异常轨的文件（共扫描 {taintState.result.scanned} 个素材）。清洗会重封装文件去掉异常轨（不重新编码、画质不变），原文件先移入回收站可还原。
+                  </p>
+                  <div className="library-dup-groups">
+                    <div className="library-dup-group">
+                      <div className="library-dup-group-head">
+                        <button type="button" className="quiet-button" onClick={() => toggleTaintAll(taintState.result!.tainted, taintState.checked.size !== taintState.result!.tainted.length)}>
+                          {taintState.checked.size === taintState.result!.tainted.length ? <Check size={13} /> : <Plus size={13} />}
+                          {taintState.checked.size === taintState.result!.tainted.length ? "全部取消" : "全部选中"}
+                        </button>
+                        <span>共 {taintState.result.tainted.length} 个文件</span>
+                      </div>
+                      <ul className="library-dup-list">
+                        {taintState.result.tainted.map((item) => (
+                          <li key={item.path} className={taintState.checked.has(item.path) ? "is-checked" : ""}>
+                            <input type="checkbox" checked={taintState.checked.has(item.path)} onChange={() => toggleTaintChecked(item.path)} aria-label={`选择 ${item.name}`} />
+                            <span className="library-dup-name">
+                              <strong>{item.name}</strong>
+                              <small>{item.folder ? `${item.folder} · ` : ""}{formatBytes(item.size_bytes)} · {item.taint}</small>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+            <footer className="library-dialog-footer">
+              <span className="library-dialog-footer-hint">清洗 = 去掉字幕/数据轨并重封装（流复制，不重编码）；原文件移入系统回收站。</span>
+              <span className="library-dialog-footer-actions">
+                <button type="button" className="quiet-button" onClick={() => setTaintOpen(false)} disabled={taintState.scanning || taintState.cleaning}>关闭</button>
+                {taintState.result && !taintState.scanning ? (
+                  <button type="button" className="library-accent-button" onClick={() => void cleanTainted()} disabled={taintState.cleaning || !taintState.checked.size}>
+                    {taintState.cleaning ? <Loader2 className="is-spinning" size={14} /> : <ShieldAlert size={14} />}清洗选中（{taintState.checked.size}）
                   </button>
                 ) : null}
               </span>
