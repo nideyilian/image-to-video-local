@@ -50,14 +50,14 @@ export function moveCutWorkspaceList(list: Workspace[], sourceId: string, target
   return rest;
 }
 
-/** 提取可保存为预设的参数子集（剔除路径类字段）。 */
+/**
+ * 提取可保存为预设的参数子集。
+ * 输入/输出目录（input_dir / output_dir）随预设一起保存，保证预设可完整复现。
+ * 仅剔除派生/内部字段：BGM 目录（bgm_dir）、分辨率宽高（width/height，由
+ * resolution_preset 派生）、Qt 遗留字段（_qt_watermark_defaults_v2）。
+ */
 const PATH_KEYS = new Set([
-  "input_dir",
-  "output_dir",
   "bgm_dir",
-  "bgm_files",
-  "watermark_path",
-  "watermark_layers",
   "width",
   "height",
   "_qt_watermark_defaults_v2",
@@ -71,13 +71,16 @@ export function extractPresetConfig(config: VideoConfig): Partial<VideoConfig> {
   return preset;
 }
 
-/** 应用预设到工作区配置（保留输入/输出目录）。 */
+/**
+ * 应用预设到工作区配置。
+ * 预设含输入/输出目录时一并恢复；不含（如旧预设）时沿用当前工作区目录。
+ */
 export function applyPresetToConfig(config: VideoConfig, preset: Partial<VideoConfig>): VideoConfig {
   return {
     ...config,
     ...preset,
-    input_dir: config.input_dir,
-    output_dir: config.output_dir,
+    input_dir: preset.input_dir ?? config.input_dir,
+    output_dir: preset.output_dir ?? config.output_dir,
   };
 }
 

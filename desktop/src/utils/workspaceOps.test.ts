@@ -82,7 +82,7 @@ describe("moveCutWorkspaceList", () => {
 });
 
 describe("preset config", () => {
-  it("提取预设剔除路径类字段", () => {
+  it("提取预设保留输入/输出目录，剔除派生/内部字段", () => {
     const config = {
       ...structuredClone(FALLBACK_CONFIG),
       input_dir: "D:/输入",
@@ -95,24 +95,42 @@ describe("preset config", () => {
     const preset = extractPresetConfig(config);
     expect(preset.resolution_preset).toBe("1920x1080");
     expect(preset.fps).toBe(60);
-    expect(preset.input_dir).toBeUndefined();
-    expect(preset.output_dir).toBeUndefined();
+    expect(preset.input_dir).toBe("D:/输入");
+    expect(preset.output_dir).toBe("D:/输出");
     expect(preset.bgm_dir).toBeUndefined();
-    expect(preset.watermark_path).toBeUndefined();
+    expect(preset.watermark_path).toBe("D:/wm.png");
   });
 
-  it("应用预设保留输入/输出目录", () => {
+  it("应用预设：含目录时恢复预设目录", () => {
     const config = {
       ...structuredClone(FALLBACK_CONFIG),
-      input_dir: "D:/输入",
-      output_dir: "D:/输出",
+      input_dir: "D:/当前输入",
+      output_dir: "D:/当前输出",
+      fps: 30,
+    };
+    const next = applyPresetToConfig(config, {
+      fps: 60,
+      resolution_preset: "720x1280",
+      input_dir: "D:/预设输入",
+      output_dir: "D:/预设输出",
+    });
+    expect(next.fps).toBe(60);
+    expect(next.resolution_preset).toBe("720x1280");
+    expect(next.input_dir).toBe("D:/预设输入");
+    expect(next.output_dir).toBe("D:/预设输出");
+  });
+
+  it("应用预设：不含目录时沿用当前工作区目录", () => {
+    const config = {
+      ...structuredClone(FALLBACK_CONFIG),
+      input_dir: "D:/当前输入",
+      output_dir: "D:/当前输出",
       fps: 30,
     };
     const next = applyPresetToConfig(config, { fps: 60, resolution_preset: "720x1280" });
     expect(next.fps).toBe(60);
-    expect(next.resolution_preset).toBe("720x1280");
-    expect(next.input_dir).toBe("D:/输入");
-    expect(next.output_dir).toBe("D:/输出");
+    expect(next.input_dir).toBe("D:/当前输入");
+    expect(next.output_dir).toBe("D:/当前输出");
   });
 });
 
