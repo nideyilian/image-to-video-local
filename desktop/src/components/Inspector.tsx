@@ -9,9 +9,8 @@ import {
   WATERMARK_POSITIONS,
   WATERMARK_SIZE_MODES,
 } from "../constants";
-import type { LibraryItem, ValidationIssue, VideoConfig, WatermarkLayer } from "../types";
+import type { ValidationIssue, VideoConfig, WatermarkLayer } from "../types";
 import { Field, PathField } from "./Controls";
-import { LibraryPicker } from "./LibraryPicker";
 
 type ConfigKey = keyof VideoConfig;
 
@@ -198,11 +197,11 @@ export function Inspector({
   activeTab: InspectorTabId;
   onActiveTabChange: (tab: InspectorTabId) => void;
   validationIssues: ValidationIssue[];
-  onOpenLibraryTab: (tab: "effect" | "transition") => void;
+  onOpenLibraryTab: (tab: "effect" | "transition" | "bgm" | "watermark") => void;
 }) {
-  const [bgmPickerOpen, setBgmPickerOpen] = useState(false);
-  const [watermarkPickerOpen, setWatermarkPickerOpen] = useState(false);
   const [layerPage, setLayerPage] = useState(0);
+  // 「按子文件夹抽取」下每视频图片数由子文件夹个数决定，该项不生效
+  const subfolderPicked = config.image_selection_mode === "按子文件夹抽取";
 
   const updateLayer = (index: number, patch: Partial<WatermarkLayer>) => {
     const next = config.watermark_layers.map((layer, layerIndex) => layerIndex === index ? { ...layer, ...patch } : layer);
@@ -289,7 +288,7 @@ export function Inspector({
             <PathField label="输出目录" name="output_dir" value={config.output_dir} placeholder="选择视频输出目录" onChange={(value) => onChange("output_dir", value)} onBrowse={() => onBrowseDirectory("output_dir")} />
           </div>
           <div className="parameter-grid parameter-grid-basic">
-            <Field label="图片数" name="num_images"><input type="number" min={1} max={1000} value={config.num_images} aria-label="每视频图片数" onChange={(event) => onChange("num_images", Number(event.target.value))} /></Field>
+            <Field label="图片数" name="num_images" hint={subfolderPicked ? "由子文件夹个数决定" : undefined}><input type="number" min={1} max={1000} value={config.num_images} aria-label="每视频图片数" disabled={subfolderPicked} onChange={(event) => onChange("num_images", Number(event.target.value))} /></Field>
             <Field label="单图时长 · 秒" name="duration"><input type="number" min={0.1} max={120} step={0.1} value={config.duration} aria-label="每张图片时长（秒）" onChange={(event) => onChange("duration", Number(event.target.value))} /></Field>
             <Field label="总时长 · 秒" name="total_duration"><input type="number" min={0} max={86400} step={0.1} value={config.total_duration} aria-label="视频总时长（秒，0 表示自动）" title="0 表示按图片数自动计算" onChange={(event) => onChange("total_duration", Number(event.target.value))} /></Field>
             <Field label="视频数" name="video_count"><input type="number" min={1} max={1000000} value={config.video_count} aria-label="视频数量" onChange={(event) => onChange("video_count", Number(event.target.value))} /></Field>
@@ -298,7 +297,7 @@ export function Inspector({
             <Field label="格式"><select value={config.video_format} onChange={(event) => onChange("video_format", event.target.value)}><option>mp4</option><option>mov</option><option>avi</option></select></Field>
             <Field label="编码"><select value={config.codec} onChange={(event) => onChange("codec", event.target.value)}><option>H264</option><option>mp4v</option><option>XVID</option><option>MJPG</option></select></Field>
             <Field label="码率 · kbps"><input type="number" min={500} max={100000} step={500} value={config.bitrate} onChange={(event) => onChange("bitrate", Number(event.target.value))} /></Field>
-            <Field label="选图方式"><select value={config.image_selection_mode} onChange={(event) => onChange("image_selection_mode", event.target.value)}><option>随机选择</option><option>按名称排序</option></select></Field>
+            <Field label="选图方式"><select value={config.image_selection_mode} onChange={(event) => onChange("image_selection_mode", event.target.value)}><option>随机选择</option><option>按名称排序</option><option>按子文件夹抽取</option></select></Field>
             <Checkbox label="保持画面比例" checked={config.keep_aspect_ratio} onChange={(value) => onChange("keep_aspect_ratio", value)} />
           </div>
 
@@ -312,7 +311,7 @@ export function Inspector({
             <div className="bgm-files-head">
               <span><small>BGM 素材</small><strong>{(config.bgm_files ?? []).length ? `已选 ${config.bgm_files.length} 首` : "未指定"}</strong></span>
               <span className="bgm-files-actions">
-                <button type="button" className="inspector-config-button" onClick={() => setBgmPickerOpen(true)} disabled={!config.use_bgm}><LibraryBig size={14} />从素材库选择</button>
+                <button type="button" className="inspector-config-button" onClick={() => onOpenLibraryTab("bgm")} disabled={!config.use_bgm}><LibraryBig size={14} />从素材库选择</button>
                 {(config.bgm_files ?? []).length ? <button type="button" className="quiet-button" onClick={() => onChange("bgm_files", [])} disabled={!config.use_bgm}>清除</button> : null}
               </span>
             </div>
@@ -365,7 +364,7 @@ export function Inspector({
               <strong>视频水印</strong>
               <span className="inspector-section-actions">
                 <SegmentedControl compact label="状态" value={config.use_watermark ? "on" : "off"} options={STATUS_OPTIONS} onChange={(value) => onChange("use_watermark", value === "on")} />
-                <button type="button" className="inspector-config-button" onClick={() => setWatermarkPickerOpen(true)}><LibraryBig size={14} />从素材库选择</button>
+                <button type="button" className="inspector-config-button" onClick={() => onOpenLibraryTab("watermark")}><LibraryBig size={14} />从素材库选择</button>
               </span>
             </header>
             <PathField label="水印路径" name="watermark_path" value={config.watermark_path} placeholder="选择视频或目录" onChange={(value) => onChange("watermark_path", value)} onBrowse={() => config.watermark_mode === "文件夹" ? onBrowseDirectory("watermark_path") : onBrowseFile("watermark_path")} />
@@ -384,9 +383,12 @@ export function Inspector({
               <strong>图片水印</strong>
               <span className="inspector-section-actions">
                 <SegmentedControl compact label="状态" value={config.use_image_watermark ? "on" : "off"} options={STATUS_OPTIONS} onChange={(value) => onChange("use_image_watermark", value === "on")} />
-                <button type="button" className="quiet-button" onClick={addLayer}><Plus size={14} />添加图层</button>
               </span>
             </header>
+            <div className="layer-toolbar">
+              <button type="button" className="inspector-config-button" onClick={() => onOpenLibraryTab("watermark")}><LibraryBig size={14} />从素材库选择</button>
+              <button type="button" className="quiet-button" onClick={addLayer}><Plus size={14} />添加图层</button>
+            </div>
             {visibleLayers.length ? visibleLayers.map(({ layer, index }) => (
               <div className="layer-editor-inline" key={index}>
                 <div className="layer-title"><Checkbox label={`图层 ${index + 1}`} checked={layer.enabled} onChange={(value) => updateLayer(index, { enabled: value })} /><button type="button" className="icon-button danger" onClick={() => removeLayer(index)} aria-label={`删除图层 ${index + 1}`}><Trash2 size={14} /></button></div>
@@ -405,40 +407,6 @@ export function Inspector({
           </section>
         </div>
       </div>
-
-      <LibraryPicker
-        open={bgmPickerOpen}
-        onClose={() => setBgmPickerOpen(false)}
-        kind="bgm"
-        selected={config.bgm_files ?? []}
-        onConfirmBgm={(paths) => {
-          onChange("bgm_files", paths);
-          setBgmPickerOpen(false);
-        }}
-      />
-
-      <LibraryPicker
-        open={watermarkPickerOpen}
-        onClose={() => setWatermarkPickerOpen(false)}
-        kind="watermark"
-        onUseAsVideo={(item: LibraryItem) => {
-          onChange("watermark_path", item.path);
-          onChange("watermark_mode", "单文件");
-          onChange("use_watermark", true);
-          setWatermarkPickerOpen(false);
-        }}
-        onAddWatermarkLayers={(items: LibraryItem[]) => {
-          const next = [...config.watermark_layers];
-          for (const item of items) {
-            if (!next.some((layer) => layer.path === item.path)) {
-              next.push({ ...DEFAULT_WATERMARK_LAYER, path: item.path, enabled: true });
-            }
-          }
-          onChange("watermark_layers", next);
-          onChange("use_image_watermark", true);
-          setWatermarkPickerOpen(false);
-        }}
-      />
     </aside>
   );
 }

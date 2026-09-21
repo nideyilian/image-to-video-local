@@ -339,8 +339,8 @@ export function MaterialLibrary({ open, onClose, config, onChange, notify, onRev
   notify: (kind: "info" | "success" | "error", message: string) => void;
   onReveal: (path: string) => void;
   onExtractBusyChange?: (busy: boolean) => void;
-  /** 外部请求打开素材库时定位到的标签页（如检查器「在素材库配置」） */
-  requestTab?: "effect" | "transition" | null;
+  /** 外部请求打开素材库时定位到的标签页（如检查器「在素材库配置 / 从素材库选择」） */
+  requestTab?: "effect" | "transition" | "bgm" | "watermark" | null;
   onConsumeTabRequest?: () => void;
 }) {
   const [tab, setTab] = useState<LibraryTab>("bgm");

@@ -286,8 +286,8 @@ export default function App() {
   const [previewReadySequences, setPreviewReadySequences] = useState<Record<string, number>>({});
   const [inspectorTab, setInspectorTab] = useState<InspectorTabId>("basic");
   const [libraryOpen, setLibraryOpen] = useState(false);
-  // 从检查器「在素材库配置」跳转时指定打开的标签页
-  const [libraryTabRequest, setLibraryTabRequest] = useState<"effect" | "transition" | null>(null);
+  // 从检查器「在素材库配置 / 从素材库选择」跳转时指定打开的标签页
+  const [libraryTabRequest, setLibraryTabRequest] = useState<"effect" | "transition" | "bgm" | "watermark" | null>(null);
   const [extractBusy, setExtractBusy] = useState(false);
   const [presetOpen, setPresetOpen] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -679,8 +679,8 @@ export default function App() {
     }
   }, [activeWorkspace, showNotice, updateConfig]);
 
-  // 检查器「在素材库配置」→ 打开素材库并定位到对应标签页
-  const openLibraryTab = useCallback((tab: "effect" | "transition") => {
+  // 检查器「在素材库配置 / 从素材库选择」→ 打开素材库并定位到对应标签页
+  const openLibraryTab = useCallback((tab: "effect" | "transition" | "bgm" | "watermark") => {
     setLibraryTabRequest(tab);
     setLibraryOpen(true);
   }, []);  const browseFile = useCallback(async (key: keyof VideoConfig, layerIndex?: number) => {

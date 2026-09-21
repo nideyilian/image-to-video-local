@@ -17,6 +17,12 @@ jobs:
       - name: 检出源码
         uses: actions/checkout@v4
 
+      - name: 校验四处版本号一致
+        # VERSION / desktop/package.json / Cargo.toml / tauri.conf.json 必须同版本。
+        # 校验逻辑与 code-check.yml 共用同一个桌面脚本，避免两处规则漂移。
+        shell: pwsh
+        run: ./desktop/scripts/verify-versions.ps1
+
       - name: 校验标签与应用版本
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh

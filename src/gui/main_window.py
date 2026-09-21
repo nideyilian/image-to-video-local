@@ -41,6 +41,8 @@ from ..utils.transition_constants import (
     DEFAULT_ENABLED_TRANSITIONS,
     TRANSITION_DESCRIPTIONS
 )
+from ..engine.config import IMAGE_SELECTION_MODES, SUBFOLDER_SELECTION_MODE, scan_subfolders
+from ..utils.combination import combination_total, plan_combinations
 from ..utils.timeline import cycle_images_to_duration, timeline_slot_count
 
 # 导入主题和对话框
@@ -1002,6 +1004,10 @@ class ImageToVideoTab:
         
         # 创建UI
         self.create_widgets()
+        
+        # 「按子文件夹抽取」下每视频图片数由子文件夹个数决定，随选图方式切换启用状态
+        self.image_selection_mode.trace_add("write", self._sync_num_images_state)
+        self._sync_num_images_state()
         
         # 将加载的配置应用到UI
         self.apply_config_to_ui()
@@ -2103,7 +2109,8 @@ class ImageToVideoTab:
 
         # 左侧边栏：视频参数
         ttk.Label(left_panel, text="图片数:").grid(row=3, column=0, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
-        ttk.Spinbox(left_panel, from_=1, to=1000, textvariable=self.num_images, width=7).grid(row=3, column=1, sticky="w", padx=(0, pad_x), pady=pad_y)
+        self._num_images_spin_main = ttk.Spinbox(left_panel, from_=1, to=1000, textvariable=self.num_images, width=7)
+        self._num_images_spin_main.grid(row=3, column=1, sticky="w", padx=(0, pad_x), pady=pad_y)
         ttk.Label(left_panel, text="每图时长:").grid(row=3, column=2, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
         ttk.Spinbox(left_panel, from_=0.1, to=60.0, increment=0.1, textvariable=self.duration, width=7).grid(row=3, column=3, sticky="w", padx=(0, pad_x), pady=pad_y)
         ttk.Label(left_panel, text="FPS:").grid(row=3, column=4, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
@@ -2140,7 +2147,7 @@ class ImageToVideoTab:
         ttk.Label(left_panel, text="视频数:").grid(row=6, column=0, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
         ttk.Spinbox(left_panel, from_=1, to=1000000, textvariable=self.video_count, width=7).grid(row=6, column=1, sticky="w", padx=(0, pad_x), pady=pad_y)
         ttk.Label(left_panel, text="图片:").grid(row=6, column=2, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
-        ttk.Combobox(left_panel, textvariable=self.image_selection_mode, values=["随机选择", "按名称排序"], width=10, state="readonly").grid(
+        ttk.Combobox(left_panel, textvariable=self.image_selection_mode, values=list(IMAGE_SELECTION_MODES), width=10, state="readonly").grid(
             row=6, column=3, sticky="w", padx=(0, pad_x), pady=pad_y)
         ttk.Label(left_panel, text="总时长:").grid(row=6, column=4, sticky="e", padx=(pad_x, pad_x), pady=pad_y)
         ttk.Spinbox(left_panel, from_=0.0, to=86400.0, increment=0.1, textvariable=self.total_duration, width=7).grid(
@@ -2408,7 +2415,7 @@ class ImageToVideoTab:
         # 图片选择
         ttk.Label(row2_frame, text="图片选择").grid(row=0, column=8, sticky='w', padx=(0, 8))
         ttk.Combobox(row2_frame, textvariable=self.image_selection_mode,
-                     values=["随机选择", "按名称排序"], width=14, state="readonly").grid(
+                     values=list(IMAGE_SELECTION_MODES), width=14, state="readonly").grid(
                      row=0, column=9, sticky='w')
 
         # 第三行：单图视频特效
@@ -5484,6 +5491,22 @@ Turbo图片预处理 - 并行优化版本
         
         return watermark_files
             
+    def _sync_num_images_state(self, *_args):
+        """按选图方式启用/禁用「图片数」。
+
+        「按子文件夹抽取」下每视频图片数由子文件夹个数决定，该项不生效，
+        禁用掉避免用户以为改了有用。只切换控件状态，不动已保存的值：
+        切回其它选图方式后原值仍然有效。
+        """
+        widget = getattr(self, "_num_images_spin_main", None)
+        if widget is None:
+            return
+        state = "disabled" if self.image_selection_mode.get() == SUBFOLDER_SELECTION_MODE else "normal"
+        try:
+            widget.configure(state=state)
+        except tk.TclError:
+            pass
+
     def apply_config_from_dict(self, config_dict):
         """从字典直接应用配置"""
         try:
@@ -8227,14 +8250,42 @@ Turbo图片预处理 - 并行优化版本
             
             # 获取图片列表
             self.update_status(f"正在获取图片列表（模式：{selection_mode}）...")
-            all_images = self.get_images_list(input_dir, limit_count=None, selection_mode=selection_mode)
+            subfolder_groups: list[tuple[str, list[str]]] = []
+            if selection_mode == SUBFOLDER_SELECTION_MODE:
+                # 「按子文件夹抽取」：每个直接子文件夹出一张，按子文件夹名顺序组成一轮。
+                subfolder_groups, skipped_subfolders = scan_subfolders(input_dir)
+                if skipped_subfolders:
+                    self.update_status(
+                        f"以下子文件夹没有可用图片，已跳过：{'、'.join(skipped_subfolders)}"
+                    )
+                all_images = [image for _name, images in subfolder_groups for image in images]
+            else:
+                all_images = self.get_images_list(input_dir, limit_count=None, selection_mode=selection_mode)
             
             if not all_images:
-                self.update_status("目录中没有找到图片文件")
+                if selection_mode == SUBFOLDER_SELECTION_MODE:
+                    self.update_status("输入目录里没有包含图片的子文件夹，请放入形如 1、2、3 的子文件夹")
+                else:
+                    self.update_status("目录中没有找到图片文件")
                 return False
             
             # 检查图片数量
-            if selection_mode == "按名称排序":
+            if selection_mode == SUBFOLDER_SELECTION_MODE:
+                # 一轮 = 每个子文件夹一张，数量由子文件夹个数决定，与「图片数」无关。
+                combination_pool = combination_total([len(images) for _name, images in subfolder_groups])
+                self.update_status(
+                    f"{len(subfolder_groups)} 个子文件夹共可组成 {combination_pool} 种组合，将生成 {video_count} 个视频"
+                )
+                if len(subfolder_groups) < 2:
+                    self.update_status(
+                        f"提示：只找到 1 个子文件夹（{subfolder_groups[0][0]}），一轮只有 1 张图，循环后是静止画面"
+                    )
+                if video_count > combination_pool:
+                    self.update_status(
+                        f"组合数量不足：只有 {combination_pool} 种组合，需要 {video_count} 个视频；"
+                        f"超出部分会复用组合，且各组合出现次数最多相差 1 次"
+                    )
+            elif selection_mode == "按名称排序":
                 min_required = video_count * num_images
                 if len(all_images) < min_required:
                     self.update_status(f"图片数量不足，共有{len(all_images)}张，生成{video_count}个视频需要{min_required}张（每个{num_images}张）")
@@ -8259,6 +8310,14 @@ Turbo图片预处理 - 并行优化版本
             self.reset_overall_progress(video_count)
             self._maybe_realtime_cleanup(force=True)
             used_first_images = set()
+            # 组合计划一次性生成：跨视频统一去重，保证每个组合最多出现一次，
+            # 只有当视频数超过组合总数时才重复，且重复被摊平。
+            video_combinations: list[list[str]] = []
+            if selection_mode == SUBFOLDER_SELECTION_MODE:
+                video_combinations = plan_combinations(
+                    [images for _name, images in subfolder_groups],
+                    video_count,
+                )
             transition_plan = []
             if self.use_transition.get() and self.random_transition.get():
                 transition_plan = self._build_random_transition_plan(video_count)
@@ -8274,7 +8333,14 @@ Turbo图片预处理 - 并行优化版本
                 self.update_status(f"正在生成第{video_index + 1}个视频...")
                 
                 # 根据选择模式获取图片
-                if selection_mode == "按名称排序":
+                if selection_mode == SUBFOLDER_SELECTION_MODE:
+                    selected_images = list(video_combinations[video_index])
+                    picked_names = " / ".join(
+                        f"{name}:{os.path.basename(image)}"
+                        for (name, _images), image in zip(subfolder_groups, selected_images)
+                    )
+                    self.update_status(f"第{video_index + 1}个视频按子文件夹顺序抽取: {picked_names}")
+                elif selection_mode == "按名称排序":
                     start_index = video_index * num_images
                     selected_images = []
                     for i in range(num_images):

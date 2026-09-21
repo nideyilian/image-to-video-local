@@ -8,12 +8,19 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from src.utils.combination import combination_total
 from src.utils.transition_constants import GUI_TRANSITIONS
 from src.utils.timeline import timeline_slot_count
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+
+SUBFOLDER_SELECTION_MODE = "按子文件夹抽取"
+"""选图方式之一：每个直接子文件夹抽 1 张，按子文件夹名顺序组成一轮。"""
+
+IMAGE_SELECTION_MODES = ("随机选择", "按名称排序", SUBFOLDER_SELECTION_MODE)
+"""全部选图方式，界面下拉与后端判断共用，避免两侧文案不一致导致模式静默失效。"""
 
 DEFAULT_RESOLUTION_PRESETS = [
     "1280x720",
@@ -151,6 +158,18 @@ def normalize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     return config
 
 
+def natural_sort_key(value: str) -> list[Any]:
+    """把数字片段当整数比较，使 2 排在 10 前面（不补零的序号按直觉排列）。
+
+    非数字片段统一转小写后按字符比较；中文名按 Unicode 码点排序
+    （"一" 会排在 "三" 前面），如需其他顺序请改用「按名称排序」并自行编号。
+    """
+    return [
+        int(token) if token.isdigit() else token.lower()
+        for token in re.split(r"(\d+)", str(value))
+    ]
+
+
 def scan_images(input_dir: str, limit: int | None = None) -> list[str]:
     root = Path(str(input_dir or "").strip())
     if not root.is_dir():
@@ -160,10 +179,46 @@ def scan_images(input_dir: str, limit: int | None = None) -> list[str]:
         for path in root.rglob("*")
         if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
     ]
-    images.sort(key=lambda value: [int(token) if token.isdigit() else token.lower() for token in re.split(r"(\d+)", value)])
+    images.sort(key=natural_sort_key)
     if limit is not None:
         return images[: max(0, int(limit))]
     return images
+
+
+def scan_subfolders(input_dir: str) -> tuple[list[tuple[str, list[str]]], list[str]]:
+    """按直接子目录分组收集图片，供「按子文件夹抽取」使用。
+
+    只扫描目标文件夹的下一层，不递归；隐藏目录（以 "." 开头）直接跳过。
+
+    Returns:
+        ``(分组, 被跳过的子目录名)``。分组只包含有可用图片的子目录，
+        按目录名自然排序；每组内的图片路径同样按名称自然排序。
+        被跳过的子目录指"存在但里面没有支持的图片"，用于向用户提示。
+    """
+    root = Path(str(input_dir or "").strip())
+    if not root.is_dir():
+        return [], []
+    groups: list[tuple[str, list[str]]] = []
+    skipped: list[str] = []
+    for child in sorted(root.iterdir(), key=lambda path: natural_sort_key(path.name)):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        images = [
+            str(path.resolve())
+            for path in child.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        ]
+        if not images:
+            skipped.append(child.name)
+            continue
+        images.sort(key=natural_sort_key)
+        groups.append((child.name, images))
+    return groups, skipped
+
+
+def subfolder_combination_total(groups: list[tuple[str, list[str]]]) -> int:
+    """返回给定分组能组成的不重复组合总数（各组图片数之积）。"""
+    return combination_total([len(images) for _name, images in groups])
 
 
 def scan_audio_files(audio_dir: str) -> list[str]:
@@ -180,6 +235,23 @@ def scan_audio_files(audio_dir: str) -> list[str]:
 
 
 ValidationIssue = dict[str, str]
+
+
+def _subfolder_selection_issues(input_dir: str) -> list[ValidationIssue]:
+    """「按子文件夹抽取」的校验。
+
+    组合总数少于视频数不算错误：超出部分会复用组合，且重复次数被摊平。
+    这里只拦"一个能出图的子文件夹都没有"这种硬错误。
+    """
+    groups, skipped = scan_subfolders(input_dir)
+    if groups:
+        return []
+    detail = f"，其中 {len(skipped)} 个空文件夹" if skipped else ""
+    return [{
+        "field": "input_dir",
+        "section": "basic",
+        "message": f"输入目录里没有包含图片的子文件夹{detail}；请放入形如 1、2、3 的子文件夹，或改用其它选图方式。",
+    }]
 
 
 def validate_config_detailed(raw: dict[str, Any] | None, check_files: bool = True) -> list[ValidationIssue]:
@@ -234,7 +306,9 @@ def validate_config_detailed(raw: dict[str, Any] | None, check_files: bool = Tru
         total_duration = float(config.get("total_duration", 0))
     except (TypeError, ValueError):
         total_duration = -1.0
-    if num_images <= 0:
+    selection_mode = str(config.get("image_selection_mode", "随机选择"))
+    # 「按子文件夹抽取」的每视频图片数由子文件夹个数决定，该项被忽略，不参与校验。
+    if num_images <= 0 and selection_mode != SUBFOLDER_SELECTION_MODE:
         issues.append({"field": "num_images", "section": "basic", "message": "「图片数」需要大于 0，请把每个视频的图片数调到 1 张以上。"})
     if video_count <= 0:
         issues.append({"field": "video_count", "section": "basic", "message": "「视频数」需要大于 0，请至少导出 1 个视频。"})
@@ -246,11 +320,16 @@ def validate_config_detailed(raw: dict[str, Any] | None, check_files: bool = Tru
     if issues or not check_files:
         return issues
 
+    if selection_mode == SUBFOLDER_SELECTION_MODE:
+        # 该模式下图片放在子文件夹里，根目录本身可以没有图片，
+        # 因此先于通用图片数量检查返回。
+        return _subfolder_selection_issues(input_dir)
+
     image_count = len(scan_images(input_dir))
     if image_count == 0:
         return [{"field": "input_dir", "section": "basic", "message": "输入目录里没有图片，请先放入图片再导出"}]
 
-    if str(config.get("image_selection_mode", "随机选择")) == "按名称排序":
+    if selection_mode == "按名称排序":
         required = video_count * num_images
         if image_count < required:
             issues.append({

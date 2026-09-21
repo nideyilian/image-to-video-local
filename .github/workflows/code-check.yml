@@ -6,6 +6,19 @@ on:
     branches: [main]
 
 jobs:
+  version-consistency:
+    # README 要求 VERSION / package.json / Cargo.toml / tauri.conf.json 四处版本号同步。
+    # 漏改任何一处都不会报错，但会让安装包版本、Rust crate 版本与仓库记录对不上，
+    # 只在事后倒查时才暴露（历史上漏过 Cargo.toml）。校验脚本与发布流程共用。
+    runs-on: windows-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 校验四处版本号一致
+        shell: pwsh
+        run: ./desktop/scripts/verify-versions.ps1
+
   python-tests:
     runs-on: windows-latest
     steps:

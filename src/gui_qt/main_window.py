@@ -58,6 +58,7 @@ from src.utils.transition_constants import (
     DEFAULT_ENABLED_TRANSITIONS,
     TRANSITION_DESCRIPTIONS,
 )
+from src.engine.config import IMAGE_SELECTION_MODES, SUBFOLDER_SELECTION_MODE, scan_subfolders
 from src.utils.timeline import timeline_slot_count
 from src.core.transition_engine import get_turbo_transition_engine
 
@@ -628,7 +629,7 @@ class QtMainWindow(QMainWindow):
         self.bitrate_spin.setValue(2000)
         self.bitrate_spin.setSingleStep(500)
         self.image_selection_combo = QComboBox()
-        self.image_selection_combo.addItems(["随机选择", "按名称排序"])
+        self.image_selection_combo.addItems(list(IMAGE_SELECTION_MODES))
 
         grid.addWidget(QLabel("图片数"), 0, 0)
         grid.addWidget(self.num_images_spin, 0, 1)
@@ -2806,6 +2807,12 @@ class QtMainWindow(QMainWindow):
         target_w, target_h = self._preview_target_size()
         if not input_dir or not os.path.isdir(input_dir):
             return f"invalid|{mode}|{target_w}x{target_h}"
+        if mode == SUBFOLDER_SELECTION_MODE:
+            groups, _skipped = scan_subfolders(input_dir)
+            signature = "|".join(
+                f"{name}/{os.path.basename(images[0])}" for name, images in groups[:32]
+            )
+            return f"{input_dir}|{mode}|{target_w}x{target_h}|{len(groups)}|{signature}"
         files = []
         latest_mtime = 0.0
         for name in os.listdir(input_dir):
@@ -3382,9 +3389,20 @@ class QtMainWindow(QMainWindow):
         except Exception:
             return None
 
+    def _sync_num_images_state(self, *_args) -> None:
+        """「按子文件夹抽取」下每视频图片数由子文件夹个数决定，禁用该项避免误导。
+
+        只切换可用状态，不改动已保存的值：切回其它选图方式后原值仍然有效。
+        """
+        self.num_images_spin.setEnabled(
+            self.image_selection_combo.currentText() != SUBFOLDER_SELECTION_MODE
+        )
+
     def _wire_preview_dependencies(self) -> None:
         self.input_dir_edit.textChanged.connect(self._invalidate_preview_cache)
         self.image_selection_combo.currentTextChanged.connect(self._invalidate_preview_cache)
+        self.image_selection_combo.currentTextChanged.connect(self._sync_num_images_state)
+        self._sync_num_images_state()
         self.num_images_spin.valueChanged.connect(self._invalidate_preview_cache)
         self.fps_spin.valueChanged.connect(self._on_preview_fps_changed)
         self.use_effect_check.stateChanged.connect(self._on_preview_setting_changed)
@@ -3575,20 +3593,25 @@ class QtMainWindow(QMainWindow):
             return []
 
         input_dir = self.input_dir_edit.text().strip()
+        mode = self.image_selection_combo.currentText()
 
         image_paths: List[str] = []
-        for name in os.listdir(input_dir):
-            lower = name.lower()
-            if lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".bmp")):
-                image_paths.append(os.path.join(input_dir, name))
+        if mode == SUBFOLDER_SELECTION_MODE:
+            # 预览取每个子文件夹的首图，顺序即导出时的轮播顺序。
+            groups, _skipped = scan_subfolders(input_dir)
+            image_paths = [images[0] for _name, images in groups]
+        else:
+            for name in os.listdir(input_dir):
+                lower = name.lower()
+                if lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".bmp")):
+                    image_paths.append(os.path.join(input_dir, name))
         if not image_paths:
             self._set_status("预览失败：目录中没有图片")
             return []
 
-        mode = self.image_selection_combo.currentText()
         if mode == "按名称排序":
             image_paths = sorted(image_paths)
-        else:
+        elif mode != SUBFOLDER_SELECTION_MODE:
             random.shuffle(image_paths)
         image_paths = image_paths[: min(8, len(image_paths))]
 

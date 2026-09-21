@@ -69,3 +69,9 @@ desktop/tsc-out.txt
 desktop/_gen_err.txt
 desktop/_gen_out.txt
 releases/
+
+# Agent workspace memory & scratch captures (local only)
+.workbuddy/
+app_screenshot.png
+screen_shot.png
+temp_*.mp4
