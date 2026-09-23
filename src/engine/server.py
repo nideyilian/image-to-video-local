@@ -16,7 +16,16 @@ from pathlib import Path
 from typing import Any
 
 from ..utils.ffmpeg_runtime import configure_ffmpeg_environment, probe_ffmpeg
-from .config import build_default_config, normalize_config, scan_audio_files, scan_images, validate_config, validate_config_detailed
+from .config import (
+    build_default_config,
+    normalize_config,
+    scan_audio_files,
+    scan_images,
+    scan_subfolders,
+    subfolder_combination_total,
+    validate_config,
+    validate_config_detailed,
+)
 from .library import LibraryManager
 from .preview_random import preview_choice, preview_sample
 from .runner import JobManager
@@ -135,6 +144,8 @@ class EngineServer:
                     for path in images
                 ],
             }
+        if method == "scan_subfolder_groups":
+            return self._scan_subfolder_groups(params)
         if method == "preview_thumbnail":
             return self._preview_thumbnail(params)
         if method == "preview_effect_frame":
@@ -260,6 +271,43 @@ class EngineServer:
             "collected": collected,
             "before_mb": round(before, 1),
             "after_mb": round(after, 1),
+        }
+
+    def _scan_subfolder_groups(self, params: dict[str, Any]) -> dict[str, Any]:
+        """「按子文件夹抽取」的扫描结果：每个子文件夹的图片数 + 首图。
+
+        导出时每个子文件夹出一张、按文件夹名顺序排一轮（见 render/job.py），
+        预览必须用同一套取图逻辑，否则画面与成片对不上。
+
+        ``preview_sequence`` 为「换一组看看」的轮次：只换每个子文件夹里抽哪一张，
+        分组顺序与张数保持稳定。
+        """
+        input_dir = str(params.get("input_dir", "") or "").strip()
+        groups, skipped = scan_subfolders(input_dir)
+        try:
+            sequence = int(params.get("preview_sequence", 0) or 0)
+        except (TypeError, ValueError):
+            sequence = 0
+
+        picked: list[str] = []
+        for name, images in groups:
+            candidate = preview_choice(images, sequence, f"subfolder::{name}") if sequence > 0 else None
+            picked.append(candidate or images[0])
+
+        return {
+            "count": sum(len(images) for _name, images in groups),
+            "groups": [
+                {
+                    "name": name,
+                    "count": len(images),
+                    "first_path": images[0],
+                    "first_name": Path(images[0]).name,
+                }
+                for name, images in groups
+            ],
+            "images": [{"path": path, "name": Path(path).name} for path in picked],
+            "skipped": skipped,
+            "combination_total": subfolder_combination_total(groups),
         }
 
     def _preview_thumbnail(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -571,7 +619,10 @@ class EngineServer:
 
 
 def _run_legacy_worker(argv: list[str]) -> int:
-    from src.gui_qt.tk_bridge_runner import main as bridge_main
+    # 打包版引擎以 ``exe --legacy-worker`` 复用自身作为渲染子进程。
+    # 走无界面 worker（src.render.worker），与源码模式、main_qt.py 保持一致；
+    # 旧路径 src.gui_qt.tk_bridge_runner 需要 tkinter 与 Tk 控件，已不适用。
+    from src.render.worker import main as bridge_main
 
     previous = sys.argv
     try:

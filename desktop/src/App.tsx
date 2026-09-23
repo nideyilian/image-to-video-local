@@ -19,13 +19,14 @@ import {
   Terminal,
   X,
 } from "lucide-react";
-import { FALLBACK_CONFIG } from "./constants";
+import { FALLBACK_CONFIG, SUBFOLDER_SELECTION_MODE } from "./constants";
 import { engine } from "./engine";
 import { Inspector, type InspectorTabId } from "./components/Inspector";
 import { JobManifest } from "./components/JobManifest";
 import { PreviewStage } from "./components/PreviewStage";
 import { UpdateCenter } from "./components/UpdateCenter";
 import { WorkspaceRail } from "./components/WorkspaceRail";
+import { applyDurationLink, imagesPerVideo, manualDurationPatch } from "./utils/durationLink";
 import { applyPresetToConfig, duplicateWorkspaceList, moveCutWorkspaceList, reorderWorkspaceList } from "./utils/workspaceOps";
 
 // 弹窗类组件按需加载，缩小首屏包体
@@ -38,6 +39,7 @@ import type {
   JobState,
   LogEntry,
   PreviewAsset,
+  SubfolderScan,
   SystemSnapshot,
   ValidationIssue,
   VideoConfig,
@@ -187,7 +189,9 @@ function previewSyncKey(workspace: Workspace, previewSequence = 0) {
   ]);
 }
 
-function makeQueuedJob(workspace: Workspace, demo = false): JobState {
+function makeQueuedJob(workspace: Workspace, demo = false, perVideoImages?: number): JobState {
+  // 子文件夹模式下每视频张数由子文件夹个数决定，摘要不能再用「图片数」
+  const imageCount = perVideoImages && perVideoImages > 0 ? perVideoImages : workspace.config.num_images;
   return {
     job_id: uuid(),
     workspaceId: workspace.id,
@@ -203,7 +207,7 @@ function makeQueuedJob(workspace: Workspace, demo = false): JobState {
     finished_at: null,
     return_code: null,
     outputPath: workspace.config.output_dir,
-    configSummary: `${workspace.config.resolution_preset} · ${workspace.config.fps} fps · ${workspace.config.num_images} 图 · ${workspace.config.total_duration > 0 ? `${workspace.config.total_duration} 秒/条` : "自动时长"} × ${workspace.config.video_count} 条`,
+    configSummary: `${workspace.config.resolution_preset} · ${workspace.config.fps} fps · ${imageCount} 图 · ${workspace.config.total_duration > 0 ? `${workspace.config.total_duration} 秒/条` : "自动时长"} × ${workspace.config.video_count} 条`,
     demo,
   };
 }
@@ -284,6 +288,8 @@ export default function App() {
   const [previewFocused, setPreviewFocused] = useState(false);
   const [previewSequences, setPreviewSequences] = useState<Record<string, number>>({});
   const [previewReadySequences, setPreviewReadySequences] = useState<Record<string, number>>({});
+  // 「按子文件夹抽取」的扫描明细（子文件夹名 + 各组图片数），与 preview 一样属于临时数据，不落盘
+  const [subfolderScans, setSubfolderScans] = useState<Record<string, SubfolderScan>>({});
   const [inspectorTab, setInspectorTab] = useState<InspectorTabId>("basic");
   const [libraryOpen, setLibraryOpen] = useState(false);
   // 从检查器「在素材库配置 / 从素材库选择」跳转时指定打开的标签页
@@ -532,20 +538,35 @@ export default function App() {
     if (key === "input_dir") {
       setPreviewSequences((current) => ({ ...current, [activeId]: 0 }));
       setPreviewReadySequences((current) => ({ ...current, [activeId]: 0 }));
+      setSubfolderScans((current) => {
+        if (!(activeId in current)) return current;
+        const next = { ...current };
+        delete next[activeId];
+        return next;
+      });
     }
     setWorkspaces((current) => current.map((workspace) => {
       if (workspace.id !== activeId) return workspace;
       let preview = workspace.preview;
       if (key === "input_dir" || key === "image_selection_mode") {
         preview = null;
-      } else if (key === "num_images" && workspace.preview) {
+      } else if (key === "num_images" && workspace.preview && workspace.config.image_selection_mode !== SUBFOLDER_SELECTION_MODE) {
+        // 子文件夹模式的预览帧来自各子文件夹首图，不该被「图片数」截断
         const limit = Math.max(0, Math.trunc(Number(value) || 0));
         const frames = workspace.preview.frames.slice(0, limit);
         preview = frames.length ? { ...frames[0], frames } : null;
       }
+      let config = { ...workspace.config, [key]: value } as VideoConfig;
+      if (key === "duration") {
+        // 手改单图时长即表示放弃总时长，否则两者互相打回。
+        if (Number(config.total_duration) > 0) config = { ...config, ...manualDurationPatch() };
+      } else if (key === "total_duration" || key === "num_images" || key === "image_selection_mode") {
+        const linked = applyDurationLink(config, subfolderScans[workspace.id]);
+        if (linked.changed) config = { ...config, duration: linked.duration };
+      }
       return {
         ...workspace,
-        config: { ...workspace.config, [key]: value },
+        config,
         preview,
         imageCount: key === "input_dir" ? null : workspace.imageCount,
         validationErrors: [],
@@ -553,7 +574,7 @@ export default function App() {
         dirty: true,
       };
     }));
-  }, [activeId]);
+  }, [activeId, subfolderScans]);
 
   const refreshPreview = useCallback(async (workspace: Workspace, announce = true, previewSequence = 0) => {
     const requestKey = previewSyncKey(workspace, previewSequence);
@@ -563,22 +584,53 @@ export default function App() {
       if (announce) showNotice("error", "请先选择「输入目录」（存放图片的文件夹），再开始导出。");
       return;
     }
+    const subfolderMode = workspace.config.image_selection_mode === SUBFOLDER_SELECTION_MODE;
     const previewLimit = Math.max(0, Math.trunc(Number(workspace.config.num_images) || 0));
-    if (!previewLimit) {
+    // 子文件夹模式下每个视频的图片数由子文件夹个数决定，「图片数」不参与取图，因此不该拦预览。
+    if (!subfolderMode && !previewLimit) {
       patchWorkspace(workspace.id, { preview: null, validationErrors: ["「图片数」需要大于 0，请把每个视频的图片数调到 1 张以上。"], validationIssues: [{ field: "num_images", section: "basic", message: "「图片数」需要大于 0，请把每个视频的图片数调到 1 张以上。" }] });
       if (announce) showNotice("error", "「图片数」需要大于 0，请把每个视频的图片数调到 1 张以上。");
       return;
     }
     setPreviewLoading(true);
     try {
-      const scan = await engine.call<{ count: number; images: Array<{ path: string; name: string }> }>("scan_images", {
-        input_dir: workspace.config.input_dir,
-        limit: previewLimit,
-        preview_sequence: previewSequence,
-      }, 30_000);
+      let images: Array<{ path: string; name: string }> = [];
+      let imageCount = 0;
+      let subfolderScan: SubfolderScan | null = null;
+      if (subfolderMode) {
+        // 与导出同源：每个子文件夹出一张、按文件夹名顺序，预览画面才和成片对得上。
+        const result = await engine.call<{
+          count: number;
+          groups: Array<{ name: string; count: number; first_path: string; first_name: string }>;
+          images: Array<{ path: string; name: string }>;
+          skipped: string[];
+          combination_total: number;
+        }>("scan_subfolder_groups", { input_dir: workspace.config.input_dir, preview_sequence: previewSequence }, 30_000);
+        subfolderScan = {
+          count: result.count,
+          groups: (result.groups ?? []).map((group) => ({
+            name: group.name,
+            count: group.count,
+            firstPath: group.first_path,
+            firstName: group.first_name,
+          })),
+          skipped: result.skipped ?? [],
+          combinationTotal: result.combination_total ?? 0,
+        };
+        imageCount = result.count;
+        images = result.images ?? [];
+      } else {
+        const result = await engine.call<{ count: number; images: Array<{ path: string; name: string }> }>("scan_images", {
+          input_dir: workspace.config.input_dir,
+          limit: previewLimit,
+          preview_sequence: previewSequence,
+        }, 30_000);
+        imageCount = result.count;
+        images = result.images ?? [];
+      }
       let preview: Workspace["preview"] = null;
-      if (scan.count > 0) {
-        const results = await Promise.all(scan.images.map(({ path }) => engine.call<{ source: string; preview_path: string; width: number; height: number }>("preview_thumbnail", { path }, 30_000)));
+      if (images.length) {
+        const results = await Promise.all(images.map(({ path }) => engine.call<{ source: string; preview_path: string; width: number; height: number }>("preview_thumbnail", { path }, 30_000)));
         const frames = results.map((result) => ({
           source: result.source,
           previewPath: result.preview_path,
@@ -589,11 +641,36 @@ export default function App() {
         preview = frames.length ? { ...frames[0], frames } : null;
       }
       if (latestPreviewKey.current !== requestKey) return;
-      patchWorkspace(workspace.id, { imageCount: scan.count, preview, validationErrors: scan.count ? [] : ["输入目录里没有可用图片"], validationIssues: scan.count ? [] : [{ field: "input_dir", section: "basic", message: "输入目录里没有可用图片" }] });
-      if (scan.count > 0) {
+      setSubfolderScans((current) => {
+        if (subfolderScan) return { ...current, [workspace.id]: subfolderScan };
+        if (!(workspace.id in current)) return current;
+        const next = { ...current };
+        delete next[workspace.id];
+        return next;
+      });
+      // 扫描完成后子文件夹个数可能变了，同步「总时长 → 单图时长」的自动结果。
+      const linked = applyDurationLink(workspace.config, subfolderScan);
+      const emptyMessage = subfolderMode ? "输入目录里没有包含图片的子文件夹" : "输入目录里没有可用图片";
+      patchWorkspace(workspace.id, {
+        imageCount,
+        preview,
+        validationErrors: imageCount ? [] : [emptyMessage],
+        validationIssues: imageCount ? [] : [{ field: "input_dir", section: "basic", message: emptyMessage }],
+      });
+      if (linked.changed) {
+        // 只回写 duration：扫描期间用户可能改了别的参数，整体覆盖 config 会把它们冲掉
+        setWorkspaces((current) => current.map((item) => item.id === workspace.id
+          ? { ...item, config: { ...item.config, duration: linked.duration } }
+          : item));
+      }
+      if (imageCount > 0) {
         setPreviewReadySequences((current) => ({ ...current, [workspace.id]: previewSequence }));
       }
-      if (announce) showNotice(scan.count ? "success" : "error", scan.count ? `已读取 ${scan.count} 张图片` : "目录中没有可用图片");
+      if (announce) {
+        if (!imageCount) showNotice("error", subfolderMode ? "目录中没有包含图片的子文件夹" : "目录中没有可用图片");
+        else if (subfolderScan) showNotice("success", `已读取 ${subfolderScan.groups.length} 个子文件夹、共 ${imageCount} 张图片`);
+        else showNotice("success", `已读取 ${imageCount} 张图片`);
+      }
     } catch (error) {
       if (latestPreviewKey.current !== requestKey) return;
       const message = error instanceof Error ? error.message : "读取预览失败";
@@ -608,7 +685,11 @@ export default function App() {
     if (!activeWorkspace) return;
     const requestKey = previewSyncKey(activeWorkspace, activePreviewSequence);
     latestPreviewKey.current = requestKey;
-    if (!ready || demoMode || !engineState.connected || !activeWorkspace.config.input_dir || activeWorkspace.config.num_images <= 0) {
+    // 子文件夹模式下不依赖「图片数」，否则该栏被禁用时预览会被静默拦掉。
+    const blocked = activeWorkspace.config.image_selection_mode === SUBFOLDER_SELECTION_MODE
+      ? false
+      : activeWorkspace.config.num_images <= 0;
+    if (!ready || demoMode || !engineState.connected || !activeWorkspace.config.input_dir || blocked) {
       setPreviewLoading(false);
       return;
     }
@@ -744,7 +825,7 @@ export default function App() {
       try {
         const validation = await validateWorkspace(workspace);
         if (validation.valid) {
-          const job = makeQueuedJob(workspace);
+          const job = makeQueuedJob(workspace, false, imagesPerVideo(workspace.config, subfolderScans[workspace.id]));
           accepted.push({ workspace, job });
           queuedWorkspaces.current.set(job.job_id, workspace);
         }
@@ -761,7 +842,7 @@ export default function App() {
     });
     showNotice("success", `已加入 ${accepted.length} 个渲染任务`);
     window.setTimeout(() => pumpQueueRef.current(), 0);
-  }, [engineState.connected, patchWorkspace, showNotice, validateWorkspace]);
+  }, [engineState.connected, patchWorkspace, showNotice, validateWorkspace, subfolderScans]);
 
   const controlJob = useCallback(async (method: "pause_job" | "resume_job" | "cancel_job", id: string) => {
     const local = jobsRef.current.find((job) => job.job_id === id);
@@ -1125,6 +1206,7 @@ export default function App() {
           onActiveTabChange={setInspectorTab}
           validationIssues={activeWorkspace.validationIssues}
           onOpenLibraryTab={openLibraryTab}
+          subfolderScan={subfolderScans[activeWorkspace.id] ?? null}
         />
       </main>
 

@@ -171,7 +171,7 @@ class JobManager:
         return [
             sys.executable,
             "-m",
-            "src.gui_qt.tk_bridge_runner",
+            "src.render.worker",
             "--config",
             str(config_path),
             "--control",

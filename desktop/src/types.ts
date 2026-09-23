@@ -73,6 +73,21 @@ export type PreviewAsset = PreviewFrame & {
   frames: PreviewFrame[];
 };
 
+export type SubfolderGroup = {
+  name: string;
+  count: number;
+  firstPath: string;
+  firstName: string;
+};
+
+/** 「按子文件夹抽取」的一次扫描结果：分组明细 + 跳过提示 + 可组合总数。 */
+export type SubfolderScan = {
+  count: number;
+  groups: SubfolderGroup[];
+  skipped: string[];
+  combinationTotal: number;
+};
+
 export type ValidationIssue = {
   field: string;
   section: string;

@@ -20,7 +20,7 @@ def _run_bridge_worker_from_args(argv):
     if "--qt-bridge-worker" not in argv:
         return -1
     try:
-        from gui_qt.tk_bridge_runner import main as bridge_main
+        from src.render.worker import main as bridge_main
     except Exception as exc:
         print(f"[ERROR] Qt bridge worker 启动失败: {exc}")
         return 2

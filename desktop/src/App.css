@@ -4802,6 +4802,87 @@ body.is-marquee-active {
   line-height: 1.5;
 }
 
+/* 「按子文件夹抽取」的分组明细（检查器） */
+.subfolder-breakdown {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.subfolder-breakdown-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.subfolder-breakdown-head > span:first-child {
+  display: grid;
+  gap: 1px;
+}
+
+.subfolder-breakdown-head small {
+  color: var(--faint);
+  font-size: 9px;
+  letter-spacing: .1em;
+}
+
+.subfolder-breakdown-head strong {
+  font-size: 11px;
+}
+
+.subfolder-combination {
+  flex: 0 0 auto;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.subfolder-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.subfolder-chips li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 7px;
+  color: var(--blue);
+  font-size: 10px;
+  background: var(--blue-soft);
+  border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--line));
+  border-radius: 999px;
+}
+
+.subfolder-chips li > span {
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subfolder-chips li > em {
+  color: var(--faint);
+  font-style: normal;
+}
+
+.subfolder-hint,
+.subfolder-skipped {
+  margin: 0;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 /* BGM 选择器弹窗 */
 .library-picker-dialog {
   display: grid;

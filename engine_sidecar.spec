@@ -3,14 +3,12 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy
 
 
 datas = [("config", "config"), ("src", "src")]
+# 渲染内核已与 Tkinter 解耦：无界面 sidecar 不再需要 Tk / ImageTk
 hiddenimports = [
-    "tkinter",
-    "tkinter.ttk",
     "cv2",
     "numpy",
     "PIL",
     "PIL.Image",
-    "PIL.ImageTk",
     "psutil",
     "tqdm",
     "moviepy",

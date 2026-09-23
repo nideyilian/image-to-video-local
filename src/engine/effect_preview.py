@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 
+from ..render import effects as _effects
 from ..utils.opencv_silent import import_cv2_silent
 from .config import build_default_config, normalize_config, scan_images
 from .preview_random import preview_choice
@@ -335,34 +336,6 @@ def _clear_video_watermark_reader_cache() -> None:
 atexit.register(_clear_video_watermark_reader_cache)
 
 
-class _LegacyEffectAdapter:
-    """Provide only the methods used by ImageToVideoTab's stateless renderer."""
-
-    @staticmethod
-    def _center_crop(img: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
-        h, w = img.shape[:2]
-        if h < target_height or w < target_width:
-            return cv2.resize(img, (target_width, target_height))
-        x_start = max((w - target_width) // 2, 0)
-        y_start = max((h - target_height) // 2, 0)
-        return img[y_start:y_start + target_height, x_start:x_start + target_width]
-
-    def apply_single_image_effect(
-        self,
-        img: np.ndarray,
-        effect_type: str,
-        time_sec: float,
-        duration_sec: float,
-        intensity: float = 100.0,
-        speed: float = 1.0,
-    ) -> np.ndarray:
-        from ..gui.main_window import ImageToVideoTab
-
-        return ImageToVideoTab.apply_single_image_effect(
-            self, img, effect_type, time_sec, duration_sec, intensity, speed
-        )
-
-
 def _read_image(path: Path) -> np.ndarray:
     data = np.fromfile(str(path), dtype=np.uint8)
     image = cv2.imdecode(data, cv2.IMREAD_COLOR)
@@ -406,8 +379,8 @@ def render_effect_frame(
     intensity: float,
     speed: float,
 ) -> np.ndarray:
-    """Apply the production ImageToVideoTab effect without constructing Tk widgets."""
-    return _LegacyEffectAdapter().apply_single_image_effect(
+    """Apply the production effect renderer from the headless render core."""
+    return _effects.apply_single_image_effect(
         image, effect_type, time_sec, duration_sec, intensity, speed
     )
 

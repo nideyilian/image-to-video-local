@@ -30,6 +30,8 @@ export const BLEND_MODES = ["正常", "滤色", "叠加", "正片叠底", "变�
 export const WATERMARK_POSITIONS = ["左上", "右上", "左下", "右下", "中心"];
 export const WATERMARK_SIZE_MODES = ["固定比例", "自适应覆盖", "完全覆盖"];
 
+export const SUBFOLDER_SELECTION_MODE = "按子文件夹抽取";
+
 export const DEFAULT_WATERMARK_LAYER: WatermarkLayer = {
   enabled: true,
   path: "",

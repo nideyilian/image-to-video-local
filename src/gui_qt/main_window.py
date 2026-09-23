@@ -2448,9 +2448,11 @@ class QtMainWindow(QMainWindow):
                 ["--qt-bridge-worker", "--config", state["worker_config_file"], "--control", state["control_file"]]
             )
         else:
-            runner = os.path.join(os.path.dirname(__file__), "tk_bridge_runner.py")
+            # 无界面渲染内核（不再是 Tk 桥接器）
+            process.setWorkingDirectory(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
             process.setProgram(sys.executable)
-            process.setArguments([runner, "--config", state["worker_config_file"], "--control", state["control_file"]])
+            process.setArguments(["-m", "src.render.worker", "--config", state["worker_config_file"],
+                                  "--control", state["control_file"]])
         process.readyReadStandardOutput.connect(lambda idx=tab_index, p=process: self._on_worker_stdout(idx, p))
         process.readyReadStandardError.connect(lambda idx=tab_index, p=process: self._on_worker_stderr(idx, p))
         process.finished.connect(lambda exit_code, status, idx=tab_index, p=process: self._on_worker_finished(idx, p, exit_code, status))

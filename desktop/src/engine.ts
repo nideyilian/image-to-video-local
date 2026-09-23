@@ -182,6 +182,9 @@ export class EngineBridge {
       return { valid: issues.length === 0, issues } as T;
     }
     if (method === "scan_images") return { count: 0, images: [] } as T;
+    if (method === "scan_subfolder_groups") {
+      return { count: 0, groups: [], images: [], skipped: [], combination_total: 0 } as T;
+    }
     if (method === "library_dirs") {
       return { library_root: "", bgm_dir: "", watermark_dir: "" } as T;
     }

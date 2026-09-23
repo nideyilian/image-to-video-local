@@ -4,12 +4,13 @@ import {
   BLEND_MODES,
   DEFAULT_RESOLUTION_PRESETS,
   DEFAULT_WATERMARK_LAYER,
+  SUBFOLDER_SELECTION_MODE,
   TRANSITIONS,
   VIDEO_EFFECTS,
   WATERMARK_POSITIONS,
   WATERMARK_SIZE_MODES,
 } from "../constants";
-import type { ValidationIssue, VideoConfig, WatermarkLayer } from "../types";
+import type { SubfolderScan, ValidationIssue, VideoConfig, WatermarkLayer } from "../types";
 import { Field, PathField } from "./Controls";
 
 type ConfigKey = keyof VideoConfig;
@@ -189,6 +190,7 @@ export function Inspector({
   onActiveTabChange,
   validationIssues,
   onOpenLibraryTab,
+  subfolderScan,
 }: {
   config: VideoConfig;
   onChange: <K extends ConfigKey>(key: K, value: VideoConfig[K]) => void;
@@ -198,10 +200,15 @@ export function Inspector({
   onActiveTabChange: (tab: InspectorTabId) => void;
   validationIssues: ValidationIssue[];
   onOpenLibraryTab: (tab: "effect" | "transition" | "bgm" | "watermark") => void;
+  /** 「按子文件夹抽取」的扫描明细；其它选图方式或尚未读取时为 null */
+  subfolderScan: SubfolderScan | null;
 }) {
   const [layerPage, setLayerPage] = useState(0);
-  // 「按子文件夹抽取」下每视频图片数由子文件夹个数决定，该项不生效
-  const subfolderPicked = config.image_selection_mode === "按子文件夹抽取";
+  // 「按子文件夹抽取」下每个视频的图片数由子文件夹个数决定，「图片数」这一栏不参与计算
+  const subfolderPicked = config.image_selection_mode === SUBFOLDER_SELECTION_MODE;
+  const subfolderGroups = subfolderScan?.groups ?? [];
+  const subfolderCount = subfolderGroups.length;
+  const numImagesValue = subfolderPicked ? subfolderCount : config.num_images;
 
   const updateLayer = (index: number, patch: Partial<WatermarkLayer>) => {
     const next = config.watermark_layers.map((layer, layerIndex) => layerIndex === index ? { ...layer, ...patch } : layer);
@@ -288,9 +295,9 @@ export function Inspector({
             <PathField label="输出目录" name="output_dir" value={config.output_dir} placeholder="选择视频输出目录" onChange={(value) => onChange("output_dir", value)} onBrowse={() => onBrowseDirectory("output_dir")} />
           </div>
           <div className="parameter-grid parameter-grid-basic">
-            <Field label="图片数" name="num_images" hint={subfolderPicked ? "由子文件夹个数决定" : undefined}><input type="number" min={1} max={1000} value={config.num_images} aria-label="每视频图片数" disabled={subfolderPicked} onChange={(event) => onChange("num_images", Number(event.target.value))} /></Field>
-            <Field label="单图时长 · 秒" name="duration"><input type="number" min={0.1} max={120} step={0.1} value={config.duration} aria-label="每张图片时长（秒）" onChange={(event) => onChange("duration", Number(event.target.value))} /></Field>
-            <Field label="总时长 · 秒" name="total_duration"><input type="number" min={0} max={86400} step={0.1} value={config.total_duration} aria-label="视频总时长（秒，0 表示自动）" title="0 表示按图片数自动计算" onChange={(event) => onChange("total_duration", Number(event.target.value))} /></Field>
+            <Field label="图片数" name="num_images" hint={subfolderPicked ? "由子文件夹个数决定" : undefined}><input type="number" min={1} max={1000} value={subfolderPicked && !subfolderCount ? "" : numImagesValue} aria-label="每视频图片数" title={subfolderPicked ? "按子文件夹抽取时，每个视频的图片数 = 子文件夹个数" : undefined} disabled={subfolderPicked} onChange={(event) => onChange("num_images", Number(event.target.value))} /></Field>
+            <Field label="单图时长 · 秒" name="duration" hint={config.total_duration > 0 ? "由总时长自动换算" : undefined}><input type="number" min={0.1} max={120} step={0.1} value={config.duration} aria-label="每张图片时长（秒）" title={config.total_duration > 0 ? `总时长 ${config.total_duration} 秒 ÷ ${numImagesValue || 1} 张` : undefined} onChange={(event) => onChange("duration", Number(event.target.value))} /></Field>
+            <Field label="总时长 · 秒" name="total_duration" hint={config.total_duration > 0 ? "已按图片数自动分配每张时长" : undefined}><input type="number" min={0} max={86400} step={0.1} value={config.total_duration} aria-label="视频总时长（秒，0 表示自动）" title="填入后自动计算每张图片时长（总时长 ÷ 图片数）；0 表示按单图时长自动" onChange={(event) => onChange("total_duration", Number(event.target.value))} /></Field>
             <Field label="视频数" name="video_count"><input type="number" min={1} max={1000000} value={config.video_count} aria-label="视频数量" onChange={(event) => onChange("video_count", Number(event.target.value))} /></Field>
             <Field label="FPS" name="fps"><input type="number" min={1} max={120} value={config.fps} aria-label="帧率" onChange={(event) => onChange("fps", Number(event.target.value))} /></Field>
             <ResolutionField config={config} onChange={onChange} />
@@ -300,6 +307,30 @@ export function Inspector({
             <Field label="选图方式"><select value={config.image_selection_mode} onChange={(event) => onChange("image_selection_mode", event.target.value)}><option>随机选择</option><option>按名称排序</option><option>按子文件夹抽取</option></select></Field>
             <Checkbox label="保持画面比例" checked={config.keep_aspect_ratio} onChange={(value) => onChange("keep_aspect_ratio", value)} />
           </div>
+
+          {subfolderPicked ? (
+            <div className="subfolder-breakdown" data-field="subfolder_breakdown">
+              <div className="subfolder-breakdown-head">
+                <span><small>各子文件夹</small><strong>{subfolderCount ? `${subfolderCount} 个文件夹 · 共 ${subfolderScan?.count ?? 0} 张` : "尚未读取"}</strong></span>
+                {subfolderCount > 1 ? <span className="subfolder-combination">可组成 {subfolderScan?.combinationTotal ?? 0} 种组合</span> : null}
+              </div>
+              {subfolderCount ? (
+                <ul className="subfolder-chips">
+                  {subfolderGroups.map((group) => (
+                    <li key={group.name}>
+                      <span title={`${group.name} · 首个文件 ${group.firstName}`}>{group.name}</span>
+                      <em>{group.count} 张</em>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="subfolder-hint">选择「输入目录」后会自动读取各子文件夹的图片数；每个视频从每个子文件夹取 1 张。</p>
+              )}
+              {subfolderScan?.skipped?.length ? (
+                <p className="subfolder-skipped">已跳过没有图片的子文件夹：{subfolderScan.skipped.join("、")}</p>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="inspector-section-divider" />
           <div className="basic-mode-row">
