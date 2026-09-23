@@ -3906,6 +3906,98 @@ class ImageToVideoTab:
     def create_single_image_video_with_ffmpeg(self, image_path, watermark_video_path, output_path, width, height, position, watermark_fps, watermark_frame_count, target_bitrate, log_func):
         return _render_watermark.create_single_image_video_with_ffmpeg(self._render_ctx(), image_path, watermark_video_path, output_path, width, height, position, watermark_fps, watermark_frame_count, target_bitrate, log_func)
 
+    def start_processing(self):
+        """开始处理（「▶ 开始处理」按钮回调）：起线程跑 process_videos。
+
+        界面只负责状态与按钮收尾，真正的编排在渲染内核 ``src.render.job``。
+        """
+        if getattr(self, "is_processing", False):
+            self.update_status("正在处理中，请等待...")
+            return False
+
+        self.sync_watermark_layers_from_ui()
+        self.is_processing = True
+        self.cancel_requested = False
+        self.pause_event.set()
+        self.is_paused = False
+
+        if hasattr(self, "start_button"):
+            self.start_button.config(state="disabled")
+        if hasattr(self, "pause_button"):
+            self.pause_button.config(state="normal", text="⏸ 暂停")
+        if hasattr(self, "cancel_button"):
+            self.cancel_button.config(state="normal")
+
+        def run_processing():
+            try:
+                self.process_videos()
+            except Exception as exc:
+                import traceback
+
+                message = f"处理过程中出错: {exc}\n{traceback.format_exc()}"
+                self.update_status(message)
+                print(message)
+            finally:
+                # process_videos 的 finally 已恢复 is_processing / start_button，
+                # 这里只收尾暂停与取消按钮。
+                if hasattr(self, "parent"):
+                    if hasattr(self, "pause_button"):
+                        self.parent.after(0, lambda: self.pause_button.config(state="disabled", text="⏸ 暂停"))
+                    if hasattr(self, "cancel_button"):
+                        self.parent.after(0, lambda: self.cancel_button.config(state="disabled"))
+
+        self.processing_thread = threading.Thread(target=run_processing, daemon=True)
+        self.processing_thread.start()
+        return True
+
+    def toggle_pause(self):
+        """暂停/继续处理（「⏸ 暂停」按钮回调）。"""
+        if not getattr(self, "is_processing", False):
+            return
+        if self.is_paused:
+            self.pause_event.set()
+            self.is_paused = False
+            self.update_status("继续处理")
+            if hasattr(self, "pause_button"):
+                self.pause_button.config(text="⏸ 暂停")
+        else:
+            self.pause_event.clear()
+            self.is_paused = True
+            self.update_status("已暂停")
+            if hasattr(self, "pause_button"):
+                self.pause_button.config(text="▶ 继续")
+
+    def cancel_processing(self):
+        """取消处理（「✕ 取消」按钮回调）。"""
+        if not getattr(self, "is_processing", False):
+            return
+        self.cancel_requested = True
+        self.pause_event.set()
+        self.update_status("已请求取消")
+
+    def update_ui_state(self):
+        """按当前处理状态刷新开始/暂停/取消按钮（应用预设后同步用）。"""
+        processing = bool(getattr(self, "is_processing", False))
+        if hasattr(self, "start_button"):
+            self.start_button.config(state="disabled" if processing else "normal")
+        if hasattr(self, "pause_button"):
+            self.pause_button.config(state="normal" if processing else "disabled")
+        if hasattr(self, "cancel_button"):
+            self.cancel_button.config(state="normal" if processing else "disabled")
+
+    def reload_config(self):
+        """重新加载配置 - 兼容性方法。"""
+        try:
+            if hasattr(self, "config_file") and os.path.exists(self.config_file):
+                with open(self.config_file, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    if hasattr(self, "apply_config"):
+                        self.apply_config(config)
+            return True
+        except Exception as e:
+            print(f"重新加载配置失败: {str(e)}")
+            return False
+
     def process_videos(self):
         """处理视频生成（编排在渲染内核 src.render.job；这里只做界面收尾）。"""
         try:

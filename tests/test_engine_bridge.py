@@ -35,7 +35,8 @@ def test_desktop_preview_keeps_completed_frames_from_current_timeline():
 
 
 def test_export_video_watermark_normal_mode_preserves_rendered_frames():
-    renderer_source = (ROOT / "src" / "gui" / "main_window.py").read_text(encoding="utf-8")
+    # 水印混合实现已随渲染内核迁移到 src/render/postprocess.py（原 src/gui/main_window.py）
+    renderer_source = (ROOT / "src" / "render" / "postprocess.py").read_text(encoding="utf-8")
 
     assert 'wm_chain += f",format=rgba,colorchannelmixer=aa={blend_alpha:.3f}"' in renderer_source
 
