@@ -123,20 +123,46 @@ def get_audio_files(directory, ctx=None):
 
 
 def resolve_bgm_candidates(ctx=None):
-    """返回本次可用的BGM候选：优先使用素材库显式选定的文件，否则扫描音频目录。"""
+    """返回本次可用的BGM候选：优先使用素材库显式选定的文件，否则扫描音频目录。
+
+    显式选定的文件**保持素材库里的挑选顺序**（界面上的顺序即导出顺序）；
+    目录扫描结果按名称排序，保证同一目录每次运行顺序一致。
+    """
     explicit = [
         path for path in read_value(ctx, "_bgm_files") or []
         if os.path.isfile(path)
     ]
     if explicit:
-        return sorted(explicit)
+        return explicit
     bgm_dir = read_value(ctx, "bgm_dir")
     if not bgm_dir or not os.path.exists(bgm_dir):
         return []
     return sorted(get_audio_files(bgm_dir, ctx))
 
-def select_bgm_file(ctx=None):
-    """获取本次应使用的BGM文件。"""
+
+def current_video_index(ctx=None, video_index=None) -> int:
+    """取当前视频序号（从 0 开始）；未提供时读界面侧写入的 ``_current_video_index``。
+
+    缺失或非法一律当第 1 个视频（0），保证单视频导出与旧行为一致。
+    """
+    if video_index is None:
+        video_index = read_value(ctx, "_current_video_index", 0)
+    try:
+        return max(0, int(video_index))
+    except (TypeError, ValueError):
+        return 0
+
+
+def select_bgm_file(ctx=None, video_index=None):
+    """获取本次应使用的BGM文件。
+
+    顺序模式（``random_bgm`` 为假）**按视频序号轮转**：第 1 个视频用候选里的第 1 首，
+    第 2 个用第 2 首……取完一轮后从头再来。取法与「视频水印·文件夹模式」一致
+    （见 ``render/postprocess.py`` 对 ``_current_video_index`` 的用法），
+    这样一次批量导出里的多个视频才会各配一首，而不是全部固定第一首。
+
+    随机模式每次重新抽一首。
+    """
     if not read_value(ctx, "use_bgm", False):
         return None
     audio_strategy = read_value(ctx, "watermark_audio", "使用BGM")
@@ -147,4 +173,4 @@ def select_bgm_file(ctx=None):
         return None
     if read_value(ctx, "random_bgm", False):
         return random.choice(bgm_files)
-    return bgm_files[0]
+    return bgm_files[current_video_index(ctx, video_index) % len(bgm_files)]

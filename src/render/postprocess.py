@@ -11,7 +11,7 @@ import subprocess
 import time
 
 from ..utils.opencv_silent import import_cv2_silent
-from .audio import add_audio_with_ffmpeg, resolve_bgm_candidates, select_bgm_file
+from .audio import add_audio_with_ffmpeg, select_bgm_file
 from .codec import (build_temp_output_path, get_container_compatible_acodec,
                     get_ffmpeg_muxer_for_output, get_output_extension, get_selected_codec_name,
                     get_strict_ffmpeg_vcodec_for_output, log_output_probe,
@@ -534,17 +534,13 @@ def postprocess_video_output(ctx, output_path, fixed_layers, watermark_position,
                 _log("没有找到有效的水印文件")
     _post_progress(0.80, "水印中")
 
-    # 背景音乐
+    # 背景音乐（选曲规则统一走 select_bgm_file：顺序模式按视频序号轮转、随机模式重抽，
+    # 不在这里再写一套，避免两处规则走散导致「每个视频都是同一首」）
     audio_strategy = read_value(ctx, "watermark_audio", "使用BGM") if ctx is not None else "使用BGM"
     if read_value(ctx, "use_bgm", False) and audio_strategy in ("使用BGM", "两者混合"):
-        bgm_files = resolve_bgm_candidates(ctx)
-        if bgm_files:
-            _log(f"开始添加背景音乐: {os.path.dirname(bgm_files[0])}")
-            if read_value(ctx, "random_bgm", False):
-                import random
-                bgm_file = random.choice(bgm_files)
-            else:
-                bgm_file = bgm_files[0]
+        bgm_file = select_bgm_file(ctx)
+        if bgm_file:
+            _log(f"开始添加背景音乐: {os.path.dirname(bgm_file)}")
             _log(f"选择音乐文件: {os.path.basename(bgm_file)}")
             try:
                 volume = read_value(ctx, "bgm_volume", 0.5)
