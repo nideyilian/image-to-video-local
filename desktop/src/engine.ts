@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Command, type Child } from "@tauri-apps/plugin-shell";
 import { FALLBACK_CONFIG } from "./constants";
 import type { EngineEvent, EngineHealth, ValidationIssue, VideoConfig } from "./types";
@@ -47,6 +48,14 @@ const NATIVE_METHODS = new Set([
   "normalize_config",
   "validate_config",
   "validate_config_detailed",
+  // 任务队列（事件走 Tauri emit，见 attachNativeEvents）
+  "start_job",
+  "pause_job",
+  "resume_job",
+  "cancel_job",
+  "list_jobs",
+  "system_snapshot",
+  "optimize_memory",
 ]);
 
 /** `handled: false` = Rust 不接这个请求（未迁移 / 需要旧引擎的语义），交给 sidecar。 */
@@ -165,7 +174,26 @@ export class EngineBridge {
 
   subscribe(listener: (event: EngineEvent) => void) {
     this.listeners.add(listener);
+    // 第一次有人订阅时，把 Rust 侧的任务事件接进同一个通道。
+    // 订阅方（App.tsx / MaterialLibrary.tsx）不需要知道事件来自 sidecar 还是 Rust。
+    void this.attachNativeEvents();
     return () => this.listeners.delete(listener);
+  }
+
+  /// 把 Rust 通过 `engine-event` 推送的事件桥接到本地订阅者。
+  /// 任务队列已由 Rust 接管（start_job / pause_job / ...），事件走 Tauri 而不是 sidecar 的 stdout。
+  private nativeEventsReady = false;
+  private attachNativeEvents() {
+    if (this.nativeEventsReady || !this.desktopRuntime) return;
+    this.nativeEventsReady = true;
+    void listen<EngineEvent>("engine-event", (event) => {
+      const payload = event.payload;
+      if (!payload || payload.type !== "event") return;
+      this.emit(payload);
+    }).catch((error) => {
+      console.warn("[engine] 原生事件通道不可用", error);
+      this.nativeEventsReady = false;
+    });
   }
 
   toAssetUrl(path: string) {

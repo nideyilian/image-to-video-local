@@ -80,6 +80,11 @@ pub fn run() {
             reveal_path,
             engine_dispatch,
         ])
+        .setup(|app| {
+            // 任务队列靠它把 job.* 事件推给前端（前端在 engine.ts 里桥接到订阅者）
+            engine::set_app_handle(app.handle().clone());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

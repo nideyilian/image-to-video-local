@@ -15,11 +15,13 @@ mod config;
 mod dedup;
 mod fingerprint;
 mod hash;
+pub(crate) mod jobs;
 mod library;
 mod paths;
 mod scan;
 mod snapshot;
 mod sort;
+mod sysinfo;
 pub(crate) mod system;
 mod taint;
 mod write_ops;
@@ -49,6 +51,59 @@ impl DispatchResponse {
     fn failed(message: impl Into<String>) -> Self {
         Self { handled: true, result: None, error: Some(message.into()) }
     }
+}
+
+// ---------- 任务队列的全局状态 ----------
+
+/// Tauri 的 AppHandle，用于把任务事件推给前端。
+/// 在 `lib.rs` 的 setup 里注入；测试环境下为 None（事件被丢弃，状态机照常工作）。
+static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// 前端监听的事件名。
+pub const EVENT_NAME: &str = "engine-event";
+
+pub fn set_app_handle(handle: tauri::AppHandle) {
+    let _ = APP_HANDLE.set(handle);
+}
+
+/// 事件出口：有 AppHandle 就 emit 给前端，否则丢弃。
+fn job_sink() -> jobs::EventSink {
+    std::sync::Arc::new(|event: &str, payload: Value| {
+        if let Some(handle) = APP_HANDLE.get() {
+            use tauri::Emitter;
+            let message = serde_json::json!({
+                "type": "event",
+                "event": event,
+                "payload": payload,
+            });
+            let _ = handle.emit(EVENT_NAME, message);
+        }
+    })
+}
+
+/// 全局任务管理器（首次使用时初始化）。
+fn job_manager() -> &'static jobs::JobManager {
+    static MANAGER: std::sync::OnceLock<jobs::JobManager> = std::sync::OnceLock::new();
+    MANAGER.get_or_init(|| {
+        // 打包模式（frozen）用 exe 自己当 worker；源码模式用 python -m
+        let worker = if let Ok(executable) = std::env::var("ITV_PACKAGED_WORKER") {
+            jobs::WorkerCommand::Packaged {
+                executable: std::path::PathBuf::from(executable),
+            }
+        } else {
+            let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let python = std::env::var("ITV_PYTHON")
+                .unwrap_or_else(|_| "python".to_string());
+            jobs::WorkerCommand::PythonModule {
+                python,
+                project_root,
+            }
+        };
+        jobs::JobManager::new(job_sink(), worker)
+    })
 }
 
 pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
@@ -130,6 +185,56 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
         },
+        // ---------- 任务队列 ----------
+        "start_job" => {
+            let raw = object.get("config").cloned().unwrap_or(Value::Null);
+            let normalized = config::normalize_config(Some(&raw));
+            let errors = config::validate_config(Some(&normalized), false);
+            if let Some(first) = errors.first() {
+                return DispatchResponse::failed(first.clone());
+            }
+            let job_id = object
+                .get("job_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let config_object = normalized.as_object().cloned().unwrap_or_default();
+            match job_manager().start(&config_object, job_id) {
+                Ok(state) => DispatchResponse::ok(state),
+                Err(message) => DispatchResponse::failed(message),
+            }
+        }
+        "pause_job" => match job_manager().pause(&text(&object, "job_id")) {
+            Ok(state) => DispatchResponse::ok(state),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "resume_job" => match job_manager().resume(&text(&object, "job_id")) {
+            Ok(state) => DispatchResponse::ok(state),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "cancel_job" => match job_manager().cancel(&text(&object, "job_id")) {
+            Ok(state) => DispatchResponse::ok(state),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "list_jobs" => match job_manager().list() {
+            Ok(state) => DispatchResponse::ok(state),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        // ---------- 系统信息 ----------
+        "system_snapshot" => {
+            let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .canonicalize()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let output_dir = text(&object, "output_dir");
+            let ffmpeg = system::resolve_ffmpeg(None);
+            DispatchResponse::ok(sysinfo::snapshot_payload(
+                &root,
+                &output_dir,
+                ffmpeg.as_deref(),
+            ))
+        }
+        "optimize_memory" => DispatchResponse::ok(sysinfo::optimize_memory()),
         "scan_images" => scan_images(&object),
         "scan_subfolders" => scan_subfolders(&object),
         "scan_subfolder_groups" => scan_subfolder_groups(&object),
@@ -544,5 +649,109 @@ mod tests {
         params.insert("pattern".to_string(), json!("{n}-{name}"));
         let payload = write_ops::rename_batch(&params).expect("批量重命名");
         println!("RENAME_PARITY={}", payload);
+    }
+}
+
+#[cfg(test)]
+mod parity_jobs {
+    use super::*;
+
+    /// 真实任务启动：`ITV_JOB_INPUT` 图片目录，`ITV_JOB_OUTPUT` 输出目录。
+    /// 验证 Rust 的 JobManager 能真的把 Python worker 拉起来并收到事件。
+    #[test]
+    fn run_real_job_with_python_worker() {
+        let (Ok(input), Ok(output)) = (
+            std::env::var("ITV_JOB_INPUT"),
+            std::env::var("ITV_JOB_OUTPUT"),
+        ) else {
+            return;
+        };
+        let events: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let sink: jobs::EventSink = std::sync::Arc::new(move |event: &str, payload: Value| {
+            if let Ok(mut guard) = captured.lock() {
+                guard.push((event.to_string(), payload));
+            }
+        });
+        let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("project root");
+        let python = std::env::var("ITV_PYTHON").unwrap_or_else(|_| "python".to_string());
+        let manager = jobs::JobManager::new(
+            sink,
+            jobs::WorkerCommand::PythonModule {
+                python,
+                project_root,
+            },
+        );
+
+        let mut config = config::default_config();
+        let object = config.as_object_mut().expect("配置应为对象");
+        object.insert("input_dir".to_string(), json!(input));
+        object.insert("output_dir".to_string(), json!(output));
+        object.insert("num_images".to_string(), json!(2));
+        object.insert("video_count".to_string(), json!(1));
+        object.insert("duration".to_string(), json!(0.5));
+        object.insert("fps".to_string(), json!(10));
+        object.insert("resolution_preset".to_string(), json!("640x360"));
+        object.insert("image_selection_mode".to_string(), json!("按名称排序"));
+        object.insert("transition_type".to_string(), json!("淡入淡出"));
+        object.insert("transition_frames".to_string(), json!(4));
+        object.insert("use_bgm".to_string(), json!(false));
+        object.insert("use_watermark".to_string(), json!(false));
+
+        let normalized = config::normalize_config(Some(&config));
+        let config_object = normalized.as_object().cloned().unwrap_or_default();
+        let started = manager
+            .start(&config_object, Some("itv-real-job".to_string()))
+            .expect("任务应能启动");
+        assert_eq!(started["status"], "running");
+
+        // 等任务结束（最多 90 秒）
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let list = manager.list().expect("list_jobs");
+            let status = list
+                .as_array()
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("status"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            // ⚠️ 不能只看 status：watcher 先改状态、后发 job.finished，
+            // 直接读会偶发拿不到事件（我第一次就撞上了）。等事件到齐再断言。
+            let finished_seen = events
+                .lock()
+                .map(|guard| guard.iter().any(|(name, _)| name == "job.finished"))
+                .unwrap_or(false);
+            if matches!(status.as_str(), "completed" | "failed" | "cancelled") && finished_seen {
+                let captured = events.lock().unwrap();
+                let names: Vec<&str> = captured.iter().map(|(name, _)| name.as_str()).collect();
+                println!(
+                    "JOB_RESULT={}",
+                    json!({
+                        "status": status,
+                        "events": names,
+                        "event_count": captured.len(),
+                    })
+                );
+                assert!(
+                    names.contains(&"job.started"),
+                    "应收到 job.started，实际: {names:?}"
+                );
+                assert!(
+                    names.contains(&"job.finished"),
+                    "应收到 job.finished，实际: {names:?}"
+                );
+                assert_eq!(status, "completed", "任务应成功完成");
+                return;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("任务超时未结束");
+            }
+        }
     }
 }
