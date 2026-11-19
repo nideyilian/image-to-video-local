@@ -5,6 +5,11 @@
 //! - `codec`：扩展名 → muxer / 编码器 / 音频编码器
 //! - `audio`：BGM 选曲与混入
 //! - 后续：`encoder`（rawvideo 管道）、`postprocess`、`compositor`、`pixels`
+//!
+//! ⚠️ 这些模块已实现并通过与 Python 的逐项对照，但**导出流程仍由旧引擎编排**
+//! （worker 还是 `python -m src.render.worker`）。等 `compositor` 完全接管后，
+//! 入口会被 `engine::jobs` 调起来，届时可以删掉下面的 `allow(dead_code)`。
+#![allow(dead_code)]
 
 pub mod audio;
 pub mod codec;

@@ -23,8 +23,11 @@ const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-/// 一次性哈希（只有测试与流式版本的一致性校验在用；生产路径走 `file_sha256`）。
-#[cfg(test)]
+/// 一次性哈希。
+///
+/// ⚠️ 生产路径也在用（`preview_random::shuffle_seed` 算确定性洗牌的种子），
+/// 之前误标成 `#[cfg(test)]` 导致 `cargo check` / 打包编译不过 ——
+/// 只跑 `cargo test --lib` 是发现不了的（test 配置下它可见）。
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     let mut state = H0;
     let bit_len = (bytes.len() as u64).wrapping_mul(8);
@@ -240,5 +243,94 @@ mod tests {
             hasher.update(chunk);
         }
         assert_eq!(hasher.finish_hex(), expected);
+    }
+}
+
+/// SHA-1 摘要（Python 的 `hashlib.sha1()` 用；预览缓存键必须与旧版一致，
+/// 缓存键不同会导致每次都重新转码）。
+pub fn sha1_digest(bytes: &[u8]) -> [u8; 20] {
+    let mut h0: u32 = 0x6745_2301;
+    let mut h1: u32 = 0xEFCD_AB89;
+    let mut h2: u32 = 0x98BA_DCFE;
+    let mut h3: u32 = 0x1032_5476;
+    let mut h4: u32 = 0xC3D2_E1F0;
+
+    let bit_len = (bytes.len() as u64).wrapping_mul(8);
+    let mut padded = bytes.to_vec();
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in padded.chunks(64) {
+        let mut w = [0u32; 80];
+        for (index, word) in w.iter_mut().take(16).enumerate() {
+            let offset = index * 4;
+            *word = u32::from_be_bytes([
+                chunk[offset],
+                chunk[offset + 1],
+                chunk[offset + 2],
+                chunk[offset + 3],
+            ]);
+        }
+        for index in 16..80 {
+            w[index] = (w[index - 3] ^ w[index - 8] ^ w[index - 14] ^ w[index - 16]).rotate_left(1);
+        }
+
+        let (mut a, mut b, mut c, mut d, mut e) = (h0, h1, h2, h3, h4);
+        for (index, word) in w.iter().enumerate() {
+            let (f, k) = match index {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999u32),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+
+    let mut out = [0u8; 20];
+    for (index, value) in [h0, h1, h2, h3, h4].iter().enumerate() {
+        out[index * 4..index * 4 + 4].copy_from_slice(&value.to_be_bytes());
+    }
+    out
+}
+
+/// SHA-1 十六进制串（等价 `hashlib.sha1(x).hexdigest()`）。
+pub fn sha1_hex(bytes: &[u8]) -> String {
+    hex(&sha1_digest(bytes))
+}
+
+#[cfg(test)]
+mod sha1_tests {
+    use super::*;
+
+    #[test]
+    fn sha1_matches_standard_vectors() {
+        assert_eq!(sha1_hex(b""), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(sha1_hex(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(
+            sha1_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
+        );
+        // 长度刚好跨块边界
+        let long = vec![b'a'; 1000];
+        assert_eq!(sha1_hex(&long).len(), 40);
     }
 }

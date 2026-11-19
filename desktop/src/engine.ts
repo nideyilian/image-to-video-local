@@ -56,6 +56,19 @@ const NATIVE_METHODS = new Set([
   "list_jobs",
   "system_snapshot",
   "optimize_memory",
+  // 预览类（缓存键与目录和旧引擎共用，见 engine/preview.rs）
+  "preview_thumbnail",
+  "preview_bgm",
+  "library_preview_audio",
+  "library_preview_video",
+  "library_audio_cover",
+  // 特效演示图资产（渲染类 preview_effect_frame / effect_preview_animation 仍走旧引擎）
+  "effect_library_assets",
+  "effect_library_set_asset",
+  "effect_library_reset_assets",
+  // 拆 BGM（后台任务，进度走 engine-event：library.extract.progress / .done）
+  "library_extract_bgm",
+  "library_extract_cancel",
 ]);
 
 /** `handled: false` = Rust 不接这个请求（未迁移 / 需要旧引擎的语义），交给 sidecar。 */

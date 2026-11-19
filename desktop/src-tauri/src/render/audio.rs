@@ -4,6 +4,10 @@
 //! 显式选定的文件保持挑选顺序）。BGM 混入用与 Python 版**逐字相同**的 ffmpeg 参数，
 //! 这样音轨可以逐字节对照。
 
+// 选曲/混音接口目前由旧引擎驱动导出流程（compositor 仍走 Python 侧编排），
+// 这里先备好并通过 `render::mod.rs` 的对照测试验收，等 worker 换成 Rust 再启用。
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};

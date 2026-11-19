@@ -207,7 +207,7 @@ fn round1(value: f64) -> f64 {
 }
 
 /// 采集快照。
-pub fn snapshot(project_root: &str, output_dir: &str, ffmpeg: Option<&Path>) -> SystemSnapshot {
+pub fn snapshot(project_root: &str, output_dir: &str) -> SystemSnapshot {
     let target = if !output_dir.is_empty() && Path::new(output_dir).exists() {
         output_dir.to_string()
     } else {
@@ -229,7 +229,7 @@ pub fn snapshot_payload(
     output_dir: &str,
     ffmpeg: Option<&Path>,
 ) -> Value {
-    let data = snapshot(project_root, output_dir, ffmpeg);
+    let data = snapshot(project_root, output_dir);
     let (available, version) = match ffmpeg {
         Some(path) => (true, ffmpeg_version(path)),
         None => (false, Value::Null),
@@ -296,11 +296,7 @@ mod tests {
     #[test]
     fn snapshot_reports_plausible_values() {
         let dir = std::env::temp_dir();
-        let data = snapshot(
-            &dir.to_string_lossy(),
-            &dir.to_string_lossy(),
-            None,
-        );
+        let data = snapshot(&dir.to_string_lossy(), &dir.to_string_lossy());
         assert!((0.0..=100.0).contains(&data.cpu_percent));
         assert!((0.0..=100.0).contains(&data.memory_percent));
         assert!(data.memory_available_gb >= 0.0);

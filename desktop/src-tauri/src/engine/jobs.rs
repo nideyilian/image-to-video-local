@@ -24,6 +24,8 @@ pub type EventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
 /// 任务状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobStatus {
+    /// 预留：批量排队（当前 start 直接进 Running，与旧引擎一致）。
+    #[allow(dead_code)]
     Queued,
     Running,
     Paused,

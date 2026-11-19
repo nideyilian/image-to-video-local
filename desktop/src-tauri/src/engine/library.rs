@@ -58,3 +58,13 @@ mod tests {
             .ends_with("水印"));
     }
 }
+
+/// 是否为音频扩展名（与 `library.AUDIO_EXTENSIONS` 一致）。
+#[allow(dead_code)]
+pub fn is_audio_extension(path: &std::path::Path) -> bool {
+    let Some(ext) = path.extension() else {
+        return false;
+    };
+    let ext = format!(".{}", ext.to_string_lossy().to_lowercase());
+    crate::engine::snapshot::AUDIO_EXTENSIONS.contains(&ext.as_str())
+}

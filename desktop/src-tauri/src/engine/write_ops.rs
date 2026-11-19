@@ -55,7 +55,7 @@ fn base_of(kind: &str, params: &Map<String, Value>) -> PathBuf {
 }
 
 /// 与 `_relative_folder()` 等价：只接受相对子路径，拒绝 `..` 与非法字符。
-fn relative_folder(raw: Option<&Value>) -> Result<String, String> {
+pub(crate) fn relative_folder(raw: Option<&Value>) -> Result<String, String> {
     let value = raw
         .and_then(Value::as_str)
         .unwrap_or_default()
@@ -242,7 +242,7 @@ fn is_supported(kind: &str, path: &Path) -> bool {
 }
 
 /// 与 `_unique_path()` 等价：重名且内容不同就加 `(2)`、`(3)`；内容相同直接复用。
-fn unique_path(directory: &Path, name: &str, existing: &BTreeMap<String, String>) -> PathBuf {
+pub(crate) fn unique_path(directory: &Path, name: &str, existing: &BTreeMap<String, String>) -> PathBuf {
     let target = directory.join(name);
     if !target.exists() {
         return target;

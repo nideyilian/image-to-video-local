@@ -12,13 +12,11 @@
 use std::path::Path;
 
 use super::audio::RenderConfig;
-use super::codec;
 use super::effects::{self, EffectParams};
 use super::encoder::{self, EncodeOptions};
 use super::pixels::{self, BgrFrame};
 use super::plan;
 use super::transitions;
-use super::watermark;
 
 /// 合成参数（对应 `create_video()` 的形参）。
 #[derive(Debug, Clone)]

@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use image::{imageops, DynamicImage, GenericImageView, RgbImage, RgbaImage};
+use image::{imageops, DynamicImage, RgbImage, RgbaImage};
 
 /// 一张待处理的 BGR 帧（OpenCV 的通道顺序，交给 ffmpeg 用 bgr24）。
 #[derive(Debug, Clone)]
