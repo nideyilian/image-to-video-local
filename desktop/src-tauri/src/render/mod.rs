@@ -10,6 +10,7 @@ pub mod audio;
 pub mod codec;
 pub mod encoder;
 pub mod imageinfo;
+pub mod pixels;
 pub mod plan;
 pub mod postprocess;
 pub mod process;
@@ -526,5 +527,116 @@ mod parity_post_run {
             }));
         }
         println!("POST_RUN={}", json!(results));
+    }
+}
+
+#[cfg(test)]
+mod parity_pixels {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// 缩放对照：`ITV_PIXEL_DIR` 图片目录，`ITV_PIXEL_OUT` 输出目录。
+    /// 对每张图做三种缩放，各写一张结果 + 打印差异统计。
+    #[test]
+    fn parity_dump_resize() {
+        let (Ok(dir), Ok(out_dir)) =
+            (std::env::var("ITV_PIXEL_DIR"), std::env::var("ITV_PIXEL_OUT"))
+        else {
+            return;
+        };
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default();
+        files.sort();
+        std::fs::create_dir_all(&out_dir).ok();
+
+        let mut report = Vec::new();
+        for path in files {
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let Some(frame) = pixels::read_image_bgr(&path) else {
+                continue;
+            };
+            let source = (frame.width, frame.height);
+
+            for (label, target) in [
+                ("fit_1080x1920", (1080u32, 1920u32)),
+                ("fit_1920x1080", (1920, 1080)),
+                ("stretch", (640, 360)),
+            ] {
+                let result = if label == "stretch" {
+                    pixels::resize_image(&frame, target.0, target.1, "拉伸")
+                } else {
+                    pixels::resize_with_aspect_ratio(&frame, target.0, target.1)
+                };
+                let file_name = format!("{name}__{label}.png");
+                result.to_rgb().save(std::path::Path::new(&out_dir).join(&file_name)).ok();
+                report.push(json!({
+                    "file": file_name,
+                    "source": [source.0, source.1],
+                    "target": [result.width, result.height],
+                    "checksum": checksum(&result.data),
+                }));
+            }
+        }
+        println!("RESIZE_PARITY={}", Value::Array(report));
+    }
+
+    fn checksum(data: &[u8]) -> u64 {
+        // 简单校验和，只用来快速确认「是不是同一张图」，不用于像素比对
+        let mut sum: u64 = 0;
+        for (index, byte) in data.iter().enumerate() {
+            sum = sum.wrapping_mul(31).wrapping_add((*byte as u64) + index as u64);
+        }
+        sum
+    }
+}
+
+#[cfg(test)]
+mod parity_filter_probe {
+    use super::*;
+
+    /// 滤镜候选实测：同一批图分别用 Triangle / CatmullRom / Nearest 缩小，
+    /// 输出到 `ITV_FILTER_OUT`，供外部与 OpenCV 比对选最优。
+    #[test]
+    fn probe_filter_variants() {
+        let (Ok(dir), Ok(out_dir)) =
+            (std::env::var("ITV_PIXEL_DIR"), std::env::var("ITV_FILTER_OUT"))
+        else {
+            return;
+        };
+        std::fs::create_dir_all(&out_dir).ok();
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default();
+        files.sort();
+        for path in files {
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let Some(frame) = pixels::read_image_bgr(&path) else {
+                continue;
+            };
+            for (label, filter) in [
+                ("triangle", pixels::ResizeFilter::Bilinear),
+                ("catmull", pixels::ResizeFilter::Area),
+                ("nearest", pixels::ResizeFilter::Nearest),
+            ] {
+                let resized = pixels::resize(&frame, 640, 360, filter);
+                resized
+                    .to_rgb()
+                    .save(std::path::Path::new(&out_dir).join(format!("{name}__{label}.png")))
+                    .ok();
+            }
+        }
     }
 }
