@@ -14,6 +14,7 @@ pub mod pixels;
 pub mod plan;
 pub mod postprocess;
 pub mod process;
+pub mod transitions;
 pub mod watermark;
 
 #[cfg(test)]
@@ -638,5 +639,65 @@ mod parity_filter_probe {
                     .ok();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod parity_transitions {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// 转场对照：`ITV_TRANS_DIR` 里放 a.png / b.png，
+    /// `ITV_TRANS_OUT` 输出目录。每种转场各存全部帧。
+    #[test]
+    fn parity_dump_transitions() {
+        let (Ok(dir), Ok(out_dir)) =
+            (std::env::var("ITV_TRANS_DIR"), std::env::var("ITV_TRANS_OUT"))
+        else {
+            return;
+        };
+        let first = match pixels::read_image_bgr(std::path::Path::new(&dir).join("a.png").as_path()) {
+            Some(frame) => frame,
+            None => return,
+        };
+        let second = match pixels::read_image_bgr(std::path::Path::new(&dir).join("b.png").as_path()) {
+            Some(frame) => frame,
+            None => return,
+        };
+        std::fs::create_dir_all(&out_dir).ok();
+
+        let cases: Vec<(&str, transitions::Transition)> = vec![
+            ("淡入淡出", transitions::Transition::Fade),
+            ("左右滑动", transitions::Transition::SlideLeft),
+            ("上下滑动", transitions::Transition::SlideUp),
+            ("交叉溶解", transitions::Transition::Fade),
+            ("圆形扩展", transitions::Transition::CircleExpand),
+            ("缩放过渡", transitions::Transition::Zoom),
+            ("百叶窗", transitions::Transition::Blinds),
+            ("像素化", transitions::Transition::Pixelate),
+            ("未知转场", transitions::Transition::Fallback),
+        ];
+        let num_frames = std::env::var("ITV_TRANS_FRAMES")
+            .ok()
+            .and_then(|text| text.parse::<usize>().ok())
+            .unwrap_or(8);
+
+        let mut report = Vec::new();
+        for (index, (name, kind)) in cases.iter().enumerate() {
+            let frames = transitions::generate_frames(&first, &second, *kind, num_frames);
+            for (frame_index, frame) in frames.iter().enumerate() {
+                let file = format!("{index:02}__{frame_index:02}.png");
+                frame
+                    .to_rgb()
+                    .save(std::path::Path::new(&out_dir).join(&file))
+                    .ok();
+            }
+            report.push(json!({
+                "name": name,
+                "index": index,
+                "count": frames.len(),
+            }));
+        }
+        println!("TRANS_PARITY={}", Value::Array(report));
     }
 }
