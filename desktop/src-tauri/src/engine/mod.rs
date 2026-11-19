@@ -14,6 +14,7 @@
 mod config;
 mod dedup;
 mod effect_assets;
+mod effect_preview;
 mod extract;
 mod fingerprint;
 mod hash;
@@ -235,7 +236,18 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
         },
-        // ---------- 特效资产（渲染类接口仍走 Python，见下方说明） ----------
+        // ---------- 特效预览（只接管已实现的子集；不支持时 handled=false 回落） ----------
+        "preview_effect_frame" => match effect_preview::render_frame(&object) {
+            Ok(Some(result)) => DispatchResponse::ok(result),
+            Ok(None) => DispatchResponse::unhandled(),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "effect_preview_animation" => match effect_preview::render_animation(&object) {
+            Ok(Some(result)) => DispatchResponse::ok(result),
+            Ok(None) => DispatchResponse::unhandled(),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        // ---------- 特效资产 ----------
         "effect_library_assets" => match effect_assets::ensure_assets() {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
@@ -1201,5 +1213,40 @@ mod parity_extract {
                 "results": done_payload.get("results"),
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod parity_effect_preview {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// 特效预览对照：`ITV_EPREV_CASES` 指向用例 JSON。
+    #[test]
+    fn parity_dump_effect_preview() {
+        let Ok(cases_path) = std::env::var("ITV_EPREV_CASES") else {
+            return;
+        };
+        let Ok(raw) = std::fs::read_to_string(cases_path) else {
+            return;
+        };
+        let cases: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
+        let mut out = Vec::new();
+        for case in cases {
+            let id = case.get("id").and_then(Value::as_str).unwrap_or("?").to_string();
+            let params = case
+                .get("params")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let response = dispatch("preview_effect_frame", Some(Value::Object(params)));
+            out.push(json!({
+                "id": id,
+                "handled": response.handled,
+                "result": response.result,
+                "error": response.error,
+            }));
+        }
+        println!("EPREV_PARITY={}", Value::Array(out));
     }
 }

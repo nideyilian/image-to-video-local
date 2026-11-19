@@ -69,6 +69,10 @@ const NATIVE_METHODS = new Set([
   // 拆 BGM（后台任务，进度走 engine-event：library.extract.progress / .done）
   "library_extract_bgm",
   "library_extract_cancel",
+  // 特效预览：只接管「无两类水印 + 已实现的 9 种转场 / 11 种特效」，
+  // 其余由原生侧返回 handled=false 交回旧引擎
+  "preview_effect_frame",
+  "effect_preview_animation",
 ]);
 
 /** `handled: false` = Rust 不接这个请求（未迁移 / 需要旧引擎的语义），交给 sidecar。 */
