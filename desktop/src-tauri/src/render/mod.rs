@@ -8,6 +8,7 @@
 
 pub mod audio;
 pub mod codec;
+pub mod effects;
 pub mod encoder;
 pub mod imageinfo;
 pub mod pixels;
@@ -699,5 +700,60 @@ mod parity_transitions {
             }));
         }
         println!("TRANS_PARITY={}", Value::Array(report));
+    }
+}
+
+#[cfg(test)]
+mod parity_effects {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// 特效对照：`ITV_EFFECT_DIR` 输入图目录，`ITV_EFFECT_OUT` 输出目录。
+    #[test]
+    fn parity_dump_effects() {
+        let (Ok(dir), Ok(out_dir)) =
+            (std::env::var("ITV_EFFECT_DIR"), std::env::var("ITV_EFFECT_OUT"))
+        else {
+            return;
+        };
+        std::fs::create_dir_all(&out_dir).ok();
+        let source = pixels::read_image_bgr(std::path::Path::new(&dir).join("in.png").as_path());
+        let Some(frame) = source else { return };
+
+        let effects = [
+            "旋转呼吸",
+            "摇摆推拉",
+            "圆周漂移",
+            "螺旋摆动",
+            "双轴呼吸",
+            "心跳摇摆",
+            "波浪平移",
+            "左右晃动",
+            "上下浮动",
+            "缓慢推近",
+            "缓慢拉远",
+            "无特效",
+        ];
+        let times = [0.0f64, 0.35, 0.75, 1.5];
+        let mut report = Vec::new();
+        for (index, effect) in effects.iter().enumerate() {
+            for (time_index, time_sec) in times.iter().enumerate() {
+                let params = effects::EffectParams {
+                    effect_type: effect.to_string(),
+                    time_sec: *time_sec,
+                    duration_sec: 3.0,
+                    intensity: 100.0,
+                    speed: 1.0,
+                };
+                let result = effects::apply_single_image_effect(&frame, &params);
+                let file = format!("{index:02}__{time_index:02}.png");
+                result
+                    .to_rgb()
+                    .save(std::path::Path::new(&out_dir).join(&file))
+                    .ok();
+                report.push(json!({ "effect": effect, "time": time_sec, "file": file }));
+            }
+        }
+        println!("EFFECT_PARITY={}", Value::Array(report));
     }
 }
