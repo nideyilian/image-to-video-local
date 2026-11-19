@@ -137,3 +137,30 @@ def test_resolution_presets_match_frontend(ts_source: str) -> None:
         f"  Python: {list(DEFAULT_RESOLUTION_PRESETS)}\n"
         f"  前端:   {ts_presets}"
     )
+
+
+RUST_DEFAULT_CONFIG_PATH = (
+    PROJECT_ROOT / "desktop" / "src-tauri" / "src" / "engine" / "default_config.json"
+)
+
+
+def test_rust_engine_default_config_matches_python() -> None:
+    """Rust 引擎内嵌的默认配置必须与 `build_default_config()` 逐字段一致。
+
+    `default_config.json` 是由 Python 导出后内嵌进 Rust 的（`include_str!`），
+    这样 Rust 侧不必手写 46 个字段。代价是两边可能漂移：Python 改了默认值而 JSON
+    没重新导出时，Rust 接管 `default_config` 后前端拿到的默认参数会悄悄变样。
+    """
+    import json
+
+    if not RUST_DEFAULT_CONFIG_PATH.is_file():
+        pytest.skip(f"未找到 Rust 默认配置：{RUST_DEFAULT_CONFIG_PATH}")
+
+    embedded = json.loads(RUST_DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    expected = build_default_config()
+    assert embedded == expected, (
+        "Rust 的 default_config.json 与 build_default_config() 不一致，请重新导出：\n"
+        "  python -c \"import json; from src.engine.config import build_default_config as b; "
+        "open('desktop/src-tauri/src/engine/default_config.json', 'w', encoding='utf-8', newline='\\n')"
+        ".write(json.dumps(b(), ensure_ascii=False, indent=1) + '\\n')\""
+    )

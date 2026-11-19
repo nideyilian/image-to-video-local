@@ -25,6 +25,10 @@ const NATIVE_METHODS = new Set([
   "scan_images",
   "scan_subfolders",
   "scan_subfolder_groups",
+  "default_config",
+  "normalize_config",
+  "validate_config",
+  "validate_config_detailed",
 ]);
 
 /** `handled: false` = Rust 不接这个请求（未迁移 / 需要旧引擎的语义），交给 sidecar。 */

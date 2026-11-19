@@ -11,6 +11,7 @@
 //! - `preview_sequence > 0` 的扫描（「换一组看看」依赖旧引擎的确定性洗牌，
 //!   要复现 Python `random.Random` 的 Fisher-Yates 才有同样结果，留到后续）。
 
+mod config;
 mod library;
 mod paths;
 mod scan;
@@ -48,7 +49,30 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
         "scan_images" => scan_images(&object),
         "scan_subfolders" => scan_subfolders(&object),
         "scan_subfolder_groups" => scan_subfolder_groups(&object),
+        "default_config" => DispatchResponse::ok(config::default_config()),
+        "normalize_config" => {
+            DispatchResponse::ok(config::normalize_config(object.get("config")))
+        }
+        "validate_config" => {
+            let errors = config::validate_config(object.get("config"), check_files(&object));
+            DispatchResponse::ok(json!({ "valid": errors.is_empty(), "errors": errors }))
+        }
+        "validate_config_detailed" => {
+            let issues = config::validate_config_detailed(
+                object.get("config"),
+                check_files(&object),
+            );
+            DispatchResponse::ok(json!({ "valid": issues.is_empty(), "issues": issues }))
+        }
         _ => DispatchResponse::unhandled(),
+    }
+}
+
+/// 与 Python `bool(params.get("check_files", True))` 等价。
+fn check_files(params: &Map<String, Value>) -> bool {
+    match params.get("check_files") {
+        None => true,
+        Some(value) => config::is_truthy(Some(value)),
     }
 }
 
@@ -165,6 +189,44 @@ mod tests {
         assert!(!dispatch("scan_images", Some(params)).handled);
         let params = json!({ "input_dir": "", "preview_sequence": 1 });
         assert!(!dispatch("scan_subfolder_groups", Some(params)).handled);
+    }
+
+    /// 与 Python 版逐字段对照用：设 `ITV_PARITY_CASES` 指向两边共用的用例文件，
+    /// 输出 `normalize` / `validate` 两个接口的完整结果。
+    #[test]
+    fn parity_dump_config_cases() {
+        let Ok(path) = std::env::var("ITV_PARITY_CASES") else {
+            return;
+        };
+        let text = std::fs::read_to_string(&path).expect("读取对照用例");
+        let cases: Value = serde_json::from_str(&text).expect("解析对照用例");
+        let mut out = serde_json::Map::new();
+        if let Some(items) = cases.get("normalize").and_then(Value::as_array) {
+            for case in items {
+                let id = case.get("id").and_then(Value::as_str).unwrap_or_default();
+                out.insert(
+                    format!("normalize::{id}"),
+                    config::normalize_config(case.get("config")),
+                );
+            }
+        }
+        if let Some(items) = cases.get("validate").and_then(Value::as_array) {
+            for case in items {
+                let id = case.get("id").and_then(Value::as_str).unwrap_or_default();
+                let check_files = case
+                    .get("check_files")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                out.insert(
+                    format!("validate::{id}"),
+                    Value::Array(config::validate_config_detailed(
+                        case.get("config"),
+                        check_files,
+                    )),
+                );
+            }
+        }
+        println!("CONFIG_PARITY={}", Value::Object(out));
     }
 
     #[test]
