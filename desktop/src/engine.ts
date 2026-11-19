@@ -19,6 +19,19 @@ type ResponsePayload = {
 
 const ENGINE_STARTUP_TIMEOUT_MS = 120_000;
 
+/** 已由 Rust 原生接管（不碰像素、纯文件扫描）的接口；其余继续走 Python 引擎。 */
+const NATIVE_METHODS = new Set([
+  "library_dirs",
+  "scan_images",
+  "scan_subfolders",
+  "scan_subfolder_groups",
+]);
+
+/** `handled: false` = Rust 不接这个请求（未迁移 / 需要旧引擎的语义），交给 sidecar。 */
+type NativeResponse<T> = { handled: boolean; result?: T; error?: string };
+
+const NOT_NATIVE = Symbol("not-native");
+
 export class EngineBridge {
   private child: Child | null = null;
   private pending = new Map<string, PendingRequest>();
@@ -86,6 +99,8 @@ export class EngineBridge {
     if (!this.desktopRuntime) {
       return this.browserFallback<T>(method, params);
     }
+    const native = await this.callNative<T>(method, params);
+    if (native !== NOT_NATIVE) return native;
     if (!this.child && method !== "health") await this.connect();
     if (!this.child) throw new Error("本地引擎未连接");
 
@@ -104,6 +119,23 @@ export class EngineBridge {
     });
     await this.child.write(payload);
     return response;
+  }
+
+  /**
+   * 已迁移到 Rust 的接口走 Tauri command，省掉一次 Python 进程往返。
+   * 未迁移、或原生侧明确表示「这个请求我不接」（handled=false）时返回 NOT_NATIVE，
+   * 由调用方继续走旧引擎；原生实现抛异常也回落，保证迁移期间功能不退化。
+   */
+  private async callNative<T>(method: string, params: Record<string, unknown>): Promise<T | typeof NOT_NATIVE> {
+    if (!NATIVE_METHODS.has(method)) return NOT_NATIVE;
+    try {
+      const response = await invoke<NativeResponse<T>>("engine_dispatch", { method, params });
+      if (response.handled) return response.result as T;
+      return NOT_NATIVE;
+    } catch (error) {
+      console.warn(`[engine] ${method} 的原生实现不可用，回落旧引擎`, error);
+      return NOT_NATIVE;
+    }
   }
 
   subscribe(listener: (event: EngineEvent) => void) {

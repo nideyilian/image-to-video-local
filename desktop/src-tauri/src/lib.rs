@@ -2,6 +2,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod engine;
+
+/// 引擎接口的原生实现入口。
+///
+/// 已迁移的 method 直接在此返回结果；未迁移的返回 `handled: false`，
+/// 由前端回落到 Python sidecar（见 `src/engine.ts` 的调用路由）。
+#[tauri::command]
+fn engine_dispatch(method: String, params: Option<serde_json::Value>) -> engine::DispatchResponse {
+    engine::dispatch(&method, params)
+}
+
 #[tauri::command]
 fn project_root() -> Result<String, String> {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -66,6 +77,7 @@ pub fn run() {
             read_text_file,
             write_text_file,
             reveal_path,
+            engine_dispatch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
