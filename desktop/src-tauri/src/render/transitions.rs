@@ -823,13 +823,12 @@ fn elastic_zoom(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFra
     linspace01(count)
         .into_iter()
         .map(|progress| {
-            let mut elastic = progress;
-            if progress >= 0.5 {
-                elastic = 1.0 + 0.2 * ((progress - 0.5) * 2.0 * PI * 2.0).sin();
+            let elastic = if progress >= 0.5 {
+                1.0 + 0.2 * ((progress - 0.5) * 2.0 * PI * 2.0).sin()
             } else {
-                elastic = progress * 2.0;
+                progress * 2.0
             }
-            elastic = elastic.clamp(0.0, 1.2);
+            .clamp(0.0, 1.2);
             let scale = 0.5 + elastic * 0.7;
             let new_h = (height * scale) as i64;
             let new_w = (width * scale) as i64;
