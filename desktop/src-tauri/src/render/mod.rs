@@ -907,3 +907,56 @@ mod parity_effects_all {
         println!("EFFECTS_ALL={}", Value::Array(report));
     }
 }
+
+#[cfg(test)]
+mod parity_transitions_all {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// 全部转场对照：`ITV_TRANS_ALL_DIR` 里放 a.png / b.png，`ITV_TRANS_ALL_OUT` 输出目录。
+    /// 每种转场存全部帧，命名 `<序号>__<帧号>.png`。
+    #[test]
+    fn parity_dump_all_transitions() {
+        let (Ok(dir), Ok(out_dir)) = (
+            std::env::var("ITV_TRANS_ALL_DIR"),
+            std::env::var("ITV_TRANS_ALL_OUT"),
+        ) else {
+            return;
+        };
+        let Some(first) = pixels::read_image_bgr(std::path::Path::new(&dir).join("a.png").as_path())
+        else {
+            return;
+        };
+        let Some(second) = pixels::read_image_bgr(std::path::Path::new(&dir).join("b.png").as_path())
+        else {
+            return;
+        };
+        std::fs::create_dir_all(&out_dir).ok();
+
+        let names = [
+            "淡入淡出", "左右滑动", "上下滑动", "交叉溶解", "缩放过渡", "圆形扩展", "百叶窗",
+            "棋盘格", "像素化", "旋转变换", "波浪", "颜色混合", "方块过渡", "放大冲击",
+            "缩小爆炸", "旋转放大", "弹性缩放", "3D翻转", "推入效果", "对角擦除", "门式打开",
+            "闪光过渡", "碎片飞散", "光晕扩散", "径向旋切", "漩涡扭曲", "菱形开幕", "镜头虚焦",
+            "纵向拉幕", "横向拉幕", "液态融合", "流光擦拭", "时钟扫描",
+        ];
+        let num_frames = std::env::var("ITV_TRANS_ALL_FRAMES")
+            .ok()
+            .and_then(|text| text.parse::<usize>().ok())
+            .unwrap_or(8);
+
+        let mut report = Vec::new();
+        for (index, name) in names.iter().enumerate() {
+            let kind = transitions::parse(name);
+            let frames = transitions::generate_frames(&first, &second, kind, num_frames);
+            for (frame_index, frame) in frames.iter().enumerate() {
+                frame
+                    .to_rgb()
+                    .save(std::path::Path::new(&out_dir).join(format!("{index:02}__{frame_index:02}.png")))
+                    .ok();
+            }
+            report.push(json!({ "index": index, "name": name, "count": frames.len() }));
+        }
+        println!("TRANS_ALL={}", Value::Array(report));
+    }
+}

@@ -116,7 +116,7 @@ pub fn warp_affine(source: &BgrFrame, matrix: Affine, border: BorderMode) -> Bgr
 }
 
 /// 双线性采样 + 边界处理。坐标为「像素中心」约定（与 OpenCV 一致）。
-fn sample_bilinear(source: &BgrFrame, x: f64, y: f64, border: BorderMode) -> [u8; 3] {
+pub(crate) fn sample_bilinear(source: &BgrFrame, x: f64, y: f64, border: BorderMode) -> [u8; 3] {
     let x0 = x.floor();
     let y0 = y.floor();
     let dx = x - x0;
@@ -793,6 +793,10 @@ fn kernel_size(value: f64) -> u32 {
 /// `cv2.GaussianBlur(src, (k, k), sigmaX=0)` 的可分离实现。
 ///
 /// sigma=0 时 OpenCV 按 `0.3*((k-1)*0.5 - 1) + 0.8` 推算 sigma。
+pub(crate) fn gaussian_blur_ksize_pub(frame: &BgrFrame, ksize: u32) -> BgrFrame {
+    gaussian_blur(frame, ksize)
+}
+
 fn gaussian_blur(frame: &BgrFrame, ksize: u32) -> BgrFrame {
     if ksize <= 1 {
         return frame.clone();
@@ -1409,4 +1413,74 @@ mod tests {
         let result = center_crop(&frame, 20, 20);
         assert_eq!((result.width, result.height), (20, 20));
     }
+}
+/// 供转场模块复用：双线性 + BORDER_REFLECT 采样（`cv2.remap` 的默认边界）。
+pub(crate) fn sample_bilinear_reflect(source: &BgrFrame, x: f64, y: f64) -> [u8; 3] {
+    sample_bilinear(source, x, y, BorderMode::Reflect)
+}
+
+/// 供转场模块复用：指定核大小与 sigma 的高斯模糊。
+pub(crate) fn gaussian_blur_sigma_pub(frame: &BgrFrame, ksize: u32, sigma: f64) -> BgrFrame {
+    if ksize <= 1 {
+        return frame.clone();
+    }
+    let ksize = if ksize % 2 == 0 { ksize + 1 } else { ksize };
+    let radius = (ksize / 2) as i64;
+    let mut kernel: Vec<f64> = Vec::with_capacity(ksize as usize);
+    let mut total = 0.0;
+    for offset in -radius..=radius {
+        let weight = (-(offset as f64).powi(2) / (2.0 * sigma * sigma)).exp();
+        kernel.push(weight);
+        total += weight;
+    }
+    for weight in kernel.iter_mut() {
+        *weight /= total;
+    }
+    let mut horizontal = frame.clone();
+    for y in 0..frame.height {
+        for x in 0..frame.width {
+            let mut sum = [0.0f64; 3];
+            for (index, weight) in kernel.iter().enumerate() {
+                let sx = (x as i64 + index as i64 - radius).rem_euclid(frame.width as i64) as u32;
+                if let Some(pixel) = frame.pixel(sx, y) {
+                    for channel in 0..3 {
+                        sum[channel] += pixel[channel] as f64 * weight;
+                    }
+                }
+            }
+            horizontal.set_pixel(
+                x,
+                y,
+                [
+                    sum[0].round().clamp(0.0, 255.0) as u8,
+                    sum[1].round().clamp(0.0, 255.0) as u8,
+                    sum[2].round().clamp(0.0, 255.0) as u8,
+                ],
+            );
+        }
+    }
+    let mut vertical = frame.clone();
+    for y in 0..frame.height {
+        for x in 0..frame.width {
+            let mut sum = [0.0f64; 3];
+            for (index, weight) in kernel.iter().enumerate() {
+                let sy = (y as i64 + index as i64 - radius).rem_euclid(frame.height as i64) as u32;
+                if let Some(pixel) = horizontal.pixel(x, sy) {
+                    for channel in 0..3 {
+                        sum[channel] += pixel[channel] as f64 * weight;
+                    }
+                }
+            }
+            vertical.set_pixel(
+                x,
+                y,
+                [
+                    sum[0].round().clamp(0.0, 255.0) as u8,
+                    sum[1].round().clamp(0.0, 255.0) as u8,
+                    sum[2].round().clamp(0.0, 255.0) as u8,
+                ],
+            );
+        }
+    }
+    vertical
 }

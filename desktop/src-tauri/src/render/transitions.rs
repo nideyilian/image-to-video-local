@@ -10,6 +10,8 @@
 //! 3. **`.astype(np.uint8)` 是截断**（向下取整），而 `cv2.addWeighted` 是四舍五入。
 //!    淡入淡出用的是前者，`blend_weighted` 用的是后者，两者不能混用。
 
+use std::f64::consts::PI;
+
 use super::pixels::BgrFrame;
 
 /// 生成 n 个中间帧所需的 alpha 序列（`np.linspace(0, 1, n)`）。
@@ -62,6 +64,32 @@ pub enum Transition {
     Zoom,
     Blinds,
     Pixelate,
+    // ---- 第二批 ----
+    Rotate,
+    Checkerboard,
+    Wave,
+    ColorMix,
+    Block,
+    ZoomInImpact,
+    ZoomOutExplode,
+    RotateZoom,
+    ElasticZoom,
+    Flip3d,
+    PushIn,
+    DiagonalWipe,
+    DoorOpen,
+    Flash,
+    Shatter,
+    GlowSpread,
+    RadialSweep,
+    VortexDistort,
+    DiamondReveal,
+    FocusBlur,
+    CurtainVertical,
+    CurtainHorizontal,
+    LiquidBlend,
+    LightStreak,
+    ClockWipe,
     /// 未识别或有「无转场」时按淡入淡出处理（与 Python 的默认分支一致）
     Fallback,
 }
@@ -71,13 +99,40 @@ pub fn parse(name: &str) -> Transition {
     match name {
         "淡入淡出" => Transition::Fade,
         "交叉溶解" => Transition::Fade,
-        "颜色混合" => Transition::Fade,
         "左右滑动" => Transition::SlideLeft,
         "上下滑动" => Transition::SlideUp,
         "圆形扩展" => Transition::CircleExpand,
         "缩放过渡" => Transition::Zoom,
         "百叶窗" => Transition::Blinds,
         "像素化" => Transition::Pixelate,
+        "旋转变换" => Transition::Rotate,
+        "棋盘格" => Transition::Checkerboard,
+        "波浪" => Transition::Wave,
+        // ⚠️ 曾经这里写成 `Transition::Fade`，导致「颜色混合」实际走的是淡入淡出。
+        // 同一个字符串在 match 里出现两次时，**后面那条永远不生效**，
+        // Rust 只报 unreachable pattern 警告，跑起来完全看不出问题。
+        "颜色混合" => Transition::ColorMix,
+        "方块过渡" => Transition::Block,
+        "放大冲击" => Transition::ZoomInImpact,
+        "缩小爆炸" => Transition::ZoomOutExplode,
+        "旋转放大" => Transition::RotateZoom,
+        "弹性缩放" => Transition::ElasticZoom,
+        "3D翻转" => Transition::Flip3d,
+        "推入效果" => Transition::PushIn,
+        "对角擦除" => Transition::DiagonalWipe,
+        "门式打开" => Transition::DoorOpen,
+        "闪光过渡" => Transition::Flash,
+        "碎片飞散" => Transition::Shatter,
+        "光晕扩散" => Transition::GlowSpread,
+        "径向旋切" => Transition::RadialSweep,
+        "漩涡扭曲" => Transition::VortexDistort,
+        "菱形开幕" => Transition::DiamondReveal,
+        "镜头虚焦" => Transition::FocusBlur,
+        "纵向拉幕" => Transition::CurtainVertical,
+        "横向拉幕" => Transition::CurtainHorizontal,
+        "液态融合" => Transition::LiquidBlend,
+        "流光擦拭" => Transition::LightStreak,
+        "时钟扫描" => Transition::ClockWipe,
         _ => Transition::Fallback,
     }
 }
@@ -123,6 +178,31 @@ fn generate_raw(
         Transition::Zoom => zoom(first, second, count),
         Transition::Blinds => blinds(first, second, count),
         Transition::Pixelate => pixelate(first, second, count),
+        Transition::Rotate => rotate(first, second, count),
+        Transition::Checkerboard => checkerboard(first, second, count),
+        Transition::Wave => wave(first, second, count),
+        Transition::ColorMix => color_mix(first, second, count),
+        Transition::Block => block(first, second, count),
+        Transition::ZoomInImpact => zoom_in_impact(first, second, count),
+        Transition::ZoomOutExplode => zoom_out_explode(first, second, count),
+        Transition::RotateZoom => rotate_zoom(first, second, count),
+        Transition::ElasticZoom => elastic_zoom(first, second, count),
+        Transition::Flip3d => flip_3d(first, second, count),
+        Transition::PushIn => push_in(first, second, count),
+        Transition::DiagonalWipe => diagonal_wipe(first, second, count),
+        Transition::DoorOpen => door_open(first, second, count),
+        Transition::Flash => flash(first, second, count),
+        Transition::Shatter => shatter(first, second, count),
+        Transition::GlowSpread => glow_spread(first, second, count),
+        Transition::RadialSweep => radial_sweep(first, second, count),
+        Transition::VortexDistort => vortex_distort(first, second, count),
+        Transition::DiamondReveal => diamond_reveal(first, second, count),
+        Transition::FocusBlur => focus_blur(first, second, count),
+        Transition::CurtainVertical => curtain(first, second, count, true),
+        Transition::CurtainHorizontal => curtain(first, second, count, false),
+        Transition::LiquidBlend => liquid_blend(first, second, count),
+        Transition::LightStreak => light_streak(first, second, count),
+        Transition::ClockWipe => clock_wipe(first, second, count),
     }
 }
 
@@ -321,6 +401,1064 @@ fn pixelate(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> 
                 1.0 - (pixel_size - 1) as f64 / denominator
             };
             super::pixels::blend_weighted(&up, second, alpha)
+        })
+        .collect()
+}
+
+
+// ---------- 第二批：24 种转场 ----------
+
+/// 复制一块矩形区域（目标坐标可能越界，自动裁剪）。
+fn copy_rect(dst: &mut BgrFrame, src: &BgrFrame, x0: i64, y0: i64, x1: i64, y1: i64) {
+    let x_start = x0.max(0);
+    let y_start = y0.max(0);
+    let x_end = x1.min(dst.width as i64);
+    let y_end = y1.min(dst.height as i64);
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            if let Some(value) = src.pixel(x as u32, y as u32) {
+                dst.set_pixel(x as u32, y as u32, value);
+            }
+        }
+    }
+}
+
+/// 极简确定性伪随机（SplitMix64）：用于「本身就是随机」的转场。
+///
+/// 这几个转场（棋盘格 / 方块 / 缩小爆炸 / 碎片飞散）在 Python 里用 `np.random`，
+/// **每次运行结果都不同**，不存在「逐帧对齐」的可能。这里用固定种子生成
+/// 视觉等价的效果，保证同一配置多次渲染结果稳定（比 Python 更可复现）。
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        SplitMix64(seed)
+    }
+
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// [0, 1)
+    fn unit(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// 近似标准正态（Box-Muller），对应 `np.random.randn()` 的用法
+    fn normal(&mut self) -> f64 {
+        let u1 = self.unit().max(1e-12);
+        let u2 = self.unit();
+        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+    }
+}
+
+/// `旋转变换`：img1 旋转 0→360°，角度越大越淡化到 img2。
+///
+/// ⚠️ Python 的 `cv2.warpAffine` 这里**没传 borderMode**，默认是 `BORDER_CONSTANT`（补黑），
+/// 不是其它特效用的 REFLECT。用错会在四角出现镜像而不是黑边。
+fn rotate(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let center_x = (first.width / 2) as f64;
+    let center_y = (first.height / 2) as f64;
+    // np.linspace(0, 360, n) 含两端
+    let angles: Vec<f64> = if count <= 1 {
+        vec![0.0]
+    } else {
+        (0..count)
+            .map(|index| 360.0 * index as f64 / (count - 1) as f64)
+            .collect()
+    };
+    angles
+        .into_iter()
+        .map(|angle| {
+            let matrix = super::effects::rotation_matrix(center_x, center_y, angle, 1.0);
+            let rotated =
+                super::effects::warp_affine(first, matrix, super::effects::BorderMode::Constant);
+            // alpha = angle / 360；addWeighted(rotated, 1-a, second, a, 0)
+            super::pixels::blend_weighted(&rotated, second, angle / 360.0)
+        })
+        .collect()
+}
+
+/// `棋盘格`：逐格随机切换（格数随进度增加）
+fn checkerboard(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    const GRID: i64 = 20;
+    let rows = first.height as i64 / GRID;
+    let cols = first.width as i64 / GRID;
+    let mut rng = SplitMix64::new(0xC0FFEE);
+    // 预生成格子顺序（避免每帧重新随机导致画面闪烁）
+    let total = (rows * cols).max(1) as usize;
+    let mut order: Vec<(i64, i64)> = Vec::with_capacity(total);
+    for row in 0..rows {
+        for col in 0..cols {
+            order.push((row, col));
+        }
+    }
+    for index in (1..order.len()).rev() {
+        let swap = (rng.next() as usize) % (index + 1);
+        order.swap(index, swap);
+    }
+
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut frame = first.clone();
+            let switches = (progress * total as f64) as usize;
+            for &(row, col) in order.iter().take(switches.min(order.len())) {
+                let y0 = row * GRID;
+                let x0 = col * GRID;
+                copy_rect(
+                    &mut frame,
+                    second,
+                    x0,
+                    y0,
+                    (x0 + GRID).min(first.width as i64),
+                    (y0 + GRID).min(first.height as i64),
+                );
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `波浪`：按行正弦错位推进
+fn wave(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    const AMPLITUDE: f64 = 20.0;
+    const FREQUENCY: f64 = 0.02;
+    let width = first.width as f64;
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut frame = first.clone();
+            for y in 0..first.height {
+                let wave_offset =
+                    (AMPLITUDE * (FREQUENCY * y as f64 + progress * 2.0 * PI).sin()) as i64;
+                let wave_progress = (progress + wave_offset as f64 / width) % 1.0;
+                let split_x = (width * wave_progress) as i64;
+                if split_x > 0 {
+                    copy_rect(&mut frame, second, 0, y as i64, split_x, y as i64 + 1);
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+/// BGR → HSV（H∈[0,180)、S/V∈[0,255]，对齐 OpenCV 的 8U 整数实现）。
+///
+/// ⚠️ 三个容易出错的细节（第一版全踩了）：
+/// 1. **H 不要再多除 2**：`*30` 已经隐含了「0-360 → 0-180」的那次除以二；
+///    多除一次色相会整体差一倍。
+/// 2. 除法用 **floor**（`div_euclid`）而不是 Rust 的截断除法，
+///    否则负角度会差 1（实测 2000 个随机色里约一半）。
+/// 3. S 是 `(diff*255 + v/2) / v`，带半个 v 的补偿。
+///
+/// 仍与 OpenCV 存在 ±1 的差异（它内部还有 SIMD 的定点运算），
+/// 这在「颜色混合」这种逐通道插值的场景会累积成轻微色偏，属 B 路线可接受范围。
+fn bgr_to_hsv(pixel: [u8; 3]) -> [u8; 3] {
+    let b = pixel[0] as i64;
+    let g = pixel[1] as i64;
+    let r = pixel[2] as i64;
+    let v = r.max(g).max(b);
+    if v == 0 {
+        return [0, 0, 0];
+    }
+    let min = r.min(g).min(b);
+    let diff = v - min;
+    let s = (diff * 255 + v / 2) / v;
+    if diff == 0 {
+        return [0, s as u8, v as u8];
+    }
+    let raw = if v == r {
+        (g - b) * 30
+    } else if v == g {
+        60 * diff + (b - r) * 30
+    } else {
+        120 * diff + (r - g) * 30
+    };
+    let mut h = raw.div_euclid(diff);
+    if h < 0 {
+        h += 180;
+    }
+    [h.clamp(0, 179) as u8, s.clamp(0, 255) as u8, v as u8]
+}
+
+/// HSV → BGR（对齐 OpenCV 的 8U 整数实现）。
+fn hsv_to_bgr(pixel: [u8; 3]) -> [u8; 3] {
+    let h = pixel[0] as i64;
+    let s = pixel[1] as i64;
+    let v = pixel[2] as i64;
+    if s == 0 {
+        return [v as u8, v as u8, v as u8];
+    }
+    let region = h / 30;
+    let remainder = (h - region * 30) * 255 / 30;
+    let p = (v * (255 - s) + 127) / 255;
+    let q = (v * (255 - s * remainder / 255) + 127) / 255;
+    let t = (v * (255 - s * (255 - remainder) / 255) + 127) / 255;
+    let (r, g, b) = match region % 6 {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    [
+        b.clamp(0, 255) as u8,
+        g.clamp(0, 255) as u8,
+        r.clamp(0, 255) as u8,
+    ]
+}
+
+/// `颜色混合`：HSV 空间插值（不是 BGR 淡入淡出）
+fn color_mix(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let first_hsv: Vec<[u8; 3]> = (0..first.data.len() / 3)
+        .map(|index| {
+            bgr_to_hsv([
+                first.data[index * 3],
+                first.data[index * 3 + 1],
+                first.data[index * 3 + 2],
+            ])
+        })
+        .collect();
+    let second_hsv: Vec<[u8; 3]> = (0..second.data.len() / 3)
+        .map(|index| {
+            bgr_to_hsv([
+                second.data[index * 3],
+                second.data[index * 3 + 1],
+                second.data[index * 3 + 2],
+            ])
+        })
+        .collect();
+
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut frame = first.clone();
+            for index in 0..first_hsv.len() {
+                let mut mixed = [0u8; 3];
+                for channel in 0..3 {
+                    let a = first_hsv[index][channel] as f64;
+                    let b = second_hsv[index][channel] as f64;
+                    mixed[channel] = (a * (1.0 - progress) + b * progress)
+                        .round()
+                        .clamp(0.0, 255.0) as u8;
+                }
+                // clip 后转回 BGR（Python 同样先 clip 到 0..255 再 cvtColor）
+                let bgr = hsv_to_bgr(mixed);
+                frame.data[index * 3] = bgr[0];
+                frame.data[index * 3 + 1] = bgr[1];
+                frame.data[index * 3 + 2] = bgr[2];
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `方块过渡`：40px 方块随机顺序出现
+fn block(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    const BLOCK: i64 = 40;
+    let rows = (first.height as i64 + BLOCK - 1) / BLOCK;
+    let cols = (first.width as i64 + BLOCK - 1) / BLOCK;
+    let total = (rows * cols).max(1) as usize;
+    let mut rng = SplitMix64::new(0xB10C);
+    let mut order: Vec<usize> = (0..total).collect();
+    for index in (1..order.len()).rev() {
+        let swap = (rng.next() as usize) % (index + 1);
+        order.swap(index, swap);
+    }
+
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut frame = first.clone();
+            let blocks = (total as f64 * progress) as usize;
+            for &block_index in order.iter().take(blocks.min(order.len())) {
+                let row = block_index as i64 / cols;
+                let col = block_index as i64 % cols;
+                let y0 = row * BLOCK;
+                let x0 = col * BLOCK;
+                copy_rect(
+                    &mut frame,
+                    second,
+                    x0,
+                    y0,
+                    (x0 + BLOCK).min(first.width as i64),
+                    (y0 + BLOCK).min(first.height as i64),
+                );
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `放大冲击`：img2 从 0.1 放大到 1.0，非线性进度
+fn zoom_in_impact(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let height = first.height as f64;
+    let width = first.width as f64;
+    linspace01(count)
+        .into_iter()
+        .map(|raw| {
+            let progress = raw.sqrt();
+            let mut frame = first.clone();
+            let scale = 0.1 + progress * 0.9;
+            let new_h = (height * scale) as i64;
+            let new_w = (width * scale) as i64;
+            if new_h > 0 && new_w > 0 {
+                let scaled = super::pixels::resize(
+                    second,
+                    new_w as u32,
+                    new_h as u32,
+                    super::pixels::ResizeFilter::Bilinear,
+                );
+                let alpha = progress.sqrt();
+                if new_h <= first.height as i64 && new_w <= first.width as i64 {
+                    let y_offset = (first.height as i64 - new_h) / 2;
+                    let x_offset = (first.width as i64 - new_w) / 2;
+                    for y in 0..new_h {
+                        for x in 0..new_w {
+                            let dy = (y_offset + y) as u32;
+                            let dx = (x_offset + x) as u32;
+                            if let (Some(base), Some(top)) = (frame.pixel(dx, dy), scaled.pixel(x as u32, y as u32)) {
+                                let mut mixed = [0u8; 3];
+                                for channel in 0..3 {
+                                    mixed[channel] = (base[channel] as f64 * (1.0 - alpha)
+                                        + top[channel] as f64 * alpha)
+                                        .round()
+                                        .clamp(0.0, 255.0)
+                                        as u8;
+                                }
+                                frame.set_pixel(dx, dy, mixed);
+                            }
+                        }
+                    }
+                } else {
+                    frame = super::pixels::blend_weighted(&frame, second, alpha);
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `缩小爆炸`：img1 缩小并随机偏移，淡出到 img2
+fn zoom_out_explode(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let height = first.height as f64;
+    let width = first.width as f64;
+    let mut rng = SplitMix64::new(0xE8B0DE);
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let scale = 1.0 - progress * 0.9;
+            let new_h = (height * scale) as i64;
+            let new_w = (width * scale) as i64;
+            if new_h <= 0 || new_w <= 0 || scale <= 0.1 {
+                return second.clone();
+            }
+            let scaled = super::pixels::resize(
+                first,
+                new_w as u32,
+                new_h as u32,
+                super::pixels::ResizeFilter::Bilinear,
+            );
+            let explosion = progress * progress;
+            let offset_x = (rng.normal() * 20.0 * explosion) as i64;
+            let offset_y = (rng.normal() * 20.0 * explosion) as i64;
+            let y_offset = (first.height as i64 - new_h) / 2 + offset_y;
+            let x_offset = (first.width as i64 - new_w) / 2 + offset_x;
+            let alpha = 1.0 - progress;
+
+            let mut frame = second.clone();
+            let y1 = y_offset.max(0);
+            let y2 = (y_offset + new_h).min(first.height as i64);
+            let x1 = x_offset.max(0);
+            let x2 = (x_offset + new_w).min(first.width as i64);
+            let src_y1 = (-y_offset).max(0);
+            let src_x1 = (-x_offset).max(0);
+            for y in 0..(y2 - y1).max(0) {
+                for x in 0..(x2 - x1).max(0) {
+                    let dst = ((y1 + y) as u32, (x1 + x) as u32);
+                    let src = ((src_x1 + x) as u32, (src_y1 + y) as u32);
+                    if let (Some(base), Some(top)) = (frame.pixel(dst.0, dst.1), scaled.pixel(src.0, src.1)) {
+                        let mut mixed = [0u8; 3];
+                        for channel in 0..3 {
+                            mixed[channel] = (base[channel] as f64 * (1.0 - alpha)
+                                + top[channel] as f64 * alpha)
+                                .round()
+                                .clamp(0.0, 255.0) as u8;
+                        }
+                        frame.set_pixel(dst.0, dst.1, mixed);
+                    }
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `旋转放大`：img2 旋转 360° 同时从 0.3 放大到 1.0
+fn rotate_zoom(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let center_x = (first.width / 2) as f64;
+    let center_y = (first.height / 2) as f64;
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let angle = progress * 360.0;
+            let scale = 0.3 + progress * 0.7;
+            let matrix = super::effects::rotation_matrix(center_x, center_y, angle, scale);
+            let warped = super::effects::warp_affine(second, matrix, super::effects::BorderMode::Constant);
+            super::pixels::blend_weighted(first, &warped, progress)
+        })
+        .collect()
+}
+
+/// `弹性缩放`：前半段线性放大，后半段回弹
+fn elastic_zoom(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let height = first.height as f64;
+    let width = first.width as f64;
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut elastic = progress;
+            if progress >= 0.5 {
+                elastic = 1.0 + 0.2 * ((progress - 0.5) * 2.0 * PI * 2.0).sin();
+            } else {
+                elastic = progress * 2.0;
+            }
+            elastic = elastic.clamp(0.0, 1.2);
+            let scale = 0.5 + elastic * 0.7;
+            let new_h = (height * scale) as i64;
+            let new_w = (width * scale) as i64;
+            if new_h <= 0 || new_w <= 0 {
+                return first.clone();
+            }
+            let scaled = super::pixels::resize(
+                second,
+                new_w as u32,
+                new_h as u32,
+                super::pixels::ResizeFilter::Bilinear,
+            );
+            let alpha = progress;
+            if new_h <= first.height as i64 && new_w <= first.width as i64 {
+                let mut frame = first.clone();
+                let y_offset = (first.height as i64 - new_h) / 2;
+                let x_offset = (first.width as i64 - new_w) / 2;
+                for y in 0..new_h {
+                    for x in 0..new_w {
+                        let dy = (y_offset + y) as u32;
+                        let dx = (x_offset + x) as u32;
+                        if let (Some(base), Some(top)) = (frame.pixel(dx, dy), scaled.pixel(x as u32, y as u32)) {
+                            let mut mixed = [0u8; 3];
+                            for channel in 0..3 {
+                                mixed[channel] = (base[channel] as f64 * (1.0 - alpha)
+                                    + top[channel] as f64 * alpha)
+                                    .round()
+                                    .clamp(0.0, 255.0) as u8;
+                            }
+                            frame.set_pixel(dx, dy, mixed);
+                        }
+                    }
+                }
+                frame
+            } else {
+                let crop_y = (new_h - first.height as i64) / 2;
+                let crop_x = (new_w - first.width as i64) / 2;
+                let cropped = super::pixels::crop(
+                    &scaled,
+                    crop_x,
+                    crop_y,
+                    first.width,
+                    first.height,
+                );
+                super::pixels::blend_weighted(first, &cropped, alpha)
+            }
+        })
+        .collect()
+}
+
+/// `3D翻转`：水平压缩模拟翻转，前半段 img1、后半段 img2
+fn flip_3d(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let width = first.width as f64;
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let angle = progress * 180.0;
+            let scale_x = (angle * PI / 180.0).cos().abs();
+            let current = if angle < 90.0 { first } else { second };
+            let new_w = 1i64.max((width * scale_x) as i64) as u32;
+            let scaled = super::pixels::resize(
+                current,
+                new_w,
+                first.height,
+                super::pixels::ResizeFilter::Bilinear,
+            );
+            let mut frame = BgrFrame::black(first.width, first.height);
+            let x_offset = (first.width.saturating_sub(new_w)) / 2;
+            super::pixels::blit(&mut frame, &scaled, x_offset as i64, 0);
+            // 阴影：整体乘 (1 - 0.3*(1-scale_x))
+            let factor = 1.0 - 0.3 * (1.0 - scale_x);
+            for byte in frame.data.iter_mut() {
+                *byte = (*byte as f64 * factor).clamp(0.0, 255.0) as u8;
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `推入效果`：img1 左移、img2 从右侧推入
+fn push_in(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let width = first.width as i64;
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut frame = BgrFrame::black(first.width, first.height);
+            let push_pos = (width as f64 * progress) as i64;
+            // img1 左移
+            let img1_offset = -push_pos;
+            copy_rect(
+                &mut frame,
+                first,
+                img1_offset,
+                0,
+                img1_offset + width,
+                first.height as i64,
+            );
+            // img2 从右侧进入
+            let img2_offset = width - push_pos;
+            if img2_offset < width {
+                copy_rect(
+                    &mut frame,
+                    second,
+                    img2_offset,
+                    0,
+                    width,
+                    first.height as i64,
+                );
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `对角擦除`：x+y < threshold 的区域换成 img2
+fn diagonal_wipe(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let total = first.width as f64 + first.height as f64;
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let threshold = progress * total;
+            let mut frame = first.clone();
+            for y in 0..first.height {
+                for x in 0..first.width {
+                    if (x + y) as f64 <= threshold {
+                        if let Some(value) = second.pixel(x, y) {
+                            frame.set_pixel(x, y, value);
+                        }
+                    }
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `门式打开`：从中心向两侧展开
+fn door_open(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let center_x = first.width as i64 / 2;
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut frame = first.clone();
+            let door_width = (center_x as f64 * progress) as i64;
+            if door_width > 0 {
+                copy_rect(
+                    &mut frame,
+                    second,
+                    center_x - door_width,
+                    0,
+                    center_x + door_width,
+                    first.height as i64,
+                );
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `闪光过渡`：中间最亮的白光
+fn flash(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let flash_intensity = (1.0 - (2.0 * progress - 1.0).abs()).powi(2);
+            let base = if progress < 0.5 { first } else { second };
+            // addWeighted(base, 1-f, white, f, 0)
+            let mut frame = base.clone();
+            for byte in frame.data.iter_mut() {
+                *byte = (*byte as f64 * (1.0 - flash_intensity) + 255.0 * flash_intensity)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `碎片飞散`：img1 切成 40px 碎片旋转飞散，露出 img2
+fn shatter(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    const SHARD: i64 = 40;
+    let rows = (first.height as i64 + SHARD - 1) / SHARD;
+    let cols = (first.width as i64 + SHARD - 1) / SHARD;
+    // Python 用 `np.random.seed(42)` 固定种子，这里用固定种子的等价实现
+    let mut rng = SplitMix64::new(42);
+    let mut velocities: Vec<(f64, f64, f64)> = Vec::new();
+    for _ in 0..(rows * cols) {
+        let vel_x = rng.normal() * 50.0;
+        let vel_y = rng.normal() * 50.0 - 30.0;
+        let rotation = rng.normal() * 180.0;
+        velocities.push((vel_x, vel_y, rotation));
+    }
+
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut frame = second.clone();
+            let mut index = 0usize;
+            for row in 0..rows {
+                for col in 0..cols {
+                    let y1 = row * SHARD;
+                    let y2 = (y1 + SHARD).min(first.height as i64);
+                    let x1 = col * SHARD;
+                    let x2 = (x1 + SHARD).min(first.width as i64);
+                    let shard = super::pixels::crop(first, x1, y1, (x2 - x1) as u32, (y2 - y1) as u32);
+                    let (vel_x, vel_y, rotation) = velocities[index];
+                    let alpha = (1.0 - progress * 1.2).max(0.0);
+                    if alpha > 0.01 && progress < 0.9 && shard.width > 0 && shard.height > 0 {
+                        let offset_x = (vel_x * progress.powf(1.5)) as i64;
+                        let offset_y = (vel_y * progress.powf(1.5)) as i64;
+                        let angle = rotation * progress;
+                        let matrix = super::effects::rotation_matrix(
+                            shard.width as f64 / 2.0,
+                            shard.height as f64 / 2.0,
+                            angle,
+                            1.0,
+                        );
+                        let rotated = super::effects::warp_affine(
+                            &shard,
+                            matrix,
+                            super::effects::BorderMode::Constant,
+                        );
+                        let new_x = x1 + offset_x;
+                        let new_y = y1 + offset_y;
+                        let dst_y1 = new_y.max(0);
+                        let dst_y2 = (new_y + shard.height as i64).min(first.height as i64);
+                        let dst_x1 = new_x.max(0);
+                        let dst_x2 = (new_x + shard.width as i64).min(first.width as i64);
+                        let src_y1 = (-new_y).max(0);
+                        let src_x1 = (-new_x).max(0);
+                        for y in 0..(dst_y2 - dst_y1).max(0) {
+                            for x in 0..(dst_x2 - dst_x1).max(0) {
+                                let dx = (dst_x1 + x) as u32;
+                                let dy = (dst_y1 + y) as u32;
+                                let sx = (src_x1 + x) as u32;
+                                let sy = (src_y1 + y) as u32;
+                                if let (Some(base), Some(top)) =
+                                    (frame.pixel(dx, dy), rotated.pixel(sx, sy))
+                                {
+                                    let mut mixed = [0u8; 3];
+                                    for channel in 0..3 {
+                                        mixed[channel] = (base[channel] as f64 * (1.0 - alpha)
+                                            + top[channel] as f64 * alpha)
+                                            .round()
+                                            .clamp(0.0, 255.0)
+                                            as u8;
+                                    }
+                                    frame.set_pixel(dx, dy, mixed);
+                                }
+                            }
+                        }
+                    }
+                    index += 1;
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `光晕扩散`：圆形遮罩从中心扩散，边缘高斯羽化
+fn glow_spread(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let center_x = first.width as i64 / 2;
+    let center_y = first.height as i64 / 2;
+    let max_r = (((center_x * center_x + center_y * center_y) as f64).sqrt()) as i64;
+    // img2 轻微发光版本：addWeighted(img2, 0.75, blur(img2, sigma=10), 0.25, 0)
+    let glow = gaussian_blur_sigma(second, 10.0);
+    let target = super::pixels::blend_weighted(second, &glow, 0.25);
+    // 半径为 0 时 cv2.GaussianBlur((0,0), sigma=8) 的核大小 ≈ 2*ceil(3*8)+1
+    let soft_mask = |radius: f64| -> (u32, u32, f64) { (0, 0, radius) };
+    let _ = soft_mask;
+
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let radius = (max_r as f64 * progress) as i64;
+            let mask = circle_mask(first.width, first.height, center_x, center_y, radius.max(1));
+            let feathered = gaussian_blur_gray_sigma(&mask, first.width, first.height, 8.0);
+            let mut frame = first.clone();
+            for y in 0..first.height {
+                for x in 0..first.width {
+                    let weight = feathered[(y * first.width + x) as usize] as f64 / 255.0;
+                    if let (Some(base), Some(top)) = (first.pixel(x, y), target.pixel(x, y)) {
+                        let mut mixed = [0u8; 3];
+                        for channel in 0..3 {
+                            mixed[channel] = (base[channel] as f64 * (1.0 - weight)
+                                + top[channel] as f64 * weight)
+                                .clamp(0.0, 255.0) as u8;
+                        }
+                        frame.set_pixel(x, y, mixed);
+                    }
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+/// 生成实心圆遮罩（对应 `cv2.circle(mask, ..., 255, -1)`）。
+fn circle_mask(width: u32, height: u32, cx: i64, cy: i64, radius: i64) -> Vec<u8> {
+    let mut mask = vec![0u8; (width * height) as usize];
+    for y in 0..height as i64 {
+        for x in 0..width as i64 {
+            let dx = x - cx;
+            let dy = y - cy;
+            if dx * dx + dy * dy <= radius * radius {
+                mask[(y * width as i64 + x) as usize] = 255;
+            }
+        }
+    }
+    mask
+}
+
+/// 指定 sigma 的高斯模糊（`cv2.GaussianBlur(src, (0,0), sigma)`）。
+///
+/// `ksize=(0,0)` 时 OpenCV 按 `2*ceil(3*sigma)+1` 自动定核大小。
+fn gaussian_blur_sigma(frame: &BgrFrame, sigma: f64) -> BgrFrame {
+    let radius = (3.0 * sigma).ceil() as i64;
+    let radius = radius.max(1);
+    let ksize = (radius * 2 + 1) as u32;
+    // 复用 effects 里的实现（方差相同即可）
+    super::effects::gaussian_blur_sigma_pub(frame, ksize, sigma)
+}
+
+/// 单通道灰度 + 指定 sigma 的高斯模糊。
+fn gaussian_blur_gray_sigma(source: &[u8], width: u32, height: u32, sigma: f64) -> Vec<u8> {
+    let radius = ((3.0 * sigma).ceil() as i64).max(1);
+    let mut kernel: Vec<f64> = Vec::new();
+    let mut total = 0.0;
+    for offset in -radius..=radius {
+        let weight = (-(offset as f64).powi(2) / (2.0 * sigma * sigma)).exp();
+        kernel.push(weight);
+        total += weight;
+    }
+    for weight in kernel.iter_mut() {
+        *weight /= total;
+    }
+    // 横向
+    let mut horizontal = vec![0f64; source.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = 0.0;
+            for (index, weight) in kernel.iter().enumerate() {
+                let sx = (x as i64 + index as i64 - radius).rem_euclid(width as i64) as u32;
+                sum += source[(y * width + sx) as usize] as f64 * weight;
+            }
+            horizontal[(y * width + x) as usize] = sum;
+        }
+    }
+    // 纵向
+    let mut out = vec![0u8; source.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = 0.0;
+            for (index, weight) in kernel.iter().enumerate() {
+                let sy = (y as i64 + index as i64 - radius).rem_euclid(height as i64) as u32;
+                sum += horizontal[(sy * width + x) as usize] * weight;
+            }
+            out[(y * width + x) as usize] = sum.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// `径向旋切`：按极角扫描
+fn radial_sweep(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let center_x = first.width as f64 / 2.0;
+    let center_y = first.height as f64 / 2.0;
+    // 预计算每个像素的角度
+    let mut angles = vec![0.0f64; (first.width * first.height) as usize];
+    for y in 0..first.height {
+        for x in 0..first.width {
+            let angle = (y as f64 - center_y).atan2(x as f64 - center_x).to_degrees();
+            angles[(y * first.width + x) as usize] = (angle + 360.0) % 360.0;
+        }
+    }
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let threshold = progress * 360.0;
+            let mut frame = first.clone();
+            for y in 0..first.height {
+                for x in 0..first.width {
+                    if angles[(y * first.width + x) as usize] <= threshold {
+                        if let Some(value) = second.pixel(x, y) {
+                            frame.set_pixel(x, y, value);
+                        }
+                    }
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `漩涡扭曲`：中心强、边缘弱的扭转到淡入 img2
+fn vortex_distort(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let center_x = first.width as f64 / 2.0;
+    let center_y = first.height as f64 / 2.0;
+    let mut radius = vec![0.0f64; (first.width * first.height) as usize];
+    let mut base_angle = vec![0.0f64; (first.width * first.height) as usize];
+    let mut max_r = 1.0f64;
+    for y in 0..first.height {
+        for x in 0..first.width {
+            let dx = x as f64 - center_x;
+            let dy = y as f64 - center_y;
+            let r = (dx * dx + dy * dy).sqrt();
+            let index = (y * first.width + x) as usize;
+            radius[index] = r;
+            base_angle[index] = dy.atan2(dx);
+            if r > max_r {
+                max_r = r;
+            }
+        }
+    }
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut map_x = vec![0.0f32; (first.width * first.height) as usize];
+            let mut map_y = vec![0.0f32; (first.width * first.height) as usize];
+            for y in 0..first.height {
+                for x in 0..first.width {
+                    let index = (y * first.width + x) as usize;
+                    let twist = (1.0 - radius[index] / max_r) * (1.0 - progress) * 2.2;
+                    let theta = base_angle[index] + twist;
+                    map_x[index] = (center_x + radius[index] * theta.cos()) as f32;
+                    map_y[index] = (center_y + radius[index] * theta.sin()) as f32;
+                }
+            }
+            let warped = remap_reflect(first, &map_x, &map_y);
+            super::pixels::blend_weighted(&warped, second, progress)
+        })
+        .collect()
+}
+
+/// 双线性 + BORDER_REFLECT 的逐点重映射（转场里用）。
+fn remap_reflect(source: &BgrFrame, map_x: &[f32], map_y: &[f32]) -> BgrFrame {
+    let mut out = source.clone();
+    for y in 0..source.height {
+        for x in 0..source.width {
+            let index = (y * source.width + x) as usize;
+            let value = super::effects::sample_bilinear_reflect(
+                source,
+                map_x[index] as f64,
+                map_y[index] as f64,
+            );
+            out.set_pixel(x, y, value);
+        }
+    }
+    out
+}
+
+/// `菱形开幕`：|x-cx| + |y-cy| 曼哈顿距离扩散
+fn diamond_reveal(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let center_x = first.width as i64 / 2;
+    let center_y = first.height as i64 / 2;
+    let mut max_d = 1i64;
+    let mut dist = vec![0i64; (first.width * first.height) as usize];
+    for y in 0..first.height as i64 {
+        for x in 0..first.width as i64 {
+            let d = (x - center_x).abs() + (y - center_y).abs();
+            dist[(y * first.width as i64 + x) as usize] = d;
+            if d > max_d {
+                max_d = d;
+            }
+        }
+    }
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let threshold = (max_d as f64 * progress) as i64;
+            let mut frame = first.clone();
+            for y in 0..first.height {
+                for x in 0..first.width {
+                    if dist[(y * first.width + x) as usize] <= threshold {
+                        if let Some(value) = second.pixel(x, y) {
+                            frame.set_pixel(x, y, value);
+                        }
+                    }
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `镜头虚焦`：两边同时模糊后交叉淡化
+fn focus_blur(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let blur_strength = (1.0 + (1.0 - (progress - 0.5).abs() * 2.0) * 16.0) as i64;
+            let strength = blur_strength.max(1);
+            let k = if strength % 2 == 1 { strength } else { strength + 1 };
+            let b1 = super::effects::gaussian_blur_ksize_pub(first, k as u32);
+            let b2 = super::effects::gaussian_blur_ksize_pub(second, k as u32);
+            super::pixels::blend_weighted(&b1, &b2, progress)
+        })
+        .collect()
+}
+
+/// `纵向/横向拉幕`：从中心向两侧（或上下）拉开
+fn curtain(first: &BgrFrame, second: &BgrFrame, count: usize, vertical: bool) -> Vec<BgrFrame> {
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut frame = first.clone();
+            if vertical {
+                let half = ((first.width as i64 / 2) as f64 * progress) as i64;
+                if half > 0 {
+                    let center = first.width as i64 / 2;
+                    copy_rect(
+                        &mut frame,
+                        second,
+                        center - half,
+                        0,
+                        center + half,
+                        first.height as i64,
+                    );
+                }
+            } else {
+                let half = ((first.height as i64 / 2) as f64 * progress) as i64;
+                if half > 0 {
+                    let center = first.height as i64 / 2;
+                    copy_rect(
+                        &mut frame,
+                        second,
+                        0,
+                        center - half,
+                        first.width as i64,
+                        center + half,
+                    );
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `液态融合`：水平正弦扭曲后淡化
+fn liquid_blend(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let mut map_x = vec![0.0f32; (first.width * first.height) as usize];
+            let mut map_y = vec![0.0f32; (first.width * first.height) as usize];
+            for y in 0..first.height {
+                for x in 0..first.width {
+                    let wave =
+                        ((x as f64 / 30.0) + progress * PI * 3.5).sin() * (1.0 - progress) * 12.0;
+                    let index = (y * first.width + x) as usize;
+                    // np.clip(xx + wave, 0, w-1)
+                    map_x[index] = (x as f64 + wave).clamp(0.0, first.width as f64 - 1.0) as f32;
+                    map_y[index] = y as f32;
+                }
+            }
+            let warped = remap_reflect(first, &map_x, &map_y);
+            super::pixels::blend_weighted(&warped, second, progress)
+        })
+        .collect()
+}
+
+/// `流光擦拭`：擦除边界带一条白色光带
+fn light_streak(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let width = first.width as i64;
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let split = (width as f64 * progress) as i64;
+            let mut frame = first.clone();
+            if split > 0 {
+                copy_rect(&mut frame, second, 0, 0, split, first.height as i64);
+            }
+            let center = split;
+            if center > 0 && center < width {
+                let band = (width / 40).max(6);
+                let x1 = (center - band).max(0);
+                let x2 = (center + band).min(width);
+                if x2 > x1 {
+                    // addWeighted(frame, 0.45, white, 0.55, 0)
+                    for y in 0..first.height {
+                        for x in x1..x2 {
+                            if let Some(base) = frame.pixel(x as u32, y) {
+                                let mut mixed = [0u8; 3];
+                                for channel in 0..3 {
+                                    mixed[channel] =
+                                        (base[channel] as f64 * 0.45 + 255.0 * 0.55)
+                                            .round()
+                                            .clamp(0.0, 255.0)
+                                            as u8;
+                                }
+                                frame.set_pixel(x as u32, y, mixed);
+                            }
+                        }
+                    }
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+/// `时钟扫描`：12 点方向开始顺时针扫描
+fn clock_wipe(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+    let center_x = first.width as f64 / 2.0;
+    let center_y = first.height as f64 / 2.0;
+    let mut angles = vec![0.0f64; (first.width * first.height) as usize];
+    for y in 0..first.height {
+        for x in 0..first.width {
+            // 注意：与「径向旋切」的 atan2 参数顺序相反（这里是 (x-cx, cy-y)）
+            let angle = (x as f64 - center_x).atan2(center_y - y as f64).to_degrees();
+            angles[(y * first.width + x) as usize] = (angle + 360.0) % 360.0;
+        }
+    }
+    linspace01(count)
+        .into_iter()
+        .map(|progress| {
+            let threshold = progress * 360.0;
+            let mut frame = first.clone();
+            for y in 0..first.height {
+                for x in 0..first.width {
+                    if angles[(y * first.width + x) as usize] <= threshold {
+                        if let Some(value) = second.pixel(x, y) {
+                            frame.set_pixel(x, y, value);
+                        }
+                    }
+                }
+            }
+            frame
         })
         .collect()
 }
