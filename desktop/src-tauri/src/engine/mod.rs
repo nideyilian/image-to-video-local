@@ -380,15 +380,19 @@ fn preview_sequence(params: &Map<String, Value>) -> i64 {
 }
 
 fn scan_images(params: &Map<String, Value>) -> DispatchResponse {
-    if preview_sequence(params) > 0 {
-        return DispatchResponse::unhandled();
-    }
     let all = scan::scan_images(&text(params, "input_dir"));
     let limit = params.get("limit").and_then(Value::as_i64);
-    let shown = match limit {
-        // 与旧引擎一致：limit 为 0 或负数时返回空列表，count 仍是全量。
-        Some(value) => &all[..all.len().min(value.max(0) as usize)],
-        None => &all[..],
+    let sequence = preview_sequence(params);
+    let shown: Vec<String> = if sequence > 0 {
+        // 「换一组看看」：与 Python `preview_sample(all, limit, sequence, "images")` 等价。
+        // 洗牌结果由 `preview_random` 逐位复刻 CPython 的 MT19937，同一序号永远抽同一组。
+        preview_random::preview_sample(&all, limit.unwrap_or(all.len() as i64), sequence, "images")
+    } else {
+        match limit {
+            // 与旧引擎一致：limit 为 0 或负数时返回空列表，count 仍是全量。
+            Some(value) => all[..all.len().min(value.max(0) as usize)].to_vec(),
+            None => all.clone(),
+        }
     };
     DispatchResponse::ok(json!({
         "count": all.len(),
@@ -400,9 +404,7 @@ fn scan_images(params: &Map<String, Value>) -> DispatchResponse {
 }
 
 fn scan_subfolders(params: &Map<String, Value>) -> DispatchResponse {
-    if preview_sequence(params) > 0 {
-        return DispatchResponse::unhandled();
-    }
+    // 分组顺序与张数不随 `preview_sequence` 变化（Python 侧这个方法也没有洗牌语义）。
     let result = scan::scan_subfolders(&text(params, "input_dir"));
     DispatchResponse::ok(json!({
         "groups": result
@@ -415,10 +417,8 @@ fn scan_subfolders(params: &Map<String, Value>) -> DispatchResponse {
 }
 
 fn scan_subfolder_groups(params: &Map<String, Value>) -> DispatchResponse {
-    if preview_sequence(params) > 0 {
-        return DispatchResponse::unhandled();
-    }
     let result = scan::scan_subfolders(&text(params, "input_dir"));
+    let sequence = preview_sequence(params);
     let count: usize = result.groups.iter().map(|group| group.images.len()).sum();
     let groups: Vec<Value> = result
         .groups
@@ -433,11 +433,24 @@ fn scan_subfolder_groups(params: &Map<String, Value>) -> DispatchResponse {
             })
         })
         .collect();
+    // 「换一组看看」只换每个子文件夹里抽哪一张，分组顺序与张数保持稳定
+    // （与 Python `preview_choice(images, sequence, f"subfolder::{name}")` 等价）。
     let images: Vec<Value> = result
         .groups
         .iter()
-        .filter_map(|group| group.images.first())
-        .map(|path| json!({ "path": path, "name": paths::file_name(path) }))
+        .filter_map(|group| {
+            let picked = if sequence > 0 {
+                preview_random::preview_choice(
+                    &group.images,
+                    sequence,
+                    &format!("subfolder::{}", group.name),
+                )
+            } else {
+                None
+            };
+            picked.or_else(|| group.images.first().cloned())
+        })
+        .map(|path| json!({ "path": path, "name": paths::file_name(&path) }))
         .collect();
     let total = u64::try_from(scan::combination_total(&result.groups)).unwrap_or(u64::MAX);
     DispatchResponse::ok(json!({
@@ -510,12 +523,16 @@ mod tests {
         assert!(result["watermark_dir"].is_string());
     }
 
+    /// 「换一组看看」必须由原生接管：sidecar 已删，回落等于直接报错。
+    /// 这里只验证不回落 + 序号变化会改变取图，具体洗牌逐位对齐见 preview_random 的用例。
     #[test]
-    fn preview_sequence_falls_back_to_python() {
+    fn preview_sequence_is_handled_natively() {
         let params = json!({ "input_dir": "", "preview_sequence": 3 });
-        assert!(!dispatch("scan_images", Some(params)).handled);
-        let params = json!({ "input_dir": "", "preview_sequence": 1 });
-        assert!(!dispatch("scan_subfolder_groups", Some(params)).handled);
+        assert!(dispatch("scan_images", Some(params)).handled);
+        let params = json!({ "input_dir": "", "preview_sequence": 3 });
+        assert!(dispatch("scan_subfolder_groups", Some(params)).handled);
+        let params = json!({ "input_dir": "", "preview_sequence": 3 });
+        assert!(dispatch("scan_subfolders", Some(params)).handled);
     }
 
     /// 与 Python 版逐字段对照用：设 `ITV_PARITY_CASES` 指向两边共用的用例文件，
@@ -668,6 +685,47 @@ mod tests {
             "library_dirs": library::dirs(),
         });
         println!("PARITY={}", payload);
+    }
+
+    /// 「换一组」对照：`ITV_PREVIEW_DIR` 指向同一批图片，
+    /// 打印各序号下 `scan_images` / `scan_subfolder_groups` 抽到的文件名。
+    /// 与 Python `preview_sample` / `preview_choice` 的结果逐字段比对。
+    #[test]
+    fn parity_dump_preview_sequence() {
+        let Ok(dir) = std::env::var("ITV_PREVIEW_DIR") else {
+            return;
+        };
+        let mut out = serde_json::Map::new();
+        for sequence in [1i64, 2, 3, 5] {
+            let params = json!({ "input_dir": dir, "preview_sequence": sequence });
+            let response = scan_images(params.as_object().expect("object"));
+            let result = response.result.expect("scan_images result");
+            out.insert(
+                format!("scan_images::{sequence}"),
+                json!(result["images"]
+                    .as_array()
+                    .map(|items| items
+                        .iter()
+                        .map(|item| item["name"].clone())
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default()),
+            );
+
+            let params = json!({ "input_dir": dir, "preview_sequence": sequence, "limit": 4 });
+            let response = scan_images(params.as_object().expect("object"));
+            let result = response.result.expect("scan_images result");
+            out.insert(
+                format!("scan_images_limited::{sequence}"),
+                json!(result["images"]
+                    .as_array()
+                    .map(|items| items
+                        .iter()
+                        .map(|item| item["name"].clone())
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default()),
+            );
+        }
+        println!("PREVIEW_PARITY={}", Value::Object(out));
     }
 
     /// 体检对照：`ITV_TAINT_DIR` 指向素材库根（含 BGM 与 水印 两目录）。
