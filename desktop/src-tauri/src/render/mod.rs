@@ -1,0 +1,312 @@
+//! 渲染内核（Rust 版）：对齐 `src/render/`。
+//!
+//! 分四层，自下而上：
+//! - `process`：ffprobe 探测、子进程守护、安全替换
+//! - `codec`：扩展名 → muxer / 编码器 / 音频编码器
+//! - `audio`：BGM 选曲与混入
+//! - 后续：`encoder`（rawvideo 管道）、`postprocess`、`compositor`、`pixels`
+
+pub mod audio;
+pub mod codec;
+pub mod encoder;
+pub mod plan;
+pub mod process;
+pub mod watermark;
+
+#[cfg(test)]
+mod parity {
+    use super::*;
+    use serde_json::{json, Map, Value};
+
+    /// codec 决策对照：`ITV_CODEC_PARITY=1` 时打印全部解析结果。
+    /// 与 `src/render/codec.py` 的同名函数逐项比对（见 tools/render_codec_parity.py）。
+    #[test]
+    fn parity_dump_codec() {
+        if std::env::var("ITV_CODEC_PARITY").is_err() {
+            return;
+        }
+        let paths = [
+            "a.mp4", "b.MKV", "c.mov", "d.avi", "e.webm", "f.ts", "no_ext", "g.MP4",
+        ];
+        let mut out = Map::new();
+        for path in paths {
+            out.insert(format!("ext|{path}"), json!(codec::output_extension(path)));
+            out.insert(
+                format!("temp|{path}"),
+                json!(codec::temp_output_path(path, "_tmp")),
+            );
+            out.insert(
+                format!("muxer|{path}"),
+                json!(codec::muxer_for_output(path)),
+            );
+            out.insert(
+                format!("acod|{path}"),
+                json!(codec::container_acodec(path)),
+            );
+            for selected in ["XVID", "H264", "MJPG", "mp4v", "不存在的编码器"] {
+                out.insert(
+                    format!("vcodec|{path}|{selected}"),
+                    json!(codec::ffmpeg_vcodec(selected)),
+                );
+                out.insert(
+                    format!("strict|{path}|{selected}"),
+                    json!(codec::strict_vcodec(path, selected)),
+                );
+            }
+        }
+        for path in ["a.mp4", "b.MKV", "d.avi"] {
+            for preferred in [None, Some("libx264"), Some("libxvid")] {
+                out.insert(
+                    format!("cands|{path}|{preferred:?}"),
+                    json!(codec::container_vcodecs(path, preferred)),
+                );
+            }
+        }
+        println!("CODEC_PARITY={}", Value::Object(out));
+    }
+}
+
+#[cfg(test)]
+mod parity_audio {
+    use super::*;
+    use serde_json::{json, Map, Value};
+
+    /// BGM 选曲对照：`ITV_AUDIO_PARITY` 指向素材目录，`ITV_AUDIO_CASES` 指向用例 JSON。
+    #[test]
+    fn parity_dump_audio_selection() {
+        let Ok(dir) = std::env::var("ITV_AUDIO_PARITY") else {
+            return;
+        };
+        let Ok(cases_path) = std::env::var("ITV_AUDIO_CASES") else {
+            return;
+        };
+        let Ok(raw) = std::fs::read_to_string(cases_path) else {
+            return;
+        };
+        let cases: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
+
+        let mut out = Map::new();
+        for case in cases {
+            let id = case
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string();
+            let mut config = audio::JsonConfig::new(case.get("config").unwrap_or(&Value::Null));
+            config.0.insert(
+                "bgm_dir".to_string(),
+                json!(format!("{dir}/BGM")),
+            );
+            if let Some(index) = case.get("video_index").and_then(Value::as_u64) {
+                config
+                    .0
+                    .insert("_current_video_index".to_string(), json!(index));
+            }
+
+            let candidates: Vec<String> = audio::resolve_bgm_candidates(&config)
+                .into_iter()
+                .map(|path| {
+                    path.file_name()
+                        .map(|value| value.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                })
+                .collect();
+            let picked = audio::select_bgm_file(&config, None, |_| 0).map(|path| {
+                path.file_name()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+            out.insert(
+                id,
+                json!({ "candidates": candidates, "picked": picked }),
+            );
+        }
+        println!("AUDIO_PARITY={}", Value::Object(out));
+    }
+}
+
+#[cfg(test)]
+mod parity_bgm {
+    use super::*;
+    use serde_json::json;
+
+    /// 真实混音对照：`ITV_BGM_VIDEO` / `ITV_BGM_AUDIO` / `ITV_BGM_OUT` / `ITV_BGM_LOOP`。
+    #[test]
+    fn parity_dump_bgm_mix() {
+        let (Ok(video), Ok(audio), Ok(out)) = (
+            std::env::var("ITV_BGM_VIDEO"),
+            std::env::var("ITV_BGM_AUDIO"),
+            std::env::var("ITV_BGM_OUT"),
+        ) else {
+            return;
+        };
+        let loop_bgm = std::env::var("ITV_BGM_LOOP").unwrap_or_else(|_| "1".to_string()) == "1";
+        let volume: f64 = std::env::var("ITV_BGM_VOLUME")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(0.5);
+
+        std::fs::copy(&video, &out).expect("复制待处理视频");
+        let config = audio::JsonConfig::new(&json!({ "loop_bgm": loop_bgm }));
+        let ffmpeg = crate::engine::system::resolve_ffmpeg(None).expect("ffmpeg");
+        let ffprobe = crate::engine::system::resolve_ffprobe(None, Some(ffmpeg.as_path()));
+        let mut lines: Vec<String> = Vec::new();
+        let ok = audio::add_audio_with_ffmpeg(
+            &out,
+            &audio,
+            volume,
+            &config,
+            &ffmpeg.to_string_lossy(),
+            ffprobe.as_deref(),
+            |line| lines.push(line.to_string()),
+        );
+        println!(
+            "BGM_PARITY={}",
+            json!({ "ok": ok, "log": lines, "loop": loop_bgm, "volume": volume })
+        );
+    }
+}
+
+#[cfg(test)]
+mod parity_plan {
+    use super::*;
+    use serde_json::{json, Map, Value};
+
+    /// 帧计划对照：覆盖 .5 边界、超短时长、大帧率等易错组合。
+    #[test]
+    fn parity_dump_frame_plan() {
+        if std::env::var("ITV_PLAN_PARITY").is_err() {
+            return;
+        }
+        let mut out = Map::new();
+        let transitions = [(0i64, "无转场"), (8, "无转场"), (8, "淡入淡出"), (999, "淡入淡出")];
+        for images in [1i64, 2, 3, 5, 7, 20] {
+            for duration in [0.01, 0.1, 0.2, 0.5, 1.0, 1.7, 2.5, 3.3333, 10.0] {
+                for fps in [1i64, 24, 25, 30, 60] {
+                    for (frames, kind) in transitions {
+                        let plan =
+                            plan::compute_video_frame_plan(images, duration, fps, frames, kind);
+                        out.insert(
+                            format!("{images}|{duration}|{fps}|{frames}|{kind}"),
+                            json!({
+                                "frames_per_img": plan.frames_per_img,
+                                "transition_frames": plan.transition_frames,
+                                "display_frames_per_img": plan.display_frames_per_img,
+                                "last_img_frames": plan.last_img_frames,
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+        println!("PLAN_PARITY={}", Value::Object(out));
+    }
+}
+
+#[cfg(test)]
+mod parity_encode {
+    use super::*;
+    use serde_json::json;
+
+    /// 管道编码对照：`ITV_ENCODE_OUT` 指定输出，
+    /// `ITV_ENCODE_FRAMES` 指定帧数，`ITV_ENCODE_CODEC` 指定编码器，`ITV_ENCODE_SIZE` 形如 320x240。
+    /// 帧内容用确定性算法生成（第 i 帧填 i%256），两边一致。
+    #[test]
+    fn parity_dump_encode_pipeline() {
+        let Ok(out) = std::env::var("ITV_ENCODE_OUT") else {
+            return;
+        };
+        let frames: i64 = std::env::var("ITV_ENCODE_FRAMES")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(30);
+        let codec_name =
+            std::env::var("ITV_ENCODE_CODEC").unwrap_or_else(|_| "H264".to_string());
+        let size = std::env::var("ITV_ENCODE_SIZE").unwrap_or_else(|_| "320x240".to_string());
+        let fps: i64 = std::env::var("ITV_ENCODE_FPS")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(30);
+        let bitrate: i64 = std::env::var("ITV_ENCODE_BITRATE")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(1000);
+
+        let (width, height) = size.split_once('x').expect("尺寸格式 320x240");
+        let width: i64 = width.parse().expect("宽");
+        let height: i64 = height.parse().expect("高");
+
+        let options = encoder::EncodeOptions {
+            output_path: out.clone(),
+            selected_codec: codec_name.clone(),
+            width,
+            height,
+            fps,
+            target_bitrate: bitrate,
+        };
+        let ffmpeg = crate::engine::system::resolve_ffmpeg(None).expect("ffmpeg");
+        let mut session = encoder::EncodeSession::open(&options, &ffmpeg.to_string_lossy())
+            .unwrap_or_else(|error| panic!("打开管道失败: {error}"));
+
+        let frame_bytes = (width * height * 3) as usize;
+        let mut buffer = vec![0u8; frame_bytes];
+        for index in 0..frames {
+            // 确定性图案：整帧填充同一个值，随帧号递增
+            let value = (index % 256) as u8;
+            buffer.iter_mut().for_each(|byte| *byte = value);
+            session.write_frame(&buffer).expect("写帧");
+        }
+        let written = session.finish().expect("结束管道");
+        println!(
+            "ENCODE_PARITY={}",
+            json!({
+                "frames": written,
+                "valid": encoder::output_is_valid(&out),
+                "size": std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0),
+            })
+        );
+    }
+}
+
+#[cfg(test)]
+mod parity_watermark {
+    use super::*;
+    use serde_json::{json, Map, Value};
+
+    /// 叠加几何对照：覆盖各尺寸模式、各位置、极端比例。
+    #[test]
+    fn parity_dump_overlay_geometry() {
+        if std::env::var("ITV_GEOMETRY_PARITY").is_err() {
+            return;
+        }
+        let mut out = Map::new();
+        let mains = [(1920i64, 1080i64), (1080, 1920), (1000, 1000), (1, 1), (999, 333)];
+        let watermarks = [(400i64, 100i64), (100, 400), (500, 500), (1, 1000), (3000, 200)];
+        let modes = ["自适应覆盖", "完全覆盖", "固定比例"];
+        let positions = ["左上", "右上", "左下", "右下", "中心", "未知位置"];
+        let scales = [0.0f64, 5.0, 20.0, 33.3, 100.0, 250.0];
+        for (mw, mh) in mains {
+            for (ww, wh) in watermarks {
+                for mode in modes {
+                    for position in positions {
+                        for scale in scales {
+                            let geometry = watermark::calc_overlay_geometry(
+                                mw, mh, ww, wh, mode, scale, position,
+                            );
+                            out.insert(
+                                format!("{mw}x{mh}|{ww}x{wh}|{mode}|{position}|{scale}"),
+                                json!({
+                                    "target_w": geometry.target_w,
+                                    "target_h": geometry.target_h,
+                                    "x": geometry.x,
+                                    "y": geometry.y,
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        println!("GEOMETRY_PARITY={}", Value::Object(out));
+    }
+}

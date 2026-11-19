@@ -20,7 +20,7 @@ mod paths;
 mod scan;
 mod snapshot;
 mod sort;
-mod system;
+pub(crate) mod system;
 mod taint;
 mod write_ops;
 

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod engine;
+mod render;
 
 /// 引擎接口的原生实现入口。
 ///
