@@ -122,11 +122,11 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
                 DispatchResponse::unhandled()
             }
         }
-        "scan_tainted" => match taint::scan_tainted(&object) {
+        "library_scan_tainted" => match taint::scan_tainted(&object) {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
         },
-        "clean_tainted" => match taint::clean_tainted(&object) {
+        "library_clean_tainted" => match taint::clean_tainted(&object) {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
         },
@@ -249,6 +249,49 @@ fn scan_subfolder_groups(params: &Map<String, Value>) -> DispatchResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 防呆：前端 `NATIVE_METHODS` 里列的每个方法，Rust 都必须真的接管。
+    /// 写错一个名字（比如把 `library_scan_tainted` 写成 `scan_tainted`）不会报错，
+    /// 只会每次都静默回落 Python —— 这个测试就是为此存在的。
+    #[test]
+    fn every_whitelisted_method_is_handled() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/engine.ts"
+        ))
+        .expect("读不到 desktop/src/engine.ts");
+        let start = source.find("const NATIVE_METHODS").expect("找不到 NATIVE_METHODS");
+        let end = source[start..]
+            .find("]);")
+            .map(|index| start + index)
+            .expect("NATIVE_METHODS 未闭合");
+        let block = &source[start..end];
+
+        let methods: Vec<String> = block
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if !line.starts_with('"') {
+                    return None;
+                }
+                line[1..].split('"').next().map(str::to_string)
+            })
+            .collect();
+        assert!(methods.len() >= 20, "白名单解析异常：{methods:?}");
+
+        for method in methods {
+            let params = if method == "library_find_duplicates" {
+                json!({ "kind": "bgm" })
+            } else {
+                json!({})
+            };
+            let response = dispatch(&method, Some(params));
+            assert!(
+                response.handled,
+                "{method} 在前端白名单里，但 Rust 没接管 —— 每次调用都会白跑一趟再回落 Python"
+            );
+        }
+    }
 
     #[test]
     fn unknown_method_is_left_to_the_python_engine() {
