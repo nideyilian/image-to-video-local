@@ -7,9 +7,12 @@
 //! 1. `int()` 在 Python 里是**向零截断**，不是四舍五入；负数也一样（`int(-2.7) == -2`）。
 //! 2. 位置计算用 `//` 整除，负数同样是向下取整（`-3 // 2 == -2`），与 Rust 的 `/` 不同。
 
+use std::path::Path;
+
 use serde_json::Value;
 
 use super::audio::RenderConfig;
+use super::pixels::BgrFrame;
 
 /// 叠加尺寸与位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,5 +418,401 @@ mod tests {
         // pick 返回 1 → 排序后的第二个
         let specs = collect_fixed_layers(&MapConfig(map), |_| 1);
         assert!(specs[0].path.ends_with("b.png"), "随机取第二个：{}", specs[0].path);
+    }
+}
+// ---------- 水印像素合成（对应 `apply_blend_mode` / `apply_image_watermark_layer`） ----------
+
+/// 一张水印图（可能就是带 alpha 的 RGBA）。
+pub struct WatermarkImage {
+    pub width: u32,
+    pub height: u32,
+    /// 每像素 3 字节（BGR）或 4 字节（BGRA）。
+    pub data: Vec<u8>,
+    pub channels: usize,
+}
+
+impl WatermarkImage {
+    fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let index = ((y * self.width + x) as usize) * self.channels;
+        let mut out = [255u8; 4];
+        for channel in 0..self.channels {
+            out[channel] = self.data[index + channel];
+        }
+        Some(out)
+    }
+}
+
+/// 读图片并保留透明通道（对应 `safe_read_image_with_alpha`）。
+pub fn read_image_with_alpha(path: &Path) -> Option<WatermarkImage> {
+    let image = image::open(path).ok()?;
+    let rgba = image.to_rgba8();
+    let (width, height) = (rgba.width(), rgba.height());
+    let mut data = Vec::with_capacity((width * height * 4) as usize);
+    for pixel in rgba.pixels() {
+        let [r, g, b, a] = pixel.0;
+        data.push(b);
+        data.push(g);
+        data.push(r);
+        data.push(a);
+    }
+    Some(WatermarkImage {
+        width,
+        height,
+        data,
+        channels: 4,
+    })
+}
+
+/// `apply_blend_mode`：7 种混合模式 + alpha。
+///
+/// 除「正常」外，所有模式都是先算混合公式 `mixed`，再
+/// `result = bg*(1-alpha) + mixed*alpha`；`bg`/`fg` 都先归一化到 0..1。
+/// 漏掉这一步会把「滤色」做成一团白。
+pub fn apply_blend_mode(
+    background: &[u8],
+    foreground: &[u8],
+    mode: &str,
+    alpha: f64,
+) -> Vec<u8> {
+    let mut out = vec![0u8; background.len()];
+    for index in 0..background.len() {
+        let bg = background[index] as f64 / 255.0;
+        let fg = foreground[index] as f64 / 255.0;
+        let value = match mode {
+            "滤色" => bg * (1.0 - alpha) + (1.0 - (1.0 - bg) * (1.0 - fg)) * alpha,
+            "叠加" => {
+                let mixed = if bg < 0.5 {
+                    2.0 * bg * fg
+                } else {
+                    1.0 - 2.0 * (1.0 - bg) * (1.0 - fg)
+                };
+                bg * (1.0 - alpha) + mixed * alpha
+            }
+            "正片叠底" => bg * (1.0 - alpha) + (bg * fg) * alpha,
+            "变亮" => bg * (1.0 - alpha) + bg.max(fg) * alpha,
+            "变暗" => bg * (1.0 - alpha) + bg.min(fg) * alpha,
+            "相加" => bg * (1.0 - alpha) + (bg + fg).min(1.0) * alpha,
+            // 「正常」与未知模式：直接线性混合
+            _ => bg * (1.0 - alpha) + fg * alpha,
+        };
+        out[index] = (value * 255.0).clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+/// 一层图片水印的运行时规格（对应 `prepare_image_watermark_layers` 的产物）。
+pub struct ImageLayer {
+    pub images: Vec<WatermarkImage>,
+    pub position: String,
+    pub size_mode: String,
+    pub scale: f64,
+    pub blend_mode: String,
+    pub opacity: f64,
+}
+
+/// 从配置里的 `watermark_layers` 准备图层（目录会展开成多张图）。
+///
+/// `pick` 用于「目录多图」时挑一张：传入一个 `[0,1)` 的随机数即可，
+/// 这样调用方（导出用固定序列、预览用随机）都能控制可复现性。
+pub fn prepare_image_layers(layers: &[Value], pick: &mut dyn FnMut(usize) -> usize) -> Vec<ImageLayer> {
+    let mut prepared = Vec::new();
+    for layer in layers {
+        let Some(object) = layer.as_object() else {
+            continue;
+        };
+        if !object.get("enabled").map(truthy).unwrap_or(true) {
+            continue;
+        }
+        if object
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("图片")
+            != "图片"
+        {
+            continue;
+        }
+        let path = object.get("path").and_then(Value::as_str).unwrap_or("");
+        if path.is_empty() {
+            continue;
+        }
+        let mut files: Vec<String> = if Path::new(path).is_dir() {
+            let mut found = image_files_in_dir(path);
+            if !found.is_empty() && object.get("folder_random_single").map(truthy).unwrap_or(false) {
+                let index = pick(found.len());
+                found = vec![found[index.min(found.len() - 1)].clone()];
+            }
+            found
+        } else {
+            vec![path.to_string()]
+        };
+        files.retain(|file| !file.is_empty());
+        let images: Vec<WatermarkImage> = files
+            .iter()
+            .filter_map(|file| read_image_with_alpha(Path::new(file)))
+            .collect();
+        if images.is_empty() {
+            continue;
+        }
+        prepared.push(ImageLayer {
+            images,
+            position: object
+                .get("position")
+                .and_then(Value::as_str)
+                .unwrap_or("右下")
+                .to_string(),
+            size_mode: object
+                .get("size_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("自适应覆盖")
+                .to_string(),
+            scale: object.get("scale").and_then(Value::as_f64).unwrap_or(20.0),
+            blend_mode: object
+                .get("blend_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("正常")
+                .to_string(),
+            opacity: object.get("opacity").and_then(Value::as_f64).unwrap_or(0.5),
+        });
+    }
+    prepared
+}
+
+/// `apply_image_watermark_layer`：把一层水印贴到主画面上。
+pub fn apply_image_layer(
+    frame: &BgrFrame,
+    layer: &ImageLayer,
+    pick: &mut dyn FnMut(usize) -> usize,
+) -> BgrFrame {
+    if layer.images.is_empty() {
+        return frame.clone();
+    }
+    let chosen = if layer.images.len() == 1 {
+        &layer.images[0]
+    } else {
+        let index = pick(layer.images.len());
+        &layer.images[index.min(layer.images.len() - 1)]
+    };
+
+    let main_w = frame.width as f64;
+    let main_h = frame.height as f64;
+    let watermark_ratio = chosen.width as f64 / 1.0f64.max(chosen.height as f64);
+    let main_ratio = main_w / 1.0f64.max(main_h);
+
+    let (target_w, target_h) = match layer.size_mode.as_str() {
+        "自适应覆盖" => {
+            if watermark_ratio > main_ratio {
+                let h = main_h as i64;
+                (py_int(h as f64 * watermark_ratio), h)
+            } else {
+                let w = main_w as i64;
+                (w, py_int(w as f64 / watermark_ratio))
+            }
+        }
+        "完全覆盖" => (main_w as i64, main_h as i64),
+        _ => {
+            let size = py_int(main_w * (layer.scale / 100.0));
+            let w = size.max(1);
+            (w, ((w as f64 / watermark_ratio) as i64).max(1))
+        }
+    };
+    let target_w = target_w.max(1);
+    let target_h = target_h.max(1);
+
+    // 缩放水印（带 alpha 一起缩）
+    let resized = resize_watermark(chosen, target_w as u32, target_h as u32);
+
+    let margin = if layer.size_mode == "固定比例" { 10.0 } else { 0.0 };
+    let (x_pos, y_pos) = match layer.position.as_str() {
+        "左上" => (margin, margin),
+        "右上" => (main_w - target_w as f64 - margin, margin),
+        "左下" => (margin, main_h - target_h as f64 - margin),
+        "中心" => (
+            (main_w - target_w as f64) / 2.0,
+            (main_h - target_h as f64) / 2.0,
+        ),
+        _ => (
+            main_w - target_w as f64 - margin,
+            main_h - target_h as f64 - margin,
+        ),
+    };
+    // Python 这里已经是 int（因为 w/h 是 int），保持截断语义
+    let x_pos = py_int(x_pos);
+    let y_pos = py_int(y_pos);
+
+    let src_x = (-x_pos).max(0);
+    let src_y = (-y_pos).max(0);
+    let dst_x = x_pos.max(0);
+    let dst_y = y_pos.max(0);
+    let actual_w = (target_w - src_x).min(frame.width as i64 - dst_x);
+    let actual_h = (target_h - src_y).min(frame.height as i64 - dst_y);
+    if actual_w <= 0 || actual_h <= 0 {
+        return frame.clone();
+    }
+
+    let mut result = frame.clone();
+    let mut roi: Vec<u8> = Vec::with_capacity((actual_w * actual_h * 3) as usize);
+    for y in 0..actual_h {
+        for x in 0..actual_w {
+            if let Some(pixel) = frame.pixel((dst_x + x) as u32, (dst_y + y) as u32) {
+                roi.extend_from_slice(&pixel);
+            } else {
+                roi.extend_from_slice(&[0, 0, 0]);
+            }
+        }
+    }
+
+    let mut foreground: Vec<u8> = Vec::with_capacity((actual_w * actual_h * 3) as usize);
+    let mut alpha_mask: Vec<f64> = Vec::with_capacity((actual_w * actual_h) as usize);
+    for y in 0..actual_h {
+        for x in 0..actual_w {
+            let pixel = resized
+                .pixel((src_x + x) as u32, (src_y + y) as u32)
+                .unwrap_or([0, 0, 0, 255]);
+            foreground.extend_from_slice(&pixel[0..3]);
+            // 带 alpha 通道时，alpha 乘以图层不透明度
+            alpha_mask.push(if resized.channels == 4 {
+                (pixel[3] as f64 / 255.0) * layer.opacity
+            } else {
+                layer.opacity
+            });
+        }
+    }
+
+    let blended = if resized.channels == 4 {
+        // 有 alpha：先用不透明混合算出"完全覆盖"的结果，再按 alpha 蒙版合成
+        let full = apply_blend_mode(&roi, &foreground, &layer.blend_mode, 1.0);
+        let mut out = vec![0u8; full.len()];
+        for pixel in 0..alpha_mask.len() {
+            let alpha = alpha_mask[pixel];
+            for channel in 0..3 {
+                let index = pixel * 3 + channel;
+                out[index] = (roi[index] as f64 * (1.0 - alpha) + full[index] as f64 * alpha)
+                    .clamp(0.0, 255.0) as u8;
+            }
+        }
+        out
+    } else {
+        apply_blend_mode(&roi, &foreground, &layer.blend_mode, layer.opacity)
+    };
+
+    for y in 0..actual_h {
+        for x in 0..actual_w {
+            let index = ((y * actual_w + x) * 3) as usize;
+            result.set_pixel(
+                (dst_x + x) as u32,
+                (dst_y + y) as u32,
+                [blended[index], blended[index + 1], blended[index + 2]],
+            );
+        }
+    }
+    result
+}
+
+/// 缩放水印图（BGR 用双线性，alpha 单独最近邻，避免边缘出现半透明边）。
+fn resize_watermark(source: &WatermarkImage, width: u32, height: u32) -> WatermarkImage {
+    if source.width == width && source.height == height {
+        return WatermarkImage {
+            width: source.width,
+            height: source.height,
+            data: source.data.clone(),
+            channels: source.channels,
+        };
+    }
+    let mut data = vec![0u8; (width * height) as usize * source.channels];
+    let scale_x = source.width as f64 / width as f64;
+    let scale_y = source.height as f64 / height as f64;
+    for y in 0..height {
+        for x in 0..width {
+            let sx = ((x as f64 + 0.5) * scale_x - 0.5).max(0.0);
+            let sy = ((y as f64 + 0.5) * scale_y - 0.5).max(0.0);
+            let x0 = sx.floor() as i64;
+            let y0 = sy.floor() as i64;
+            let fx = sx - x0 as f64;
+            let fy = sy - y0 as f64;
+            let mut out = [0f64; 4];
+            for (dx, wx) in [(0i64, 1.0 - fx), (1, fx)] {
+                for (dy, wy) in [(0i64, 1.0 - fy), (1, fy)] {
+                    let weight = wx * wy;
+                    if weight == 0.0 {
+                        continue;
+                    }
+                    let px = (x0 + dx).clamp(0, source.width as i64 - 1) as u32;
+                    let py = (y0 + dy).clamp(0, source.height as i64 - 1) as u32;
+                    if let Some(pixel) = source.pixel(px, py) {
+                        for channel in 0..source.channels {
+                            out[channel] += pixel[channel] as f64 * weight;
+                        }
+                    }
+                }
+            }
+            let index = ((y * width + x) as usize) * source.channels;
+            for channel in 0..source.channels {
+                data[index + channel] = out[channel].round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    WatermarkImage {
+        width,
+        height,
+        data,
+        channels: source.channels,
+    }
+}
+
+#[cfg(test)]
+mod blend_tests {
+    use super::*;
+
+    #[test]
+    fn normal_mode_is_linear_blend() {
+        let bg = [0u8, 0, 0];
+        let fg = [255u8, 255, 255];
+        let out = apply_blend_mode(&bg, &fg, "正常", 0.5);
+        assert_eq!(out, vec![127, 127, 127]);
+    }
+
+    #[test]
+    fn screen_mode_brightens() {
+        // 滤色：1-(1-0.2)*(1-0.6) = 1-0.32 = 0.68 → 173
+        let bg = [51u8, 51, 51];
+        let fg = [153u8, 153, 153];
+        let out = apply_blend_mode(&bg, &fg, "滤色", 1.0);
+        assert_eq!(out[0], 173, "滤色结果 {out:?}");
+    }
+
+    #[test]
+    fn multiply_mode_darkens() {
+        // 正片叠底：0.2*0.6 = 0.12 → 30
+        let bg = [51u8, 51, 51];
+        let fg = [153u8, 153, 153];
+        let out = apply_blend_mode(&bg, &fg, "正片叠底", 1.0);
+        assert_eq!(out[0], 30, "正片叠底结果 {out:?}");
+    }
+
+    #[test]
+    fn add_mode_clips_at_white() {
+        let bg = [200u8, 200, 200];
+        let fg = [200u8, 200, 200];
+        let out = apply_blend_mode(&bg, &fg, "相加", 1.0);
+        assert_eq!(out[0], 255);
+    }
+
+    #[test]
+    fn overlay_switches_on_background_luminance() {
+        // bg=0.2 <0.5 → 2*0.2*0.8=0.32 → 81.6，`astype(uint8)` 截断得 81
+        // （这里我一开始断言 82 —— 是四舍五入的结果，Python 用的是截断）
+        let dark = apply_blend_mode(&[51u8], &[204u8], "叠加", 1.0);
+        assert_eq!(dark[0], 81);
+        // bg=0.8 >0.5 → 1-2*0.2*0.2 = 0.92 → 235
+        let bright = apply_blend_mode(&[204u8], &[204u8], "叠加", 1.0);
+        assert_eq!(bright[0], 234, "实际 {}", bright[0]);
+    }
+
+    #[test]
+    fn missing_file_returns_none() {
+        assert!(read_image_with_alpha(Path::new("C:/definitely-missing.png")).is_none());
     }
 }

@@ -960,3 +960,52 @@ mod parity_transitions_all {
         println!("TRANS_ALL={}", Value::Array(report));
     }
 }
+
+#[cfg(test)]
+mod parity_watermark_blend {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// 水印合成对照：`ITV_WMBLEND_MAIN` 主图，`ITV_WMBLEND_CASES` 用例 JSON，
+    /// `ITV_WMBLEND_OUT` 输出目录。
+    #[test]
+    fn parity_dump_watermark_blend() {
+        let (Ok(main_path), Ok(cases_path), Ok(out_dir)) = (
+            std::env::var("ITV_WMBLEND_MAIN"),
+            std::env::var("ITV_WMBLEND_CASES"),
+            std::env::var("ITV_WMBLEND_OUT"),
+        ) else {
+            return;
+        };
+        let Some(frame) = pixels::read_image_bgr(std::path::Path::new(&main_path)) else {
+            return;
+        };
+        let Ok(raw) = std::fs::read_to_string(cases_path) else {
+            return;
+        };
+        let cases: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
+        std::fs::create_dir_all(&out_dir).ok();
+
+        let mut report = Vec::new();
+        for (index, case) in cases.iter().enumerate() {
+            let layer_value = case.get("layer").cloned().unwrap_or(Value::Null);
+            let mut layers = Vec::new();
+            if !layer_value.is_null() {
+                layers.push(layer_value);
+            }
+            let mut pick = |count: usize| 0usize.min(count.saturating_sub(1));
+            let prepared = watermark::prepare_image_layers(&layers, &mut pick);
+            let mut result = frame.clone();
+            for layer in &prepared {
+                result = watermark::apply_image_layer(&result, layer, &mut pick);
+            }
+            let file = format!("{index:02}.png");
+            result
+                .to_rgb()
+                .save(std::path::Path::new(&out_dir).join(&file))
+                .ok();
+            report.push(json!({ "index": index, "file": file, "layers": prepared.len() }));
+        }
+        println!("WMBLEND={}", Value::Array(report));
+    }
+}
