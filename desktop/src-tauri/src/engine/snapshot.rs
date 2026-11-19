@@ -31,7 +31,7 @@ pub const VIDEO_EXTENSIONS: [&str; 14] = [
     ".rmvb", ".f4v",
 ];
 
-fn cached_ffmpeg() -> Option<&'static Path> {
+pub(crate) fn ffmpeg_path() -> Option<&'static Path> {
     static CACHE: OnceLock<Option<PathBuf>> = OnceLock::new();
     CACHE.get_or_init(|| system::resolve_ffmpeg(None)).as_deref()
 }
@@ -40,7 +40,7 @@ fn cached_ffprobe() -> Option<&'static Path> {
     static CACHE: OnceLock<Option<PathBuf>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let ffmpeg = cached_ffmpeg().map(Path::to_path_buf);
+            let ffmpeg = ffmpeg_path().map(Path::to_path_buf);
             system::resolve_ffprobe(None, ffmpeg.as_deref())
         })
         .as_deref()
@@ -246,7 +246,7 @@ fn walk(state: &mut ScanState, directory: &Path) {
                 let mut media_type = "image";
                 let mut signature: Option<Vec<f64>> = None;
                 if state.kind == "bgm" {
-                    if let Some(result) = fingerprint::compute(cached_ffmpeg(), &path) {
+                    if let Some(result) = fingerprint::compute(ffmpeg_path(), &path) {
                         duration = Some(result.duration);
                         signature = Some(result.signature);
                     }
@@ -325,7 +325,7 @@ fn folders_of(state: &ScanState) -> Vec<Value> {
         .collect()
 }
 
-fn scan_tree(base: &Path, kind: &str) -> (Vec<Value>, Vec<Value>) {
+pub(crate) fn scan_tree(base: &Path, kind: &str) -> (Vec<Value>, Vec<Value>) {
     let mut state = ScanState {
         base,
         kind,

@@ -161,7 +161,7 @@ pub fn fingerprints_duplicate(
 // ---------- 索引扫描 ----------
 
 /// 与 `_all_index_entries()` 等价：库内所有子目录索引的 (相对文件夹, 文件名, entry)。
-fn all_index_entries(base: &Path) -> Vec<(String, String, Value)> {
+pub(crate) fn all_index_entries(base: &Path) -> Vec<(String, String, Value)> {
     let mut collected = Vec::new();
     if !base.is_dir() {
         return collected;
@@ -609,11 +609,149 @@ pub fn set_metadata(params: &Map<String, Value>) -> Result<Value, String> {
     }))
 }
 
+// ---------- 批量重命名 ----------
+
+/// 当天日期 `YYYYMMDD`（与 `time.strftime("%Y%m%d")` 一致，按本地时区）。
+fn today_stamp() -> String {
+    let iso = snapshot::now_iso();
+    let digits: String = iso.chars().filter(char::is_ascii_digit).take(8).collect();
+    if digits.len() == 8 {
+        digits
+    } else {
+        String::new()
+    }
+}
+
+pub fn rename_batch(params: &Map<String, Value>) -> Result<Value, String> {
+    let kind = text(params, "kind");
+    let pattern = text(params, "pattern");
+    let raw_paths = params
+        .get("paths")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    if kind != "bgm" && kind != "watermark" {
+        return Err("素材类型必须是 bgm 或 watermark".to_string());
+    }
+    if raw_paths.is_empty() {
+        return Err("没有可重命名的素材".to_string());
+    }
+    if pattern.is_empty() {
+        return Err("请输入重命名模板".to_string());
+    }
+    let start_index = params
+        .get("start_index")
+        .and_then(Value::as_i64)
+        .or_else(|| text(params, "start_index").parse::<i64>().ok())
+        .map(|value| value.max(1))
+        .unwrap_or(1);
+    let base = base_of(&kind, params);
+    let last_index = start_index + raw_paths.len() as i64 - 1;
+    let pad = 2usize.max(last_index.to_string().len());
+    let date_stamp = today_stamp();
+
+    let mut seen_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut results: Vec<Value> = Vec::new();
+
+    for (offset, raw) in raw_paths.iter().enumerate() {
+        let raw_text = raw.as_str().unwrap_or_default().to_string();
+        let source = resolve_target(&base, &raw_text);
+        let source_name = source
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut result = json!({
+            "name": source_name,
+            "path": raw_text,
+            "status": "failed",
+            "reason": "文件不存在",
+        });
+
+        if !source.is_file() || !inside(&base, &source) {
+            results.push(result);
+            continue;
+        }
+
+        let stem = source
+            .file_stem()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let suffix = source
+            .extension()
+            .map(|value| format!(".{}", value.to_string_lossy()))
+            .unwrap_or_default();
+        let number = (start_index + offset as i64).to_string();
+        let number = format!(
+            "{}{}",
+            "0".repeat(pad.saturating_sub(number.len())),
+            number
+        );
+        let new_stem = pattern
+            .replace("{name}", &stem)
+            .replace("{n}", &number)
+            .replace("{date}", &date_stamp);
+
+        if new_stem.trim().is_empty() || new_stem.chars().any(|ch| "<>:\"/\\|?*".contains(ch)) {
+            result["reason"] = json!("生成的文件名包含非法字符");
+            results.push(result);
+            continue;
+        }
+
+        let new_name = format!("{new_stem}{suffix}");
+        if seen_names.contains(&new_name) {
+            result["reason"] = json!(format!("与本次批量中的「{new_name}」重名"));
+            results.push(result);
+            continue;
+        }
+        let parent = source.parent().map(Path::to_path_buf).unwrap_or_else(|| base.clone());
+        let new_target = parent.join(&new_name);
+        if new_target.exists() && new_target != source {
+            result["reason"] = json!(format!("目标文件已存在：{new_name}"));
+            results.push(result);
+            continue;
+        }
+
+        seen_names.insert(new_name.clone());
+        let outcome = (|| -> std::io::Result<()> {
+            if new_target != source {
+                fs::rename(&source, &new_target)?;
+            }
+            let mut index = snapshot::load_index(&parent);
+            if let Some(mut entry) = index.entries.remove(&source_name) {
+                if let Ok(metadata) = fs::metadata(&new_target) {
+                    entry["mtime_ns"] = json!(snapshot::modified_ns(&metadata));
+                    entry["size"] = json!(metadata.len());
+                }
+                index.entries.insert(new_name.clone(), entry);
+            }
+            snapshot::save_index(&parent, &index)
+        })();
+        match outcome {
+            Ok(()) => {
+                result["status"] = json!("renamed");
+                result["old_name"] = json!(source_name);
+                result["name"] = json!(new_name);
+                result["path"] = json!(shown(&new_target));
+                if let Some(object) = result.as_object_mut() {
+                    object.remove("reason");
+                }
+            }
+            Err(error) => {
+                result["reason"] = json!(error.to_string());
+            }
+        }
+        results.push(result);
+    }
+
+    Ok(json!({ "results": results, "pattern": pattern }))
+}
+
 // ---------- 回收站 ----------
 
 /// 与 `send2trash()` 等价：走 Windows Shell，进回收站可还原。
 #[cfg(windows)]
-fn trash(path: &Path) -> Result<(), String> {
+pub(crate) fn trash_file(path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
     #[repr(C)]
@@ -665,7 +803,7 @@ fn trash(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn trash(path: &Path) -> Result<(), String> {
+pub(crate) fn trash_file(path: &Path) -> Result<(), String> {
     // 项目只发 Windows 安装包；其它平台直接删除，避免依赖第三方 crate。
     let result = if path.is_dir() {
         fs::remove_dir(path)
@@ -684,7 +822,7 @@ pub fn remove(params: &Map<String, Value>) -> Result<Value, String> {
     if !target.is_file() || !inside(&base, &target) {
         return Err("只能删除素材库内的文件".to_string());
     }
-    trash(&target)?;
+    trash_file(&target)?;
 
     if let Some(parent) = target.parent() {
         let name = target
@@ -737,7 +875,7 @@ pub fn remove_batch(params: &Map<String, Value>) -> Result<Value, String> {
             }));
             continue;
         }
-        match trash(&target) {
+        match trash_file(&target) {
             Ok(()) => {
                 if let Some(parent) = target.parent() {
                     let mut index = snapshot::load_index(parent);
@@ -976,7 +1114,7 @@ pub fn delete_folder(params: &Map<String, Value>) -> Result<Value, String> {
     }
 
     // SHFileOperationW 对空目录同样有效，走回收站可还原
-    trash(&target)?;
+    trash_file(&target)?;
     Ok(json!({ "deleted": true, "folder": folder }))
 }
 

@@ -12,6 +12,7 @@
 //!   要复现 Python `random.Random` 的 Fisher-Yates 才有同样结果，留到后续）。
 
 mod config;
+mod dedup;
 mod fingerprint;
 mod hash;
 mod library;
@@ -20,6 +21,7 @@ mod scan;
 mod snapshot;
 mod sort;
 mod system;
+mod taint;
 mod write_ops;
 
 use serde::Serialize;
@@ -102,6 +104,29 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
             Err(message) => DispatchResponse::failed(message),
         },
         "library_smart_folders_save" => match write_ops::smart_folders_save(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "library_rename_batch" => match write_ops::rename_batch(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        // 只有 BGM 查重走 Rust；水印查重依赖 PIL 的 dHash，整体交回旧引擎。
+        "library_find_duplicates" => {
+            if object.get("kind").and_then(Value::as_str) == Some("bgm") {
+                match dedup::find_duplicates(&object) {
+                    Ok(result) => DispatchResponse::ok(result),
+                    Err(message) => DispatchResponse::failed(message),
+                }
+            } else {
+                DispatchResponse::unhandled()
+            }
+        }
+        "scan_tainted" => match taint::scan_tainted(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "clean_tainted" => match taint::clean_tainted(&object) {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
         },
@@ -227,7 +252,7 @@ mod tests {
 
     #[test]
     fn unknown_method_is_left_to_the_python_engine() {
-        let response = dispatch("library_find_duplicates", None);
+        let response = dispatch("library_extract_bgm", None);
         assert!(!response.handled);
         assert!(response.result.is_none());
     }
@@ -400,5 +425,81 @@ mod tests {
             "library_dirs": library::dirs(),
         });
         println!("PARITY={}", payload);
+    }
+
+    /// 体检对照：`ITV_TAINT_DIR` 指向素材库根（含 BGM 与 水印 两目录）。
+    #[test]
+    fn parity_dump_taint() {
+        let Ok(dir) = std::env::var("ITV_TAINT_DIR") else {
+            return;
+        };
+        let mut bgm = serde_json::Map::new();
+        bgm.insert("kind".to_string(), json!("bgm"));
+        bgm.insert("bgm_dir".to_string(), json!(format!("{dir}/BGM")));
+        bgm.insert("watermark_dir".to_string(), json!(format!("{dir}/水印")));
+        let mut watermark = bgm.clone();
+        watermark.insert("kind".to_string(), json!("watermark"));
+
+        let payload = json!({
+            "bgm": taint::scan_tainted(&bgm).expect("bgm 体检"),
+            "watermark": taint::scan_tainted(&watermark).expect("水印体检"),
+        });
+        println!("TAINT_PARITY={}", payload);
+    }
+
+    /// 清洗对照：`ITV_CLEAN_DIR` 指向素材库根，`ITV_CLEAN_TARGETS` 是要清洗的绝对路径数组。
+    #[test]
+    fn parity_dump_clean_tainted() {
+        let Ok(dir) = std::env::var("ITV_CLEAN_DIR") else {
+            return;
+        };
+        let Ok(raw) = std::env::var("ITV_CLEAN_TARGETS") else {
+            return;
+        };
+        let targets: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        let mut params = serde_json::Map::new();
+        params.insert("paths".to_string(), json!(targets));
+        params.insert("bgm_dir".to_string(), json!(format!("{dir}/BGM")));
+        params.insert("watermark_dir".to_string(), json!(format!("{dir}/水印")));
+        let payload = taint::clean_tainted(&params).expect("清洗");
+        println!("CLEAN_PARITY={}", payload);
+    }
+
+    /// BGM 查重对照：`ITV_DUP_DIR` 指向素材库根。
+    #[test]
+    fn parity_dump_duplicates() {
+        let Ok(dir) = std::env::var("ITV_DUP_DIR") else {
+            return;
+        };
+        let mut params = serde_json::Map::new();
+        params.insert("kind".to_string(), json!("bgm"));
+        params.insert("bgm_dir".to_string(), json!(format!("{dir}/BGM")));
+        params.insert("watermark_dir".to_string(), json!(format!("{dir}/水印")));
+        let payload = dedup::find_duplicates(&params).expect("查重");
+        println!("DUP_PARITY={}", payload);
+    }
+
+    /// 批量重命名对照：`ITV_RENAME_DIR` 指向素材库根，
+    /// `ITV_RENAME_TARGETS_FILE` 指向一个 JSON 数组文件（走文件避免 shell 转义干扰）。
+    #[test]
+    fn parity_dump_rename_batch() {
+        let Ok(dir) = std::env::var("ITV_RENAME_DIR") else {
+            return;
+        };
+        let Some(raw) = std::env::var("ITV_RENAME_TARGETS_FILE")
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+        else {
+            return;
+        };
+        let targets: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        let mut params = serde_json::Map::new();
+        params.insert("kind".to_string(), json!("bgm"));
+        params.insert("bgm_dir".to_string(), json!(format!("{dir}/BGM")));
+        params.insert("watermark_dir".to_string(), json!(format!("{dir}/水印")));
+        params.insert("paths".to_string(), json!(targets));
+        params.insert("pattern".to_string(), json!("{n}-{name}"));
+        let payload = write_ops::rename_batch(&params).expect("批量重命名");
+        println!("RENAME_PARITY={}", payload);
     }
 }

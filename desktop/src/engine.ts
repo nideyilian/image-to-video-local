@@ -35,6 +35,11 @@ const NATIVE_METHODS = new Set([
   "library_get_tags",
   "library_smart_folders_list",
   "library_smart_folders_save",
+  "library_rename_batch",
+  // 只有 kind === "bgm" 走原生；水印查重依赖 PIL 的 dHash，原生侧会返回 handled=false 交回旧引擎
+  "library_find_duplicates",
+  "scan_tainted",
+  "clean_tainted",
   "scan_images",
   "scan_subfolders",
   "scan_subfolder_groups",
