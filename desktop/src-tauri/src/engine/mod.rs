@@ -69,6 +69,34 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
         },
+        "library_remove" => match write_ops::remove(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "library_remove_batch" => match write_ops::remove_batch(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "library_move" => match write_ops::move_items(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "library_create_folder" => match write_ops::create_folder(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "library_rename_folder" => match write_ops::rename_folder(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "library_delete_folder" => match write_ops::delete_folder(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "library_get_tags" => match write_ops::get_tags(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
         "scan_images" => scan_images(&object),
         "scan_subfolders" => scan_subfolders(&object),
         "scan_subfolder_groups" => scan_subfolder_groups(&object),
@@ -191,7 +219,7 @@ mod tests {
 
     #[test]
     fn unknown_method_is_left_to_the_python_engine() {
-        let response = dispatch("library_remove", None);
+        let response = dispatch("library_find_duplicates", None);
         assert!(!response.handled);
         assert!(response.result.is_none());
     }
@@ -287,6 +315,47 @@ mod tests {
             Err(message) => json!({ "error": message }),
         };
         println!("IMPORT_PARITY={}", result);
+    }
+
+    /// 与 Python 版对照移动 / 元数据 / 标签汇总：`ITV_OPS_DIR` 指向准备好的素材库。
+    #[test]
+    fn parity_dump_library_ops() {
+        let Ok(dir) = std::env::var("ITV_OPS_DIR") else {
+            return;
+        };
+        let base = json!({
+            "kind": "bgm",
+            "bgm_dir": format!("{dir}/BGM"),
+            "watermark_dir": format!("{dir}/水印"),
+        });
+        let mut object = base.as_object().expect("base").clone();
+
+        let mut move_params = object.clone();
+        move_params.insert(
+            "paths".to_string(),
+            json!([format!("{dir}/BGM/a.wav")]),
+        );
+        move_params.insert("folder".to_string(), json!("精选"));
+        let moved = write_ops::move_items(&move_params);
+
+        let mut metadata_params = object.clone();
+        metadata_params.insert("path".to_string(), json!(format!("{dir}/BGM/b.wav")));
+        metadata_params.insert("tags".to_string(), json!(["轻快", "人声", "轻快"]));
+        metadata_params.insert("starred".to_string(), json!(true));
+        metadata_params.insert("note".to_string(), json!("测试备注"));
+        let metadata = write_ops::set_metadata(&metadata_params);
+
+        object.insert("kind".to_string(), json!("bgm"));
+        let tags = write_ops::get_tags(&object);
+
+        println!(
+            "OPS_PARITY={}",
+            json!({
+                "move": moved.unwrap_or_else(|error| json!({"error": error})),
+                "metadata": metadata.unwrap_or_else(|error| json!({"error": error})),
+                "tags": tags.unwrap_or_else(|error| json!({"error": error})),
+            })
+        );
     }
 
     #[test]

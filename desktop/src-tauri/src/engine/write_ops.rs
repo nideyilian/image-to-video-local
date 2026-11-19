@@ -609,6 +609,406 @@ pub fn set_metadata(params: &Map<String, Value>) -> Result<Value, String> {
     }))
 }
 
+// ---------- 回收站 ----------
+
+/// 与 `send2trash()` 等价：走 Windows Shell，进回收站可还原。
+#[cfg(windows)]
+fn trash(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[repr(C)]
+    struct ShellFileOp {
+        hwnd: *mut std::ffi::c_void,
+        function: u32,
+        from: *const u16,
+        to: *const u16,
+        flags: u16,
+        aborted: i32,
+        name_mappings: *mut std::ffi::c_void,
+        progress_title: *const u16,
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHFileOperationW(operation: *mut ShellFileOp) -> i32;
+    }
+
+    const FO_DELETE: u32 = 3;
+    const FOF_SILENT: u16 = 0x0004;
+    const FOF_NOCONFIRMATION: u16 = 0x0010;
+    const FOF_ALLOWUNDO: u16 = 0x0040;
+    const FOF_NOERRORUI: u16 = 0x0400;
+
+    // pFrom 必须是「双 null 结尾」的宽字符串
+    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+    from.push(0);
+    from.push(0);
+
+    let mut operation = ShellFileOp {
+        hwnd: std::ptr::null_mut(),
+        function: FO_DELETE,
+        from: from.as_ptr(),
+        to: std::ptr::null(),
+        flags: FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI,
+        aborted: 0,
+        name_mappings: std::ptr::null_mut(),
+        progress_title: std::ptr::null(),
+    };
+    let code = unsafe { SHFileOperationW(&mut operation) };
+    if code != 0 {
+        return Err(format!("移入回收站失败（错误码 {code}）"));
+    }
+    if operation.aborted != 0 {
+        return Err("移入回收站被取消".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn trash(path: &Path) -> Result<(), String> {
+    // 项目只发 Windows 安装包；其它平台直接删除，避免依赖第三方 crate。
+    let result = if path.is_dir() {
+        fs::remove_dir(path)
+    } else {
+        fs::remove_file(path)
+    };
+    result.map_err(|error| error.to_string())
+}
+
+// ---------- 删除 ----------
+
+pub fn remove(params: &Map<String, Value>) -> Result<Value, String> {
+    let kind = kind_of(params)?;
+    let base = base_of(&kind, params);
+    let target = resolve_target(&base, &text(params, "path"));
+    if !target.is_file() || !inside(&base, &target) {
+        return Err("只能删除素材库内的文件".to_string());
+    }
+    trash(&target)?;
+
+    if let Some(parent) = target.parent() {
+        let name = target
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut index = snapshot::load_index(parent);
+        index.entries.remove(&name);
+        snapshot::save_index(parent, &index).map_err(|error| error.to_string())?;
+    }
+    Ok(json!({ "removed": true, "path": shown(&target) }))
+}
+
+pub fn remove_batch(params: &Map<String, Value>) -> Result<Value, String> {
+    let kind = kind_of(params)?;
+    let paths = params
+        .get("paths")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if paths.is_empty() {
+        return Err("没有可删除的素材".to_string());
+    }
+    let base = base_of(&kind, params);
+    let mut results: Vec<Value> = Vec::new();
+
+    for raw in paths {
+        let raw_text = raw.as_str().unwrap_or_default().to_string();
+        let target = resolve_target(&base, &raw_text);
+        let name = target
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| raw_text.clone());
+
+        if !target.is_file() {
+            results.push(json!({
+                "name": name,
+                "path": paths::display(&target),
+                "status": "failed",
+                "reason": "文件不存在",
+            }));
+            continue;
+        }
+        if !inside(&base, &target) {
+            results.push(json!({
+                "name": name,
+                "path": paths::display(&target),
+                "status": "failed",
+                "reason": "只能删除素材库内的文件",
+            }));
+            continue;
+        }
+        match trash(&target) {
+            Ok(()) => {
+                if let Some(parent) = target.parent() {
+                    let mut index = snapshot::load_index(parent);
+                    index.entries.remove(&name);
+                    let _ = snapshot::save_index(parent, &index);
+                }
+                results.push(json!({
+                    "name": name,
+                    "path": shown(&target),
+                    "status": "removed",
+                }));
+            }
+            Err(message) => results.push(json!({
+                "name": name,
+                "path": paths::display(&target),
+                "status": "failed",
+                "reason": message,
+            })),
+        }
+    }
+    Ok(json!({ "results": results }))
+}
+
+// ---------- 移动 ----------
+
+pub fn move_items(params: &Map<String, Value>) -> Result<Value, String> {
+    let kind = kind_of(params)?;
+    let paths = params
+        .get("paths")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if paths.is_empty() {
+        return Err("没有可移动的素材".to_string());
+    }
+    let base = base_of(&kind, params);
+    let relative = relative_folder(params.get("folder"))?;
+    let target_dir = if relative.is_empty() {
+        base.clone()
+    } else {
+        base.join(&relative)
+    };
+    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
+
+    let mut results: Vec<Value> = Vec::new();
+    for raw in paths {
+        let raw_text = raw.as_str().unwrap_or_default().to_string();
+        let source = paths::absolute(&PathBuf::from(&raw_text));
+        let display_name = source
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| raw_text.clone());
+
+        if !source.is_file() {
+            results.push(json!({
+                "name": display_name,
+                "path": raw_text,
+                "status": "failed",
+                "reason": "文件不存在",
+            }));
+            continue;
+        }
+        if !inside(&base, &source) {
+            results.push(json!({
+                "name": display_name,
+                "path": paths::display(&source),
+                "status": "failed",
+                "reason": "只能移动素材库内的文件",
+            }));
+            continue;
+        }
+        let same_folder = source
+            .parent()
+            .and_then(|parent| paths::resolve(parent).ok())
+            .zip(paths::resolve(&target_dir).ok())
+            .map(|(left, right)| left == right)
+            .unwrap_or(false);
+        if same_folder {
+            results.push(json!({
+                "name": display_name,
+                "path": paths::display(&source),
+                "status": "moved",
+                "reason": "已在目标文件夹",
+            }));
+            continue;
+        }
+
+        let Ok(sha256) = hash::file_sha256(&source) else {
+            results.push(json!({
+                "name": display_name,
+                "path": paths::display(&source),
+                "status": "failed",
+                "reason": "读取文件失败",
+            }));
+            continue;
+        };
+        let target_hashes = dir_content_hashes(&target_dir, &kind);
+        if let Some((existing, _)) = target_hashes.iter().find(|(_, cached)| **cached == sha256) {
+            results.push(json!({
+                "name": display_name,
+                "path": paths::display(&source),
+                "status": "duplicate",
+                "reason": format!("目标文件夹已有相同素材：{existing}"),
+            }));
+            continue;
+        }
+
+        let target = unique_path(&target_dir, &display_name, &target_hashes);
+        // 迁移索引条目（含 BGM 指纹），避免移动后重算
+        let mut entry = source
+            .parent()
+            .map(|parent| pop_index_entry(parent, &display_name))
+            .unwrap_or(Value::Null);
+        if !entry.is_object() {
+            entry = json!({});
+        }
+        if let Err(error) = fs::rename(&source, &target) {
+            results.push(json!({
+                "name": display_name,
+                "path": paths::display(&source),
+                "status": "failed",
+                "reason": error.to_string(),
+            }));
+            continue;
+        }
+        let metadata = fs::metadata(&target).ok();
+        entry["sha256"] = json!(sha256);
+        entry["mtime_ns"] = json!(metadata.as_ref().map(snapshot::modified_ns).unwrap_or(0));
+        entry["size"] = json!(metadata.as_ref().map(|value| value.len()).unwrap_or(0));
+
+        let target_name = target
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut index = snapshot::load_index(&target_dir);
+        index.entries.insert(target_name.clone(), entry.clone());
+        let _ = snapshot::save_index(&target_dir, &index);
+
+        results.push(json!({
+            "name": target_name,
+            "path": shown(&target),
+            "status": "moved",
+            "folder": relative,
+            "size_bytes": entry.get("size").cloned().unwrap_or(json!(0)),
+            "duration": entry.get("duration").cloned().unwrap_or(Value::Null),
+        }));
+    }
+    Ok(json!({ "results": results }))
+}
+
+fn pop_index_entry(directory: &Path, name: &str) -> Value {
+    let mut index = snapshot::load_index(directory);
+    let entry = index.entries.remove(name).unwrap_or(Value::Null);
+    let _ = snapshot::save_index(directory, &index);
+    entry
+}
+
+// ---------- 文件夹 ----------
+
+pub fn create_folder(params: &Map<String, Value>) -> Result<Value, String> {
+    let kind = kind_of(params)?;
+    let relative = relative_folder(params.get("folder"))?;
+    if relative.is_empty() {
+        return Err("请输入文件夹名称".to_string());
+    }
+    let base = base_of(&kind, params);
+    let target = base.join(&relative);
+    fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+    Ok(json!({
+        "created": true,
+        "folder": relative,
+        "path": shown(&target),
+    }))
+}
+
+pub fn rename_folder(params: &Map<String, Value>) -> Result<Value, String> {
+    let kind = kind_of(params)?;
+    let folder = relative_folder(params.get("folder"))?;
+    let new_name = text(params, "new_name");
+    if folder.is_empty() {
+        return Err("不能重命名库根目录".to_string());
+    }
+    if new_name.is_empty()
+        || new_name == "."
+        || new_name == ".."
+        || new_name.contains('/')
+        || new_name.contains('\\')
+    {
+        return Err("请输入合法的文件夹名称".to_string());
+    }
+    if new_name.chars().any(|ch| "<>:\"|?*".contains(ch)) {
+        return Err("文件夹名称包含非法字符".to_string());
+    }
+
+    let base = base_of(&kind, params);
+    let old = base.join(&folder);
+    if !old.is_dir() {
+        return Err("文件夹不存在".to_string());
+    }
+    let new = old
+        .parent()
+        .map(|parent| parent.join(&new_name))
+        .unwrap_or_else(|| base.join(&new_name));
+    if new.exists() {
+        return Err("目标文件夹已存在".to_string());
+    }
+    fs::rename(&old, &new).map_err(|error| error.to_string())?;
+
+    let relative = new
+        .strip_prefix(&base)
+        .map(|value| value.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    Ok(json!({
+        "renamed": true,
+        "folder": relative,
+        "path": shown(&new),
+    }))
+}
+
+pub fn delete_folder(params: &Map<String, Value>) -> Result<Value, String> {
+    let kind = kind_of(params)?;
+    let folder = relative_folder(params.get("folder"))?;
+    if folder.is_empty() {
+        return Err("不能删除库根目录".to_string());
+    }
+    let base = base_of(&kind, params);
+    let target = base.join(&folder);
+    if !target.is_dir() {
+        return Err("文件夹不存在".to_string());
+    }
+    let has_children = fs::read_dir(&target)
+        .map(|entries| entries.flatten().next().is_some())
+        .unwrap_or(false);
+    if has_children {
+        return Err("文件夹不为空，请先清空或移走其中的文件".to_string());
+    }
+
+    // SHFileOperationW 对空目录同样有效，走回收站可还原
+    trash(&target)?;
+    Ok(json!({ "deleted": true, "folder": folder }))
+}
+
+// ---------- 标签汇总 ----------
+
+pub fn get_tags(params: &Map<String, Value>) -> Result<Value, String> {
+    let kind = kind_of(params)?;
+    let base = base_of(&kind, params);
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (_, _, entry) in all_index_entries(&base) {
+        let Some(tags) = entry.get("tags").and_then(Value::as_array) else {
+            continue;
+        };
+        for tag in tags {
+            let key = tag.as_str().unwrap_or_default().trim().to_string();
+            if key.is_empty() {
+                continue;
+            }
+            *counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    let mut tags: Vec<(String, usize)> = counts.into_iter().collect();
+    // Python: sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    tags.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    Ok(json!({
+        "tags": tags
+            .into_iter()
+            .map(|(name, count)| json!({ "name": name, "count": count }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
