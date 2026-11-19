@@ -12,10 +12,14 @@
 //!   要复现 Python `random.Random` 的 Fisher-Yates 才有同样结果，留到后续）。
 
 mod config;
+mod fingerprint;
+mod hash;
 mod library;
 mod paths;
 mod scan;
+mod snapshot;
 mod sort;
+mod system;
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -46,6 +50,7 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
 
     match method {
         "library_dirs" => DispatchResponse::ok(library::dirs()),
+        "library_snapshot" => DispatchResponse::ok(snapshot::snapshot(&object)),
         "scan_images" => scan_images(&object),
         "scan_subfolders" => scan_subfolders(&object),
         "scan_subfolder_groups" => scan_subfolder_groups(&object),
@@ -168,7 +173,7 @@ mod tests {
 
     #[test]
     fn unknown_method_is_left_to_the_python_engine() {
-        let response = dispatch("library_snapshot", None);
+        let response = dispatch("library_import", None);
         assert!(!response.handled);
         assert!(response.result.is_none());
     }
@@ -227,6 +232,20 @@ mod tests {
             }
         }
         println!("CONFIG_PARITY={}", Value::Object(out));
+    }
+
+    /// 与 Python 版逐字段对照用：设 `ITV_LIB_DIR` 指向一个素材库根目录（含 BGM/水印）。
+    #[test]
+    fn parity_dump_library_snapshot() {
+        let Ok(dir) = std::env::var("ITV_LIB_DIR") else {
+            return;
+        };
+        let params = json!({
+            "bgm_dir": format!("{dir}/BGM"),
+            "watermark_dir": format!("{dir}/水印"),
+        });
+        let result = snapshot::snapshot(params.as_object().expect("params"));
+        println!("LIB_PARITY={}", result);
     }
 
     #[test]

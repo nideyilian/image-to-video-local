@@ -58,6 +58,23 @@ pub fn to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// 返回给前端的路径显示形式。
+///
+/// `PathBuf` 会保留拼接时用的原始分隔符（`C:/x\y/BGM`），而 Python 的 `str(Path)`
+/// 统一成反斜杠。前端会把拿到的路径再传回来、也会直接显示，两边不一致会造成
+/// 「同一个目录两种写法」的困扰，所以这里统一成系统分隔符。
+pub fn display(path: &Path) -> String {
+    let text = path.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    {
+        text.replace('/', "\\")
+    }
+    #[cfg(not(windows))]
+    {
+        text
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

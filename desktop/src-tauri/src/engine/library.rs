@@ -25,15 +25,20 @@ fn home_dir() -> PathBuf {
     PathBuf::new()
 }
 
-pub fn dirs() -> Value {
+pub fn default_paths() -> (PathBuf, PathBuf, PathBuf) {
     let home = home_dir();
     let documents = home.join("Documents");
     let base = if documents.is_dir() { documents } else { home };
     let root = base.join(LIBRARY_ROOT_NAME);
+    (root.clone(), root.join("BGM"), root.join("水印"))
+}
+
+pub fn dirs() -> Value {
+    let (root, bgm, watermark) = default_paths();
     json!({
         "library_root": root.to_string_lossy().into_owned(),
-        "bgm_dir": root.join("BGM").to_string_lossy().into_owned(),
-        "watermark_dir": root.join("水印").to_string_lossy().into_owned(),
+        "bgm_dir": bgm.to_string_lossy().into_owned(),
+        "watermark_dir": watermark.to_string_lossy().into_owned(),
     })
 }
 

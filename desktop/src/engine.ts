@@ -22,6 +22,7 @@ const ENGINE_STARTUP_TIMEOUT_MS = 120_000;
 /** 已由 Rust 原生接管（不碰像素、纯文件扫描）的接口；其余继续走 Python 引擎。 */
 const NATIVE_METHODS = new Set([
   "library_dirs",
+  "library_snapshot",
   "scan_images",
   "scan_subfolders",
   "scan_subfolder_groups",
