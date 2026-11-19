@@ -199,18 +199,8 @@ fn unhandled_reason(
     transition_type: &str,
     transition_will_run: bool,
 ) -> Option<&'static str> {
-    // 图片水印图层：需要混合模式合成，未实现
-    if flag(config, "use_image_watermark", false) {
-        let has_layers = config
-            .get("watermark_layers")
-            .and_then(Value::as_array)
-            .map(|layers| !layers.is_empty())
-            .unwrap_or(false);
-        if has_layers {
-            return Some("图片水印图层未迁移");
-        }
-    }
     // 视频水印：要按时间取水印视频的帧，未实现
+    // （图片水印图层已迁移，见 render_frame 里的 apply_image_layer）
     if flag(config, "use_watermark", false) {
         let path = text(config, "watermark_path", "");
         if !path.trim().is_empty() && Path::new(path.trim()).is_file() {
@@ -354,6 +344,26 @@ pub fn render_frame(params: &Map<String, Value>) -> Result<Option<Value>, String
     }
 
     // ---- 开始渲染 ----
+    // 图片水印图层：与 Python 一致，先贴在两张原图上，再做转场/特效
+    let layers_value = config
+        .get("watermark_layers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let use_image_watermark = flag(&config, "use_image_watermark", false) && !layers_value.is_empty();
+    // 「换一组看看」用 sequence 当种子，保证同一组参数结果稳定
+    let mut pick = move |count: usize| -> usize {
+        if count == 0 {
+            return 0;
+        }
+        (preview_sequence as usize + count) % count
+    };
+    let prepared_layers = if use_image_watermark {
+        crate::render::watermark::prepare_image_layers(&layers_value, &mut pick)
+    } else {
+        Vec::new()
+    };
+
     let keep_aspect = flag(&config, "keep_aspect_ratio", true);
     let resize_mode = if keep_aspect { "适应" } else { "拉伸" };
     let Some(mut image) = pixels::read_image_bgr(&source_path) else {
@@ -371,6 +381,14 @@ pub fn render_frame(params: &Map<String, Value>) -> Result<Option<Value>, String
     if let Some(path) = &next_path {
         if let Some(frame) = pixels::read_image_bgr(path) {
             next_image = Some(pixels::resize_image(&frame, width, height, resize_mode));
+        }
+    }
+
+    // 贴图片水印（对两张图都贴，转场时不会「跳」）
+    for layer in &prepared_layers {
+        image = crate::render::watermark::apply_image_layer(&image, layer, &mut pick);
+        if let Some(second) = next_image.as_mut() {
+            *second = crate::render::watermark::apply_image_layer(second, layer, &mut pick);
         }
     }
 
@@ -678,14 +696,15 @@ mod tests {
     }
 
     #[test]
-    fn image_watermark_layers_decline() {
+    fn image_watermark_layers_are_supported_now() {
+        // 图片水印已迁移，不再因此回落（只有视频水印还留在旧引擎）
         let config = config_with(&[
             ("use_image_watermark", json!(true)),
             ("watermark_layers", json!([{ "path": "C:/wm.png" }])),
         ]);
         assert_eq!(
             unhandled_reason(&config, "无特效", false, "淡入淡出", false),
-            Some("图片水印图层未迁移")
+            None
         );
     }
 
