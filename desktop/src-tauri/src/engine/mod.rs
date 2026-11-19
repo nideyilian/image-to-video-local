@@ -177,17 +177,11 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
         },
-        // 只有 BGM 查重走 Rust；水印查重依赖 PIL 的 dHash，整体交回旧引擎。
-        "library_find_duplicates" => {
-            if object.get("kind").and_then(Value::as_str) == Some("bgm") {
-                match dedup::find_duplicates(&object) {
-                    Ok(result) => DispatchResponse::ok(result),
-                    Err(message) => DispatchResponse::failed(message),
-                }
-            } else {
-                DispatchResponse::unhandled()
-            }
-        }
+        // BGM 与图片查重都由 Rust 处理（图片用 Rust 自己的 dHash，见 dedup.rs 注释）
+        "library_find_duplicates" => match dedup::find_duplicates(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
         "library_scan_tainted" => match taint::scan_tainted(&object) {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
@@ -489,11 +483,7 @@ mod tests {
         assert!(methods.len() >= 20, "白名单解析异常：{methods:?}");
 
         for method in methods {
-            let params = if method == "library_find_duplicates" {
-                json!({ "kind": "bgm" })
-            } else {
-                json!({})
-            };
+            let params = json!({});
             let response = dispatch(&method, Some(params));
             assert!(
                 response.handled,
