@@ -488,3 +488,27 @@ mod tests {
         assert!(matches!(error, ComposeError::FirstImageFailed(_)));
     }
 }
+/// 收集日志的钩子（对照测试用，便于把渲染日志一起打出来比对）。
+#[derive(Default)]
+pub struct CollectHooks {
+    pub logs: Vec<String>,
+    pub last_progress: i64,
+}
+
+impl ComposeHooks for CollectHooks {
+    fn progress(&mut self, written: i64, total: i64) {
+        let percent = if total > 0 { written * 100 / total } else { 0 };
+        if percent != self.last_progress {
+            self.last_progress = percent;
+            self.logs.push(format!("progress {percent}%"));
+        }
+    }
+
+    fn cancelled(&mut self) -> bool {
+        false
+    }
+
+    fn log(&mut self, message: &str) {
+        self.logs.push(message.to_string());
+    }
+}

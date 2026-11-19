@@ -147,8 +147,14 @@ pub fn generate_frames(
     if num_frames == 0 {
         return Vec::new();
     }
-    // 多生成 2 帧再掐头去尾，避免首尾帧与静态帧重复
-    let generate_count = if num_frames > 1 { num_frames + 2 } else { num_frames };
+    // 多生成 2 帧再掐头去尾，避免首尾帧与静态帧重复。
+    //
+    // ⚠️ `num_frames == 1` 时**也要** +2：Python 的 `generate_transition_frames`
+    // 无条件生成 `num_frames + 2` 帧再 `[1:-1]`，所以 1 帧请求得到的是 alpha=0.5
+    // 的中帧。我第一版对 1 帧走了"不加 2"的分支，结果这一帧退化成 alpha=0
+    // （等于原图），导出视频里每个转场都"跳"一下 —— 10 帧的视频只有第 4 帧不一致，
+    // 因为是那唯一一个转场帧。
+    let generate_count = num_frames + 2;
     let mut frames = generate_raw(first, second, transition, generate_count);
     if frames.len() >= num_frames + 2 {
         frames = frames[1..frames.len() - 1].to_vec();

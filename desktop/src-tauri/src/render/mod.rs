@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 pub mod audio;
+pub mod batch;
 pub mod codec;
 pub mod compositor;
 pub mod effects;
@@ -1007,5 +1008,49 @@ mod parity_watermark_blend {
             report.push(json!({ "index": index, "file": file, "layers": prepared.len() }));
         }
         println!("WMBLEND={}", Value::Array(report));
+    }
+}
+
+#[cfg(test)]
+mod parity_batch {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// 批量导出对照：`ITV_BATCH_CONFIG` 指向完整配置 JSON，`ITV_BATCH_OUT` 输出目录。
+    #[test]
+    fn parity_run_batch() {
+        let (Ok(config_path), Ok(out_dir)) =
+            (std::env::var("ITV_BATCH_CONFIG"), std::env::var("ITV_BATCH_OUT"))
+        else {
+            return;
+        };
+        let Ok(raw) = std::fs::read_to_string(config_path) else {
+            return;
+        };
+        let Ok(mut config) = serde_json::from_str::<Value>(&raw) else {
+            return;
+        };
+        if let Some(object) = config.as_object_mut() {
+            object.insert("output_dir".into(), json!(out_dir));
+        }
+        let ffmpeg = match crate::engine::system::resolve_ffmpeg(None) {
+            Some(path) => path,
+            None => return,
+        };
+        let mut hooks = compositor::CollectHooks::default();
+        let outcome = batch::run_batch(&config, &ffmpeg, &mut hooks);
+        println!(
+            "BATCH={}",
+            match outcome {
+                Ok(result) => json!({
+                    "ok": true,
+                    "success": result.success,
+                    "total": result.total,
+                    "outputs": result.outputs,
+                    "logs": hooks.logs,
+                }),
+                Err(error) => json!({ "ok": false, "error": error, "logs": hooks.logs }),
+            }
+        );
     }
 }

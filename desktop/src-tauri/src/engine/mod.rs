@@ -11,7 +11,7 @@
 //! - `preview_sequence > 0` 的扫描（「换一组看看」依赖旧引擎的确定性洗牌，
 //!   要复现 Python `random.Random` 的 Fisher-Yates 才有同样结果，留到后续）。
 
-mod config;
+pub(crate) mod config;
 mod dedup;
 mod effect_assets;
 mod effect_preview;
@@ -20,11 +20,11 @@ mod fingerprint;
 mod hash;
 pub(crate) mod jobs;
 mod library;
-mod paths;
+pub(crate) mod paths;
 mod preview;
 pub(crate) mod preview_random;
-mod scan;
-mod snapshot;
+pub(crate) mod scan;
+pub(crate) mod snapshot;
 pub(crate) mod sort;
 mod sysinfo;
 pub(crate) mod system;
@@ -90,22 +90,28 @@ fn job_sink() -> jobs::EventSink {
 fn job_manager() -> &'static jobs::JobManager {
     static MANAGER: std::sync::OnceLock<jobs::JobManager> = std::sync::OnceLock::new();
     MANAGER.get_or_init(|| {
-        // 打包模式（frozen）用 exe 自己当 worker；源码模式用 python -m
-        let worker = if let Ok(executable) = std::env::var("ITV_PACKAGED_WORKER") {
-            jobs::WorkerCommand::Packaged {
-                executable: std::path::PathBuf::from(executable),
+        // 默认走 Rust 原生导出（`render::batch::run_batch`），不再需要 Python。
+        // 保留两个逃生开关：出问题时设 `ITV_LEGACY_WORKER=1` 可退回 Python worker，
+        // 或设 `ITV_PACKAGED_WORKER=<exe>` 指定打包后的 sidecar。
+        let worker = if std::env::var("ITV_LEGACY_WORKER").is_ok() {
+            if let Ok(executable) = std::env::var("ITV_PACKAGED_WORKER") {
+                jobs::WorkerCommand::Packaged {
+                    executable: std::path::PathBuf::from(executable),
+                }
+            } else {
+                let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../..")
+                    .canonicalize()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let python =
+                    std::env::var("ITV_PYTHON").unwrap_or_else(|_| "python".to_string());
+                jobs::WorkerCommand::PythonModule {
+                    python,
+                    project_root,
+                }
             }
         } else {
-            let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let python = std::env::var("ITV_PYTHON")
-                .unwrap_or_else(|_| "python".to_string());
-            jobs::WorkerCommand::PythonModule {
-                python,
-                project_root,
-            }
+            jobs::WorkerCommand::Native
         };
         jobs::JobManager::new(job_sink(), worker)
     })

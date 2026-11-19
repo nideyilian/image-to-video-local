@@ -7,7 +7,7 @@
 //! 不支持：视频水印（要逐帧解码水印视频）、图片水印图层（要混合模式合成）、
 //! 其余 29 种特效与 24 种转场 —— 它们都会让输出与旧引擎不同，宁可回落。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::{json, Map, Value};
 
@@ -193,7 +193,9 @@ pub fn phase_timing(config: &Map<String, Value>, duration_sec: f64, has_next: bo
 ///
 /// 检查顺序与渲染顺序一致：先看外挂素材（水印），再看效果。
 fn unhandled_reason(
-    config: &Map<String, Value>,
+    // 视频水印与图片水印都已迁移，暂时不需要读 config；
+    // 保留参数是为了将来加新能力时不用改所有调用点。
+    _config: &Map<String, Value>,
     effect_type: &str,
     effect_enabled: bool,
     transition_type: &str,

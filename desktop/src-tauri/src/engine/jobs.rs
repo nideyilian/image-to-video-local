@@ -18,6 +18,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Map, Value};
 
+use crate::render::compositor::ComposeHooks;
+
 /// 事件出口：`(event, payload)`，对应 Python 的 `callback({"type":"event",...})`。
 pub type EventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
 
@@ -100,6 +102,11 @@ pub enum WorkerCommand {
     PythonModule { python: String, project_root: PathBuf },
     /// `exe --legacy-worker --config ... --control ...`（打包模式）
     Packaged { executable: PathBuf },
+    /// 直接在本进程里跑 Rust 导出（`render::batch::run_batch`）。
+    ///
+    /// 这条路径不需要 Python：选图、逐帧渲染、后处理全在 Rust 里完成。
+    /// 保留上面两个变体是为了灰度 —— 一旦 Rust 导出出问题，改回 PythonModule 即可。
+    Native,
 }
 
 impl WorkerCommand {
@@ -120,6 +127,8 @@ impl WorkerCommand {
                 ],
                 project_root.clone(),
             ),
+            // 不会走到：start() 已先分流到 start_native
+            WorkerCommand::Native => (String::new(), Vec::new(), std::env::temp_dir()),
             WorkerCommand::Packaged { executable } => (
                 executable.to_string_lossy().into_owned(),
                 vec![
@@ -197,6 +206,10 @@ impl JobManager {
         )
         .map_err(|error| error.to_string())?;
 
+        if matches!(self.worker, WorkerCommand::Native) {
+            return self.start_native(&resolved, config, config_path, control_path);
+        }
+
         let (program, args, cwd) = self.worker.build(&config_path, &control_path);
         let mut command = Command::new(&program);
         command.args(&args);
@@ -249,6 +262,121 @@ impl JobManager {
             .map_err(|_| "任务记录锁定失败")?
             .public_state();
         self.emit("job.started", state.clone());
+        Ok(state)
+    }
+
+    /// 用本进程内的 Rust 渲染跑一个任务。
+    ///
+    /// 事件协议与 Python worker 完全一致（`job.log` / `job.progress` / `job.done`），
+    /// 所以前端一行都不用改。暂停/取消仍然走 control 文件 —— 渲染线程每帧读一次。
+    fn start_native(
+        &self,
+        job_id: &str,
+        config: &Map<String, Value>,
+        config_path: PathBuf,
+        control_path: PathBuf,
+    ) -> Result<Value, String> {
+        let record = Arc::new(Mutex::new(JobRecord {
+            job_id: job_id.to_string(),
+            status: JobStatus::Running,
+            paused: false,
+            cancel_requested: false,
+            progress: 0,
+            overall: 0,
+            speed: None,
+            message: "开始处理".to_string(),
+            started_at: Some(now_secs()),
+            finished_at: None,
+            return_code: None,
+            config_path: config_path.clone(),
+            control_path: control_path.clone(),
+            child: None,
+        }));
+
+        {
+            let mut jobs = self.jobs.lock().map_err(|_| "任务表锁定失败")?;
+            jobs.insert(job_id.to_string(), record.clone());
+        }
+
+        let state = record.lock().map_err(|_| "任务记录锁定失败")?.public_state();
+        self.emit("job.started", state.clone());
+
+        let sink = self.sink.clone();
+        let config_value = Value::Object(config.clone());
+        let thread_record = record.clone();
+        let thread_control = control_path.clone();
+        let thread_sink = sink.clone();
+        let thread_job_id = job_id.to_string();
+
+        std::thread::spawn(move || {
+            let mut hooks = NativeHooks {
+                record: thread_record.clone(),
+                sink: thread_sink.clone(),
+                control_path: thread_control,
+                job_id: thread_job_id.clone(),
+                last_progress: -1,
+            };
+            let ffmpeg = crate::engine::system::resolve_ffmpeg(None);
+            let outcome = match ffmpeg {
+                Some(ffmpeg) => {
+                    crate::render::batch::run_batch(&config_value, &ffmpeg, &mut hooks)
+                }
+                None => Err("未找到 FFmpeg，无法开始渲染".to_string()),
+            };
+
+            let cancelled = hooks.cancelled();
+            if let Ok(mut guard) = thread_record.lock() {
+                guard.finished_at = Some(now_secs());
+                if cancelled {
+                    guard.status = JobStatus::Cancelled;
+                    guard.message = "已取消".to_string();
+                } else {
+                    match &outcome {
+                        Ok(result) => {
+                            guard.status = JobStatus::Completed;
+                            guard.progress = 100;
+                            guard.overall = 100;
+                            guard.message = format!(
+                                "处理完成（成功 {} / 共 {}）",
+                                result.success, result.total
+                            );
+                        }
+                        Err(error) => {
+                            guard.status = JobStatus::Failed;
+                            guard.message = error.clone();
+                        }
+                    }
+                }
+            }
+            let final_state = thread_record
+                .lock()
+                .map(|guard| guard.public_state())
+                .unwrap_or(Value::Null);
+
+            // 与 Python worker 的收尾事件保持一致
+            thread_sink(
+                "job.done",
+                match &outcome {
+                    Ok(result) => json!({
+                        "job_id": thread_job_id,
+                        "success": result.success,
+                        "total": result.total,
+                        "outputs": result.outputs,
+                    }),
+                    Err(error) => json!({
+                        "job_id": thread_job_id,
+                        "success": 0,
+                        "error": error,
+                    }),
+                },
+            );
+            let _ = std::fs::remove_file(&thread_record
+                .lock()
+                .map(|guard| guard.config_path.clone())
+                .unwrap_or_default());
+            thread_sink("job.finished", final_state);
+        });
+
         Ok(state)
     }
 
@@ -768,5 +896,79 @@ mod tests {
         config.insert("output_dir".into(), json!(std::env::temp_dir().to_string_lossy()));
         let error = manager.start(&config, Some("t-missing".into())).unwrap_err();
         assert!(error.contains("无法启动渲染进程"), "实际: {error}");
+    }
+}
+/// 把 Rust 渲染的回调翻译成前端熟悉的事件。
+///
+/// `ComposeHooks` 是渲染内核的抽象，这里实现它并把事件推给 `EventSink`。
+/// 取消/暂停**读 control 文件**而不是内存标志 —— 与 Python worker 的机制一致，
+/// 也让「任务在另一个线程里跑」这件事对上层透明。
+struct NativeHooks {
+    record: Arc<Mutex<JobRecord>>,
+    sink: EventSink,
+    control_path: PathBuf,
+    job_id: String,
+    last_progress: i64,
+}
+
+impl NativeHooks {
+    fn read_control(&self) -> (bool, bool) {
+        let Ok(text) = std::fs::read_to_string(&self.control_path) else {
+            return (false, false);
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            return (false, false);
+        };
+        (
+            value.get("paused").and_then(Value::as_bool).unwrap_or(false),
+            value.get("cancel").and_then(Value::as_bool).unwrap_or(false),
+        )
+    }
+}
+
+impl crate::render::compositor::ComposeHooks for NativeHooks {
+    fn progress(&mut self, written: i64, total: i64) {
+        // 每帧都会回调，节流成「每 2% 一次」，避免把事件总线打满
+        let percent = if total > 0 {
+            (written * 100 / total).clamp(0, 100)
+        } else {
+            0
+        };
+        if percent == self.last_progress {
+            return;
+        }
+        self.last_progress = percent;
+        if let Ok(mut guard) = self.record.lock() {
+            guard.progress = percent;
+        }
+        (self.sink)(
+            "job.progress",
+            json!({
+                "job_id": self.job_id,
+                "progress": percent,
+                "current": written,
+                "total": total,
+            }),
+        );
+    }
+
+    fn cancelled(&mut self) -> bool {
+        let (_, cancel) = self.read_control();
+        if cancel {
+            if let Ok(mut guard) = self.record.lock() {
+                guard.cancel_requested = true;
+            }
+        }
+        cancel
+    }
+
+    fn log(&mut self, message: &str) {
+        if let Ok(mut guard) = self.record.lock() {
+            guard.message = message.to_string();
+        }
+        (self.sink)(
+            "job.log",
+            json!({ "stream": "stdout", "message": message }),
+        );
     }
 }
