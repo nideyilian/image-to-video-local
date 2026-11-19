@@ -32,7 +32,6 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "externalBin": ["binaries/image-to-video-engine"],
     "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",

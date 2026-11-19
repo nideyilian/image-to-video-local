@@ -1,24 +1,7 @@
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Command, type Child } from "@tauri-apps/plugin-shell";
 import { FALLBACK_CONFIG } from "./constants";
 import type { EngineEvent, EngineHealth, ValidationIssue, VideoConfig } from "./types";
-
-type PendingRequest = {
-  resolve: (value: unknown) => void;
-  reject: (reason: Error) => void;
-  timer: number;
-};
-
-type ResponsePayload = {
-  type: "response";
-  id: string | null;
-  ok: boolean;
-  result?: unknown;
-  error?: string;
-};
-
-const ENGINE_STARTUP_TIMEOUT_MS = 120_000;
 
 /** 已由 Rust 原生接管（不碰像素、纯文件扫描）的接口；其余继续走 Python 引擎。 */
 const NATIVE_METHODS = new Set([
@@ -81,92 +64,44 @@ type NativeResponse<T> = { handled: boolean; result?: T; error?: string };
 const NOT_NATIVE = Symbol("not-native");
 
 export class EngineBridge {
-  private child: Child | null = null;
-  private pending = new Map<string, PendingRequest>();
   private listeners = new Set<(event: EngineEvent) => void>();
-  private stdoutBuffer = "";
-  private sequence = 0;
-  private connecting: Promise<EngineHealth> | null = null;
+  /** 缓存的 health（原生分发一次即可，避免每次 connect 都问一遍）。 */
+  private health: EngineHealth | null = null;
 
   get desktopRuntime() {
     return isTauri();
   }
 
+  /**
+   * 「连接引擎」在 Rust 化之后不再是「spawn 一个进程」，而是确认原生分发可用。
+   *
+   * 保留这个方法是为了不动 App.tsx 的启动流程（它 await connect() 后拿 health 显示状态）。
+   * `EngineHealth` 的字段保持原样，`engine` 改成 "rust-native"，`pid` 用本进程占位。
+   */
   async connect(): Promise<EngineHealth> {
     if (!this.desktopRuntime) {
       throw new Error("浏览器预览模式未连接本地引擎");
     }
-    if (this.connecting) return this.connecting;
-    if (this.child) {
-      return this.call<EngineHealth>("health");
-    }
-
-    this.connecting = (async () => {
-      const command = import.meta.env.DEV
-        ? await (async () => {
-            const root = await invoke<string>("project_root");
-            return Command.create(
-            "python-engine",
-            ["-m", "src.engine.server", "--project-root", root],
-            {
-              cwd: root,
-              env: { PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
-              encoding: "utf-8",
-            },
-            );
-          })()
-        : Command.sidecar("binaries/image-to-video-engine", [], { encoding: "utf-8" });
-      command.stdout.on("data", (chunk) => this.consumeStdout(String(chunk)));
-      command.stderr.on("data", (chunk) => {
-        this.emit({
-          type: "event",
-          event: "engine.log",
-          payload: { stream: "stderr", message: String(chunk) },
-        });
-      });
-      command.on("close", ({ code }) => {
-        this.child = null;
-        this.rejectPending(new Error(`本地引擎已退出（${code ?? "未知"}）`));
-        this.emit({ type: "event", event: "engine.closed", payload: { code } });
-      });
-      command.on("error", (message) => {
-        this.emit({ type: "event", event: "engine.error", payload: { message } });
-      });
-      this.child = await command.spawn();
-      return this.call<EngineHealth>("health", {}, ENGINE_STARTUP_TIMEOUT_MS);
-    })();
-
-    try {
-      return await this.connecting;
-    } finally {
-      this.connecting = null;
-    }
+    if (this.health) return this.health;
+    const health = await invoke<EngineHealth>("engine_dispatch", {
+      method: "native_health",
+      params: {},
+    }).then((response) => (response as unknown as { result: EngineHealth }).result);
+    this.health = health;
+    // 前端有地方在等 engine.ready 才关启动屏，这里补一个（幂等）
+    this.emit({ type: "event", event: "engine.ready", payload: { protocol: health.protocol } });
+    return health;
   }
 
   async call<T>(method: string, params: Record<string, unknown> = {}, timeoutMs = 15_000): Promise<T> {
     if (!this.desktopRuntime) {
       return this.browserFallback<T>(method, params);
     }
+    void timeoutMs;
     const native = await this.callNative<T>(method, params);
     if (native !== NOT_NATIVE) return native;
-    if (!this.child && method !== "health") await this.connect();
-    if (!this.child) throw new Error("本地引擎未连接");
-
-    const id = `request-${Date.now()}-${this.sequence++}`;
-    const payload = `${JSON.stringify({ id, method, params })}\n`;
-    const response = new Promise<T>((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`${method} 请求超时`));
-      }, timeoutMs);
-      this.pending.set(id, {
-        resolve: resolve as (value: unknown) => void,
-        reject,
-        timer,
-      });
-    });
-    await this.child.write(payload);
-    return response;
+    // 所有接口都已由原生接管；如果走到这里，说明白名单与 Rust 分发不一致
+    throw new Error(`本地引擎不支持 ${method}（原生未接管，且已不再保留旧引擎兜底）`);
   }
 
   /**
@@ -217,50 +152,8 @@ export class EngineBridge {
     return this.desktopRuntime ? convertFileSrc(path) : path;
   }
 
-  private consumeStdout(chunk: string) {
-    this.stdoutBuffer += chunk;
-    const lines = this.stdoutBuffer.split(/\r?\n/);
-    this.stdoutBuffer = lines.pop() ?? "";
-    for (const line of lines) this.consumeLine(line);
-    if (this.stdoutBuffer.trim().startsWith("{") && this.stdoutBuffer.trim().endsWith("}")) {
-      const candidate = this.stdoutBuffer;
-      this.stdoutBuffer = "";
-      this.consumeLine(candidate);
-    }
-  }
-
-  private consumeLine(line: string) {
-    if (!line.trim()) return;
-    let payload: ResponsePayload | EngineEvent;
-    try {
-      payload = JSON.parse(line) as ResponsePayload | EngineEvent;
-    } catch {
-      this.emit({ type: "event", event: "engine.log", payload: { stream: "stdout", message: line } });
-      return;
-    }
-    if (payload.type === "event") {
-      this.emit(payload);
-      return;
-    }
-    if (!payload.id) return;
-    const pending = this.pending.get(payload.id);
-    if (!pending) return;
-    window.clearTimeout(pending.timer);
-    this.pending.delete(payload.id);
-    if (payload.ok) pending.resolve(payload.result);
-    else pending.reject(new Error(payload.error || "本地引擎请求失败"));
-  }
-
   private emit(event: EngineEvent) {
     for (const listener of this.listeners) listener(event);
-  }
-
-  private rejectPending(error: Error) {
-    for (const pending of this.pending.values()) {
-      window.clearTimeout(pending.timer);
-      pending.reject(error);
-    }
-    this.pending.clear();
   }
 
   private async browserFallback<T>(method: string, params: Record<string, unknown>): Promise<T> {

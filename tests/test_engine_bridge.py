@@ -20,11 +20,20 @@ from src.utils.timeline import cycle_images_to_duration, timeline_slot_count
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_desktop_allows_slow_packaged_engine_startup():
+def test_desktop_engine_no_longer_spawns_a_sidecar():
+    """引擎已全部由 Rust 原生承接，前端不再 spawn Python sidecar。
+
+    原先这条断言钉住「启动超时 120 秒」（为等 PyInstaller 解压 + cv2 加载）。
+    sidecar 移除后这个超时没有意义了，改为钉住「不再有 sidecar 依赖」——
+    否则有人把 spawn 逻辑加回来，安装包会重新变大、启动重新变慢。
+    """
     bridge_source = (ROOT / "desktop" / "src" / "engine.ts").read_text(encoding="utf-8")
 
-    assert "const ENGINE_STARTUP_TIMEOUT_MS = 120_000;" in bridge_source
-    assert 'this.call<EngineHealth>("health", {}, ENGINE_STARTUP_TIMEOUT_MS)' in bridge_source
+    assert "Command.sidecar(" not in bridge_source
+    assert "Command.create(" not in bridge_source
+    assert "plugin-shell" not in bridge_source
+    # 原生自检接口顶替原来的 health
+    assert '"native_health"' in bridge_source
 
 
 def test_desktop_preview_keeps_completed_frames_from_current_timeline():

@@ -196,6 +196,17 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
         },
+        // 引擎自检：原 `health` 依赖 sidecar 进程存在，Rust 化后改成本进程自报
+        "native_health" => DispatchResponse::ok(json!({
+            "protocol": 1,
+            "engine": "rust-native",
+            "pid": std::process::id(),
+            "capabilities": [
+                "config", "scan", "library", "preview", "render", "jobs", "events"
+            ],
+        })),
+        // 原 `health` / `shutdown` 是 sidecar 的生命周期接口，Rust 化后不再需要；
+        // 保留 handled=false 是为了万一有旧前端调用时不至于崩，直接报"不支持"。
         // ---------- 任务队列 ----------
         "start_job" => {
             let raw = object.get("config").cloned().unwrap_or(Value::Null);
