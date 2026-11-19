@@ -199,14 +199,8 @@ fn unhandled_reason(
     transition_type: &str,
     transition_will_run: bool,
 ) -> Option<&'static str> {
-    // 视频水印：要按时间取水印视频的帧，未实现
-    // （图片水印图层已迁移，见 render_frame 里的 apply_image_layer）
-    if flag(config, "use_watermark", false) {
-        let path = text(config, "watermark_path", "");
-        if !path.trim().is_empty() && Path::new(path.trim()).is_file() {
-            return Some("视频水印未迁移");
-        }
-    }
+    // 视频水印与图片水印都已迁移，这里不再有需要回落的能力缺口。
+    // 保留这个函数是为了将来加新能力时有统一的判定点。
     if effect_enabled && !SUPPORTED_EFFECTS.contains(&effect_type) {
         return Some("该特效尚未迁移");
     }
@@ -429,6 +423,46 @@ pub fn render_frame(params: &Map<String, Value>) -> Result<Option<Value>, String
         image = effects::apply_single_image_effect(&image, &effect_params);
     }
 
+    // ---- 视频水印（在特效之后，与 Python 的调用顺序一致）----
+    let mut video_watermark_name = String::new();
+    if flag(&config, "use_watermark", false) {
+        let path_value = text(&config, "watermark_path", "");
+        if !path_value.trim().is_empty() {
+            if let Some(path) = crate::render::watermark::resolve_video_watermark(
+                &path_value,
+                preview_sequence,
+            ) {
+                let match_method = text(&config, "watermark_match_method", "循环");
+                let ffmpeg = crate::engine::system::resolve_ffmpeg(None);
+                let frame = ffmpeg.as_ref().and_then(|ffmpeg_path| {
+                    crate::render::watermark::read_video_watermark_frame(
+                        &path,
+                        time_sec,
+                        duration_sec,
+                        &match_method,
+                        ffmpeg_path,
+                    )
+                });
+                if let Some(watermark_frame) = frame {
+                    let blend_mode = text(&config, "watermark_blend_mode", "正常");
+                    let layer = crate::render::watermark::ImageLayer {
+                        images: vec![watermark_frame],
+                        position: text(&config, "watermark_position", "中心"),
+                        size_mode: text(&config, "watermark_size_mode", "自适应覆盖"),
+                        scale: number(&config, "watermark_scale", 100.0),
+                        blend_mode: blend_mode.clone(),
+                        opacity: crate::render::watermark::video_watermark_alpha(&blend_mode),
+                    };
+                    image = crate::render::watermark::apply_image_layer(&image, &layer, &mut pick);
+                    video_watermark_name = path
+                        .file_name()
+                        .map(|value| value.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                }
+            }
+        }
+    }
+
     // ---- 落盘 ----
     // 缓存键带 `rs-` 前缀：Rust 的 JPEG 编码器与 cv2 不同，字节必然不同，
     // 共用 Python 的键会出现「键相同、内容不同」的脏缓存。
@@ -475,7 +509,7 @@ pub fn render_frame(params: &Map<String, Value>) -> Result<Option<Value>, String
         "time_sec": time_sec,
         "static_duration": static_duration,
         "transition_duration": transition_duration,
-        "video_watermark_name": "",
+        "video_watermark_name": video_watermark_name,
     })))
 }
 

@@ -7,7 +7,7 @@
 //! 1. `int()` 在 Python 里是**向零截断**，不是四舍五入；负数也一样（`int(-2.7) == -2`）。
 //! 2. 位置计算用 `//` 整除，负数同样是向下取整（`-3 // 2 == -2`），与 Rust 的 `/` 不同。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -466,6 +466,16 @@ pub fn read_image_with_alpha(path: &Path) -> Option<WatermarkImage> {
     })
 }
 
+/// 把一帧 BGR 包成水印图（视频水印取到的帧用这个）。
+pub fn from_bgr(frame: &BgrFrame) -> WatermarkImage {
+    WatermarkImage {
+        width: frame.width,
+        height: frame.height,
+        data: frame.data.clone(),
+        channels: 3,
+    }
+}
+
 /// `apply_blend_mode`：7 种混合模式 + alpha。
 ///
 /// 除「正常」外，所有模式都是先算混合公式 `mixed`，再
@@ -815,4 +825,158 @@ mod blend_tests {
     fn missing_file_returns_none() {
         assert!(read_image_with_alpha(Path::new("C:/definitely-missing.png")).is_none());
     }
+}
+
+// ---------- 视频水印：按时间取帧 ----------
+
+/// 视频水印按混合模式取的固定不透明度（`VIDEO_WATERMARK_ALPHA`）。
+pub fn video_watermark_alpha(blend_mode: &str) -> f64 {
+    match blend_mode {
+        "滤色" => 1.00,
+        "叠加" => 0.90,
+        "正片叠底" => 0.85,
+        "变亮" => 0.90,
+        "变暗" => 0.90,
+        "相加" => 0.95,
+        _ => 0.50,
+    }
+}
+
+/// 解析视频水印文件：单文件直接用，目录按自然排序取第一张（或按序号洗牌）。
+pub fn resolve_video_watermark(path_value: &str, sequence: i64) -> Option<PathBuf> {
+    let path = PathBuf::from(path_value.trim());
+    const VIDEO_EXT: [&str; 7] = [".mp4", ".mov", ".avi", ".mkv", ".wmv", ".m4v", ".webm"];
+    let is_video = |candidate: &Path| {
+        candidate
+            .extension()
+            .map(|value| format!(".{}", value.to_string_lossy().to_lowercase()))
+            .map(|ext| VIDEO_EXT.contains(&ext.as_str()))
+            .unwrap_or(false)
+    };
+    if path.is_file() && is_video(&path) {
+        return Some(path);
+    }
+    if path.is_dir() {
+        let mut candidates: Vec<PathBuf> = std::fs::read_dir(&path)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|candidate| candidate.is_file() && is_video(candidate))
+                    .collect()
+            })
+            .unwrap_or_default();
+        candidates.sort_by_key(|candidate| {
+            crate::engine::sort::natural_sort_key(&candidate.to_string_lossy())
+        });
+        if candidates.is_empty() {
+            return None;
+        }
+        if sequence > 0 {
+            let index = crate::engine::preview_random::preview_choice(
+                &candidates
+                    .iter()
+                    .map(|candidate| candidate.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+                sequence,
+                "video-watermark",
+            )
+            .and_then(|chosen| {
+                candidates
+                    .iter()
+                    .position(|candidate| candidate.to_string_lossy() == chosen)
+            })
+            .unwrap_or(0);
+            return Some(candidates[index].clone());
+        }
+        return Some(candidates[0].clone());
+    }
+    None
+}
+
+/// 按时间取水印视频的一帧。
+///
+/// 时间映射与 `_read_video_watermark_frame` 一致：
+/// - `循环`：`t % 源时长`
+/// - `拉伸`：`t / 输出时长 * 源时长`
+/// - 其它（单次）：`t >= 源时长` 时返回 None
+///
+/// 实现用 ffmpeg 的 `-ss` 精确定位后取一帧（水印视频通常只有几秒，
+/// 导出时这条路径每帧一次进程调用会明显变慢，届时应改成一次性解码缓存）。
+pub fn read_video_watermark_frame(
+    path: &Path,
+    time_sec: f64,
+    output_duration: f64,
+    match_method: &str,
+    ffmpeg: &Path,
+) -> Option<WatermarkImage> {
+    // ⚠️ 必须传 ffprobe：传 None 在找不到 ffprobe 的机器上会直接返回 None，
+    // 表现是"水印静默不生效"（第一版就这样，10 个用例的均值完全一样才发现）。
+    let ffprobe = crate::engine::system::resolve_ffprobe(None, Some(ffmpeg));
+    let meta = super::process::probe_video_meta(&path.to_string_lossy(), ffprobe.as_deref())?;
+    let source_duration = meta.duration;
+    let mut target_time = time_sec.max(0.0);
+    if source_duration > 0.0 {
+        match match_method {
+            "循环" => target_time %= source_duration,
+            "拉伸" => {
+                target_time = source_duration.min(
+                    target_time / 0.001f64.max(output_duration) * source_duration,
+                )
+            }
+            _ => {
+                if target_time >= source_duration {
+                    return None;
+                }
+            }
+        }
+    }
+
+    let mut command = std::process::Command::new(ffmpeg);
+    command.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-i",
+        &path.to_string_lossy(),
+        // `-ss` 放在 `-i` 之后是"精确取帧"（放在前面是按关键帧快进，会取到更早的帧）
+        "-ss",
+        &format!("{target_time:.6}"),
+        "-frames:v",
+        "1",
+        "-f",
+        "rawvideo",
+        // ⚠️ 必须用 rgba 而不是 bgr24：水印视频常带透明区域，
+        // 丢了 alpha 会把透明部分当成黑色一起去混合（整块变暗，肉眼立刻看出）。
+        "-pix_fmt",
+        "rgba",
+        "-",
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command.output().ok()?;
+    let width = meta.width as usize;
+    let height = meta.height as usize;
+    let expected = width * height * 4;
+    if output.stdout.len() < expected || expected == 0 {
+        return None;
+    }
+    // RGBA → BGRA
+    let mut data = Vec::with_capacity(expected);
+    for pixel in output.stdout[..expected].chunks_exact(4) {
+        data.push(pixel[2]);
+        data.push(pixel[1]);
+        data.push(pixel[0]);
+        data.push(pixel[3]);
+    }
+    Some(WatermarkImage {
+        width: width as u32,
+        height: height as u32,
+        data,
+        channels: 4,
+    })
 }
