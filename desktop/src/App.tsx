@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -26,7 +26,9 @@ import { JobManifest } from "./components/JobManifest";
 import { PreviewStage } from "./components/PreviewStage";
 import { UpdateCenter } from "./components/UpdateCenter";
 import { WorkspaceRail } from "./components/WorkspaceRail";
-import { applyDurationLink, imagesPerVideo, manualDurationPatch } from "./utils/durationLink";
+import { applyDurationLink, manualDurationPatch } from "./utils/durationLink";
+import { LAYOUT_LIMITS, useAppLayout } from "./utils/useAppLayout";
+import { demoJobs, hasActiveJobs, useJobQueue, workspaceHasActiveJob } from "./utils/useJobQueue";
 import { applyPresetToConfig, duplicateWorkspaceList, moveCutWorkspaceList, reorderWorkspaceList } from "./utils/workspaceOps";
 
 // 弹窗类组件按需加载，缩小首屏包体
@@ -34,9 +36,7 @@ const MaterialLibrary = lazy(() => import("./components/MaterialLibrary").then((
 const LogDrawer = lazy(() => import("./components/LogDrawer").then((module) => ({ default: module.LogDrawer })));
 const PresetCenter = lazy(() => import("./components/PresetCenter").then((module) => ({ default: module.PresetCenter })));
 import type {
-  EngineEvent,
   EngineState,
-  JobState,
   LogEntry,
   PreviewAsset,
   SubfolderScan,
@@ -49,25 +49,6 @@ import "./App.css";
 
 const STORAGE_KEY = "image-to-video.workspaces.v1";
 const THEME_KEY = "image-to-video.theme";
-const LAYOUT_KEY = "image-to-video.layout.v3";
-
-type LayoutState = {
-  railWidth: number;
-  inspectorWidth: number;
-  manifestHeight: number;
-  railCollapsed: boolean;
-  inspectorCollapsed: boolean;
-};
-
-type LayoutSizeKey = "railWidth" | "inspectorWidth" | "manifestHeight";
-
-const DEFAULT_LAYOUT: LayoutState = {
-  railWidth: 216,
-  inspectorWidth: 440,
-  manifestHeight: 267,
-  railCollapsed: false,
-  inspectorCollapsed: false,
-};
 
 const INSPECTOR_SECTION_LABELS: Record<string, string> = {
   basic: "基础参数",
@@ -75,31 +56,6 @@ const INSPECTOR_SECTION_LABELS: Record<string, string> = {
   watermark: "视频水印",
 };
 const GENERAL_SECTION_LABEL = "通用";
-
-const LAYOUT_LIMITS: Record<LayoutSizeKey, [number, number]> = {
-  railWidth: [168, 360],
-  inspectorWidth: [400, 580],
-  manifestHeight: [267, 420],
-};
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function loadLayout(): LayoutState {
-  try {
-    const stored = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}") as Partial<LayoutState>;
-    return {
-      railWidth: clamp(Number(stored.railWidth) || DEFAULT_LAYOUT.railWidth, ...LAYOUT_LIMITS.railWidth),
-      inspectorWidth: clamp(Number(stored.inspectorWidth) || DEFAULT_LAYOUT.inspectorWidth, ...LAYOUT_LIMITS.inspectorWidth),
-      manifestHeight: clamp(Number(stored.manifestHeight) || DEFAULT_LAYOUT.manifestHeight, ...LAYOUT_LIMITS.manifestHeight),
-      railCollapsed: stored.railCollapsed === true,
-      inspectorCollapsed: stored.inspectorCollapsed === true,
-    };
-  } catch {
-    return DEFAULT_LAYOUT;
-  }
-}
 
 function uuid() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -189,29 +145,6 @@ function previewSyncKey(workspace: Workspace, previewSequence = 0) {
   ]);
 }
 
-function makeQueuedJob(workspace: Workspace, demo = false, perVideoImages?: number): JobState {
-  // 子文件夹模式下每视频张数由子文件夹个数决定，摘要不能再用「图片数」
-  const imageCount = perVideoImages && perVideoImages > 0 ? perVideoImages : workspace.config.num_images;
-  return {
-    job_id: uuid(),
-    workspaceId: workspace.id,
-    workspaceName: workspace.name,
-    status: "queued",
-    paused: false,
-    cancel_requested: false,
-    progress: 0,
-    overall: 0,
-    speed: null,
-    message: "等待调度",
-    started_at: null,
-    finished_at: null,
-    return_code: null,
-    outputPath: workspace.config.output_dir,
-    configSummary: `${workspace.config.resolution_preset} · ${workspace.config.fps} fps · ${imageCount} 图 · ${workspace.config.total_duration > 0 ? `${workspace.config.total_duration} 秒/条` : "自动时长"} × ${workspace.config.video_count} 条`,
-    demo,
-  };
-}
-
 function mergeStoredWorkspaces(raw: unknown, defaults: VideoConfig): Workspace[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((value) => {
@@ -228,18 +161,6 @@ function mergeStoredWorkspaces(raw: unknown, defaults: VideoConfig): Workspace[]
       dirty: false,
     }];
   });
-}
-
-function demoJobs(workspace: Workspace): JobState[] {
-  const base = makeQueuedJob(workspace, true);
-  return [
-    { ...base, job_id: "demo-1", workspaceName: "樱花·序章", status: "running", progress: 55, overall: 55, speed: "1.8 张/秒", message: "渲染中", started_at: Date.now() / 1000 },
-    { ...base, job_id: "demo-2", workspaceName: "樱花·花海", status: "queued", progress: 0, overall: 0, message: "等待调度" },
-    { ...base, job_id: "demo-3", workspaceName: "樱花·古城", status: "completed", progress: 100, overall: 100, message: "处理完成", finished_at: Date.now() / 1000 },
-    { ...base, job_id: "demo-4", workspaceName: "樱花·夜游", status: "completed", progress: 100, overall: 100, message: "处理完成", finished_at: Date.now() / 1000 },
-    { ...base, job_id: "demo-5", workspaceName: "樱花·雨后", status: "failed", progress: 34, overall: 34, message: "素材读取失败", finished_at: Date.now() / 1000 },
-    { ...base, job_id: "demo-6", workspaceName: "樱花·终章", status: "cancelled", progress: 12, overall: 12, message: "任务已取消", finished_at: Date.now() / 1000 },
-  ];
 }
 
 type Notice = { kind: "info" | "success" | "error"; message: string } | null;
@@ -270,8 +191,6 @@ export default function App() {
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([initialWorkspace]);
   const [activeId, setActiveId] = useState(initialWorkspace.id);
-  const [jobs, setJobs] = useState<JobState[]>(demoMode ? demoJobs(initialWorkspace) : []);
-  const [concurrency, setConcurrency] = useState(2);
   const [engineState, setEngineState] = useState<EngineState>({
     connected: false,
     connecting: true,
@@ -284,7 +203,6 @@ export default function App() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light");
-  const [layout, setLayout] = useState<LayoutState>(loadLayout);
   const [previewFocused, setPreviewFocused] = useState(false);
   const [previewSequences, setPreviewSequences] = useState<Record<string, number>>({});
   const [previewReadySequences, setPreviewReadySequences] = useState<Record<string, number>>({});
@@ -305,8 +223,21 @@ export default function App() {
   const locateToken = useRef(0);
   const locatedElRef = useRef<HTMLElement | null>(null);
 
+  // 窗口布局（三块面板尺寸、折叠、持久化）—— 见 utils/useAppLayout
+  const { layout, nudgeLayout, beginLayoutResize, resetLayoutSize, toggleRail, toggleInspector, expandInspector } = useAppLayout();
+
+  const latestPreviewKey = useRef("");
+  const validationTokens = useRef<Record<string, number>>({});
+  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeId) ?? workspaces[0];
+  const activePreviewSequence = activeWorkspace ? previewSequences[activeWorkspace.id] ?? 0 : 0;
+  const activePreviewReadySequence = activeWorkspace ? previewReadySequences[activeWorkspace.id] ?? 0 : 0;
+
+  const showNotice = useCallback((kind: Notice extends infer _ ? "info" | "success" | "error" : never, message: string) => {
+    setNotice({ kind, message });
+  }, []);
+
   const locateIssue = useCallback((issue: ValidationIssue) => {
-    setLayout((current) => ({ ...current, inspectorCollapsed: false }));
+    expandInspector();
     if (issue?.section && issue.section !== "general") setInspectorTab(issue.section as InspectorTabId);
     if (issue?.field) {
       locateToken.current += 1;
@@ -314,7 +245,7 @@ export default function App() {
     } else {
       setLocate(null);
     }
-  }, [setLayout]);
+  }, [expandInspector]);
 
   useEffect(() => {
     if (!locate) return;
@@ -338,23 +269,6 @@ export default function App() {
     };
   }, [locate, inspectorTab]);
 
-  const jobsRef = useRef(jobs);
-  const queuedWorkspaces = useRef(new Map<string, Workspace>());
-  const pumpQueueRef = useRef<() => void>(() => undefined);
-  const latestPreviewKey = useRef("");
-  const validationTokens = useRef<Record<string, number>>({});
-  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeId) ?? workspaces[0];
-  const activePreviewSequence = activeWorkspace ? previewSequences[activeWorkspace.id] ?? 0 : 0;
-  const activePreviewReadySequence = activeWorkspace ? previewReadySequences[activeWorkspace.id] ?? 0 : 0;
-
-  useEffect(() => {
-    jobsRef.current = jobs;
-  }, [jobs]);
-
-  const showNotice = useCallback((kind: Notice extends infer _ ? "info" | "success" | "error" : never, message: string) => {
-    setNotice({ kind, message });
-  }, []);
-
   useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(null), 4200);
@@ -367,10 +281,6 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
-  }, [layout]);
-
-  useEffect(() => {
     if (!previewFocused) return;
     const exitFocus = (event: KeyboardEvent) => {
       if (event.key === "Escape") setPreviewFocused(false);
@@ -378,68 +288,6 @@ export default function App() {
     window.addEventListener("keydown", exitFocus);
     return () => window.removeEventListener("keydown", exitFocus);
   }, [previewFocused]);
-
-  const nudgeLayout = useCallback((key: LayoutSizeKey, delta: number) => {
-    const [min, max] = LAYOUT_LIMITS[key];
-    setLayout((current) => ({ ...current, [key]: clamp(current[key] + delta, min, max) }));
-  }, []);
-
-  const beginLayoutResize = useCallback((key: LayoutSizeKey, event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const origin = layout[key];
-    const originX = event.clientX;
-    const originY = event.clientY;
-    const isRow = key === "manifestHeight";
-    const direction = key === "railWidth" ? 1 : -1;
-    const [min, max] = LAYOUT_LIMITS[key];
-
-    document.body.classList.add(isRow ? "is-resizing-rows" : "is-resizing-columns");
-
-    const move = (moveEvent: PointerEvent) => {
-      const pointerDelta = isRow ? moveEvent.clientY - originY : moveEvent.clientX - originX;
-      setLayout((current) => ({ ...current, [key]: clamp(origin + pointerDelta * direction, min, max) }));
-    };
-    const stop = () => {
-      document.body.classList.remove("is-resizing-rows", "is-resizing-columns");
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
-    };
-
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
-  }, [layout]);
-
-  const updateJobFromEvent = useCallback((event: EngineEvent) => {
-    if (event.event === "engine.closed" || event.event === "engine.error") {
-      setEngineState((state) => ({ ...state, connected: false, connecting: false, message: "本地引擎连接已中断" }));
-      return;
-    }
-    const jobId = String(event.payload.job_id ?? "");
-    if (!jobId) return;
-    setJobs((current) => {
-      const next = current.map((job) => {
-        if (job.job_id !== jobId) return job;
-        const payload = event.payload as Partial<JobState>;
-        return {
-          ...job,
-          ...payload,
-          job_id: job.job_id,
-          workspaceId: job.workspaceId,
-          workspaceName: job.workspaceName,
-          outputPath: job.outputPath,
-        };
-      });
-      jobsRef.current = next;
-      return next;
-    });
-    if (event.event === "job.finished") {
-      queuedWorkspaces.current.delete(jobId);
-      window.setTimeout(() => pumpQueueRef.current(), 0);
-    }
-  }, []);
 
   const refreshSystem = useCallback(async (outputDir = "") => {
     if (!engine.desktopRuntime) return;
@@ -451,7 +299,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const unsubscribe = engine.subscribe(updateJobFromEvent);
     const unsubscribeLogs = engine.subscribe((event) => {
       if (event.type !== "event" || !["engine.log", "job.log"].includes(event.event)) return;
       const payload = event.payload;
@@ -504,11 +351,10 @@ export default function App() {
     void initialize();
     return () => {
       cancelled = true;
-      unsubscribe();
       unsubscribeLogs();
       unsubscribeReady();
     };
-  }, [demoMode, refreshSystem, updateJobFromEvent]);
+  }, [demoMode, refreshSystem]);
 
   useEffect(() => {
     if (!ready || demoMode) return;
@@ -533,6 +379,16 @@ export default function App() {
   const patchWorkspace = useCallback((id: string, patch: Partial<Workspace>) => {
     setWorkspaces((current) => current.map((workspace) => workspace.id === id ? { ...workspace, ...patch } : workspace));
   }, []);
+
+  const markValidationFailed = useCallback((workspaceId: string, message: string) => {
+    patchWorkspace(workspaceId, { validationErrors: [message], validationIssues: [{ field: "", section: "", message }] });
+  }, [patchWorkspace]);
+
+  const validateWorkspace = useCallback(async (workspace: Workspace) => {
+    const result = await engine.call<{ valid: boolean; issues: ValidationIssue[] }>("validate_config_detailed", { config: workspace.config, check_files: true }, 30_000);
+    patchWorkspace(workspace.id, { validationIssues: result.issues, validationErrors: result.issues.map((issue) => issue.message) });
+    return { valid: result.valid, errors: result.issues.map((issue) => issue.message) };
+  }, [patchWorkspace]);
 
   const updateConfig = useCallback(<K extends keyof VideoConfig>(key: K, value: VideoConfig[K]) => {
     if (key === "input_dir") {
@@ -781,86 +637,34 @@ export default function App() {
     }
   }, [activeWorkspace, showNotice, updateConfig]);
 
-  const validateWorkspace = useCallback(async (workspace: Workspace) => {
-    const result = await engine.call<{ valid: boolean; issues: ValidationIssue[] }>("validate_config_detailed", { config: workspace.config, check_files: true }, 30_000);
-    patchWorkspace(workspace.id, { validationIssues: result.issues, validationErrors: result.issues.map((issue) => issue.message) });
-    return { valid: result.valid, errors: result.issues.map((issue) => issue.message) };
-  }, [patchWorkspace]);
-
-  const pumpQueue = useCallback(() => {
-    if (!engineState.connected) return;
-    const currentJobs = jobsRef.current;
-    const activeCount = currentJobs.filter((job) => ["running", "paused", "cancelling"].includes(job.status)).length;
-    const nextJobs = currentJobs.filter((job) => job.status === "queued").slice(0, Math.max(0, concurrency - activeCount));
-    for (const job of nextJobs) {
-      const workspace = queuedWorkspaces.current.get(job.job_id);
-      if (!workspace) continue;
-      setJobs((current) => {
-        const next = current.map((item) => item.job_id === job.job_id ? { ...item, status: "running" as const, message: "正在启动本地渲染" } : item);
-        jobsRef.current = next;
-        return next;
-      });
-      void engine.call<JobState>("start_job", { config: workspace.config, job_id: job.job_id }, 30_000).catch((error) => {
-        queuedWorkspaces.current.delete(job.job_id);
-        setJobs((current) => {
-          const next = current.map((item) => item.job_id === job.job_id ? { ...item, status: "failed" as const, message: error instanceof Error ? error.message : "任务启动失败" } : item);
-          jobsRef.current = next;
-          return next;
-        });
-        showNotice("error", error instanceof Error ? error.message : "任务启动失败");
-        window.setTimeout(() => pumpQueueRef.current(), 0);
-      });
-    }
-  }, [concurrency, engineState.connected, showNotice]);
+  // 渲染任务队列（排队 / 并发调度 / 暂停恢复取消 / 事件回填）—— 见 utils/useJobQueue
+  const {
+    jobs,
+    concurrency,
+    setConcurrency,
+    queueWorkspaces,
+    controlJob,
+    clearFinished,
+    updateJobFromEvent,
+  } = useJobQueue({
+    connected: engineState.connected,
+    demoMode,
+    subfolderScans,
+    validateWorkspace,
+    onValidationFailed: markValidationFailed,
+    notify: showNotice,
+    onEngineDisconnected: useCallback(() => {
+      setEngineState((state) => ({ ...state, connected: false, connecting: false, message: "本地引擎连接已中断" }));
+    }, []),
+    initialJobs: demoMode ? demoJobs(initialWorkspace) : undefined,
+  });
 
   useEffect(() => {
-    pumpQueueRef.current = pumpQueue;
-    pumpQueue();
-  }, [pumpQueue]);
-
-  const queueWorkspaces = useCallback(async (targets: Workspace[]) => {
-    if (!engineState.connected) return showNotice("error", "本地引擎未连接，无法开始导出");
-    const accepted: Array<{ workspace: Workspace; job: JobState }> = [];
-    for (const workspace of targets) {
-      try {
-        const validation = await validateWorkspace(workspace);
-        if (validation.valid) {
-          const job = makeQueuedJob(workspace, false, imagesPerVideo(workspace.config, subfolderScans[workspace.id]));
-          accepted.push({ workspace, job });
-          queuedWorkspaces.current.set(job.job_id, workspace);
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "配置校验失败";
-        patchWorkspace(workspace.id, { validationErrors: [message], validationIssues: [{ field: "", section: "", message }] });
-      }
-    }
-    if (!accepted.length) return showNotice("error", "没有可执行的工作区，请先处理参数提示");
-    setJobs((current) => {
-      const next = [...accepted.map(({ job }) => job), ...current];
-      jobsRef.current = next;
-      return next;
-    });
-    showNotice("success", `已加入 ${accepted.length} 个渲染任务`);
-    window.setTimeout(() => pumpQueueRef.current(), 0);
-  }, [engineState.connected, patchWorkspace, showNotice, validateWorkspace, subfolderScans]);
-
-  const controlJob = useCallback(async (method: "pause_job" | "resume_job" | "cancel_job", id: string) => {
-    const local = jobsRef.current.find((job) => job.job_id === id);
-    if (local?.status === "queued" && method === "cancel_job") {
-      queuedWorkspaces.current.delete(id);
-      setJobs((current) => {
-        const next = current.map((job) => job.job_id === id ? { ...job, status: "cancelled" as const, message: "任务已取消" } : job);
-        jobsRef.current = next;
-        return next;
-      });
-      return;
-    }
-    try {
-      await engine.call(method, { job_id: id });
-    } catch (error) {
-      showNotice("error", error instanceof Error ? error.message : "任务控制失败");
-    }
-  }, [showNotice]);
+    const unsubscribe = engine.subscribe(updateJobFromEvent);
+    return () => {
+      unsubscribe();
+    };
+  }, [updateJobFromEvent]);
 
   const addWorkspace = useCallback(async () => {
     const defaults = await engine.call<VideoConfig>("default_config");
@@ -1030,9 +834,8 @@ export default function App() {
     showNotice("success", `已应用参数预设「${preset.name}」`);
   }, [activeWorkspace, patchWorkspace, setPreviewReadySequences, setPreviewSequences, showNotice]);
 
-  const activeHasRunningJob = jobs.some((job) => job.workspaceId === activeWorkspace?.id && ["queued", "running", "paused", "cancelling"].includes(job.status));
-  const hasRunningJobs = jobs.some((job) => ["queued", "running", "paused", "cancelling"].includes(job.status));
-  const hasBusyWork = hasRunningJobs || extractBusy;
+  const activeHasRunningJob = workspaceHasActiveJob(jobs, activeWorkspace?.id);
+  const hasBusyWork = hasActiveJobs(jobs) || extractBusy;
   const canRun = engineState.connected || demoMode;
   const randomPreview = () => {
     setPreviewSequences((current) => ({
@@ -1159,7 +962,7 @@ export default function App() {
           aria-valuemax={LAYOUT_LIMITS.railWidth[1]}
           aria-valuenow={layout.railWidth}
           tabIndex={0}
-          onDoubleClick={() => setLayout((current) => ({ ...current, railWidth: DEFAULT_LAYOUT.railWidth }))}
+          onDoubleClick={() => resetLayoutSize("railWidth")}
           onPointerDown={(event) => beginLayoutResize("railWidth", event)}
           onKeyDown={(event) => {
             if (event.key === "ArrowLeft") nudgeLayout("railWidth", -8);
@@ -1177,8 +980,8 @@ export default function App() {
           onRandomPreview={randomPreview}
           previewSequence={activePreviewSequence}
           previewReadySequence={activePreviewReadySequence}
-          onToggleRail={() => setLayout((current) => ({ ...current, railCollapsed: !current.railCollapsed }))}
-          onToggleInspector={() => setLayout((current) => ({ ...current, inspectorCollapsed: !current.inspectorCollapsed }))}
+          onToggleRail={toggleRail}
+          onToggleInspector={toggleInspector}
           onToggleFocus={() => setPreviewFocused((current) => !current)}
         />
         <div
@@ -1190,7 +993,7 @@ export default function App() {
           aria-valuemax={LAYOUT_LIMITS.inspectorWidth[1]}
           aria-valuenow={layout.inspectorWidth}
           tabIndex={0}
-          onDoubleClick={() => setLayout((current) => ({ ...current, inspectorWidth: DEFAULT_LAYOUT.inspectorWidth }))}
+          onDoubleClick={() => resetLayoutSize("inspectorWidth")}
           onPointerDown={(event) => beginLayoutResize("inspectorWidth", event)}
           onKeyDown={(event) => {
             if (event.key === "ArrowLeft") nudgeLayout("inspectorWidth", 8);
@@ -1219,7 +1022,7 @@ export default function App() {
         aria-valuemax={LAYOUT_LIMITS.manifestHeight[1]}
         aria-valuenow={layout.manifestHeight}
         tabIndex={0}
-        onDoubleClick={() => setLayout((current) => ({ ...current, manifestHeight: DEFAULT_LAYOUT.manifestHeight }))}
+        onDoubleClick={() => resetLayoutSize("manifestHeight")}
         onPointerDown={(event) => beginLayoutResize("manifestHeight", event)}
         onKeyDown={(event) => {
           if (event.key === "ArrowUp") nudgeLayout("manifestHeight", 8);
@@ -1238,11 +1041,7 @@ export default function App() {
         onCancel={(id) => void controlJob("cancel_job", id)}
         onReveal={revealPath}
         onCopyPath={copyPath}
-        onClearCompleted={() => setJobs((current) => {
-          const next = current.filter((job) => !["completed", "failed", "cancelled"].includes(job.status));
-          jobsRef.current = next;
-          return next;
-        })}
+        onClearCompleted={clearFinished}
       />
 
       {!ready ? <div className="boot-status" role="status"><Gauge className="is-spinning" size={18} />正在校准本地工作台…</div> : null}
