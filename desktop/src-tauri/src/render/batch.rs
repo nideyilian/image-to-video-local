@@ -82,6 +82,43 @@ fn flag(config: &Map<String, Value>, key: &str, default: bool) -> bool {
     }
 }
 
+/// 把**界面字段**翻译成引擎内部键。
+///
+/// 背景：`_bgm_files` / `_selected_codec` 这类下划线键是旧 Tk 界面在调用渲染前
+/// 写进配置的内部约定（`main_window.py` 里 `codec_provider` 回调、`self._bgm_files`）。
+/// Python 版的渲染内核只认这些内部键，界面负责填。
+///
+/// Rust 迁移时内核照搬了内部键，但桌面端从来没有那个「界面填值」的环节 ——
+/// 前端传的是 `bgm_files` / `codec`。缺了这层映射就会静默出错：
+/// - `_bgm_files` 空 → 选了 BGM 导出没声音（还正常报「成功」）
+/// - `_selected_codec` 落默认值 `XVID` → 用户选 H264 却按 XVID 编码，
+///   后处理找不到匹配的编码器直接 `POST-FAIL`，整段水印/BGM 被跳过
+///
+/// 所以这里在归一化之后统一补一次；渲染内核保持原样（仍读下划线键）。
+fn apply_ui_aliases(config: &mut Map<String, Value>) {
+    // 界面 `bgm_files` → 内核 `_bgm_files`：只补不覆盖，显式提供的优先。
+    if !config.contains_key("_bgm_files") {
+        if let Some(files) = config.get("bgm_files").cloned() {
+            config.insert("_bgm_files".to_string(), files);
+        }
+    }
+    // 界面 `codec` → 内核 `_selected_codec`。界面值是 "H264" / "XVID" 这类名字。
+    if !config.contains_key("_selected_codec") {
+        if let Some(codec) = config.get("codec").and_then(Value::as_str) {
+            let trimmed = codec.trim();
+            if !trimmed.is_empty() {
+                config.insert("_selected_codec".to_string(), json!(trimmed));
+            }
+        }
+    }
+    // 界面 `watermark_layers` → 内核 `_watermark_layers`（固定图层收集读的是后者）。
+    if !config.contains_key("_watermark_layers") {
+        if let Some(layers) = config.get("watermark_layers").cloned() {
+            config.insert("_watermark_layers".to_string(), layers);
+        }
+    }
+}
+
 /// `compose_output_filename`：日期前缀 / 首图名 / 自定义前缀 / 序号。
 fn compose_output_filename(
     use_date_prefix: bool,
@@ -214,7 +251,8 @@ pub fn run_batch(
     hooks: &mut dyn compositor::ComposeHooks,
 ) -> Result<BatchOutcome, String> {
     let normalized = config::normalize_config(Some(raw_config));
-    let config = normalized.as_object().cloned().unwrap_or_default();
+    let mut config = normalized.as_object().cloned().unwrap_or_default();
+    apply_ui_aliases(&mut config);
 
     let input_dir = text(&config, "input_dir", "");
     let output_dir = text(&config, "output_dir", "");
@@ -568,10 +606,16 @@ pub fn run_batch(
             "_current_video_index".to_string(),
             json!(video_index),
         );
-        match compositor::create_video(
+        // 必须走 `create_video_and_postprocess`：它才是「合成 + 后处理」的完整链路。
+        // 只调 `create_video` 会跳过整个后处理阶段 —— 固定水印、视频水印、BGM 全部静默丢失，
+        // 而且导出「成功」、日志也正常，只有看输出文件才发现没声音、没水印。
+        let watermark_position = text(&per_video_config, "watermark_position", "右下");
+        match compositor::create_video_and_postprocess(
             &options,
             &crate::render::audio::JsonConfig::new(&Value::Object(per_video_config)),
             &ffmpeg.to_string_lossy(),
+            None,
+            &watermark_position,
             hooks,
             None,
         ) {
@@ -614,6 +658,72 @@ pub fn run_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 界面字段 `bgm_files` 必须被翻译成内核认的 `_bgm_files`，
+    /// 否则「选了 BGM 导出没声音」——静默无声，最难发现的那类。
+    #[test]
+    fn ui_bgm_files_are_aliased_to_kernel_key() {
+        let mut config = Map::new();
+        config.insert("bgm_files".into(), json!(["C:/music/a.mp3"]));
+        apply_ui_aliases(&mut config);
+        assert_eq!(config["_bgm_files"], json!(["C:/music/a.mp3"]));
+    }
+
+    /// 界面 `codec` 必须映射到 `_selected_codec`。漏了会落到默认 `XVID`，
+    /// 后处理随后找不到匹配编码器、整段水印/BGM 被跳过（还报「成功」）。
+    #[test]
+    fn ui_codec_is_aliased_to_kernel_key() {
+        let mut config = Map::new();
+        config.insert("codec".into(), json!("H264"));
+        apply_ui_aliases(&mut config);
+        assert_eq!(config["_selected_codec"], json!("H264"));
+    }
+
+    /// 空字符串不该覆盖内核默认值。
+    #[test]
+    fn blank_codec_keeps_kernel_default() {
+        let mut config = Map::new();
+        config.insert("codec".into(), json!("   "));
+        apply_ui_aliases(&mut config);
+        assert!(!config.contains_key("_selected_codec"));
+    }
+
+    /// 界面 `watermark_layers` 必须映射到 `_watermark_layers`，
+    /// 否则用户设的固定图片水印全被 `collect_fixed_layers` 忽略（日志显示「固定图层:0」）。
+    #[test]
+    fn ui_watermark_layers_are_aliased_to_kernel_key() {
+        let mut config = Map::new();
+        let layers = json!([{ "enabled": true, "type": "图片", "fixed": true, "path": "C:/wm.png" }]);
+        config.insert("watermark_layers".into(), layers.clone());
+        apply_ui_aliases(&mut config);
+        assert_eq!(config["_watermark_layers"], layers);
+    }
+
+    /// 三个内部键必须都能从界面字段补出来 —— 少一个就是一类静默失效。
+    #[test]
+    fn all_kernel_keys_are_reachable_from_ui_fields() {
+        let mut config = Map::new();
+        config.insert("bgm_files".into(), json!(["C:/a.mp3"]));
+        config.insert("codec".into(), json!("H264"));
+        config.insert("watermark_layers".into(), json!([]));
+        apply_ui_aliases(&mut config);
+        for key in ["_bgm_files", "_selected_codec", "_watermark_layers"] {
+            assert!(config.contains_key(key), "{key} 没有从界面字段映射过来");
+        }
+    }
+
+    /// 显式传了内部键时不能被界面字段覆盖（保底与对照测试走这条）。
+    #[test]
+    fn explicit_kernel_key_wins_over_ui_field() {
+        let mut config = Map::new();
+        config.insert("bgm_files".into(), json!(["C:/ui/a.mp3"]));
+        config.insert("_bgm_files".into(), json!(["C:/kernel/b.mp3"]));
+        config.insert("codec".into(), json!("H264"));
+        config.insert("_selected_codec".into(), json!("XVID"));
+        apply_ui_aliases(&mut config);
+        assert_eq!(config["_bgm_files"], json!(["C:/kernel/b.mp3"]));
+        assert_eq!(config["_selected_codec"], json!("XVID"));
+    }
 
     #[test]
     fn filename_rules_match_python() {

@@ -31,6 +31,9 @@ pub(crate) mod system;
 mod taint;
 mod write_ops;
 
+#[cfg(test)]
+mod smoke_tests;
+
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
