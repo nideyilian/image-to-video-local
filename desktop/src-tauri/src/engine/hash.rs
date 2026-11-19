@@ -23,6 +23,8 @@ const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
+/// 一次性哈希（只有测试与流式版本的一致性校验在用；生产路径走 `file_sha256`）。
+#[cfg(test)]
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     let mut state = H0;
     let bit_len = (bytes.len() as u64).wrapping_mul(8);
