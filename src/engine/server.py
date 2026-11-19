@@ -110,7 +110,6 @@ class EngineServer:
                     "library-dedup",
                     "library-smart-folders",
                     "library-taint-scan",
-                    "jianying",
                 ],
             }
         if method == "system_snapshot":
@@ -226,14 +225,6 @@ class EngineServer:
             return self.library.start_extract(params)
         if method == "library_extract_cancel":
             return self.library.cancel_extract(params)
-        if method == "jianying_scan":
-            from .jianying import jianying_scan
-
-            return jianying_scan(params)
-        if method == "jianying_cache_scan":
-            from .jianying import jianying_cache_scan
-
-            return jianying_cache_scan(params)
         if method == "shutdown":
             self._running = False
             return {"shutting_down": True}
