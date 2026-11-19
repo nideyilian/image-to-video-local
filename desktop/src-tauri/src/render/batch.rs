@@ -10,7 +10,7 @@
 //!   跨视频统一去重（超出组合总数时才重复，且次数摊平）
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
@@ -19,7 +19,6 @@ use super::transitions;
 use crate::engine::config;
 use crate::engine::paths;
 use crate::engine::scan;
-use crate::engine::preview_random;
 
 /// 随机源（SplitMix64，保证同一配置多次导出结果稳定）。
 struct Rng(u64);
