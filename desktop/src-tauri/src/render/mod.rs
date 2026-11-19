@@ -9,7 +9,9 @@
 pub mod audio;
 pub mod codec;
 pub mod encoder;
+pub mod imageinfo;
 pub mod plan;
+pub mod postprocess;
 pub mod process;
 pub mod watermark;
 
@@ -308,5 +310,221 @@ mod parity_watermark {
             }
         }
         println!("GEOMETRY_PARITY={}", Value::Object(out));
+    }
+}
+
+#[cfg(test)]
+mod parity_imageinfo {
+    use super::*;
+    use serde_json::{json, Map, Value};
+
+    /// 图片尺寸对照：`ITV_IMGSIZE_DIR` 指向一个图片目录。
+    #[test]
+    fn parity_dump_image_size() {
+        let Ok(dir) = std::env::var("ITV_IMGSIZE_DIR") else {
+            return;
+        };
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default();
+        files.sort();
+        let mut out = Map::new();
+        for path in files {
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let size = imageinfo::image_size(&path);
+            out.insert(
+                name,
+                json!(size.map(|value| json!({ "w": value.width, "h": value.height }))),
+            );
+        }
+        println!("IMGSIZE_PARITY={}", Value::Object(out));
+    }
+}
+
+#[cfg(test)]
+mod parity_postprocess {
+    use super::*;
+    use serde_json::{json, Map, Value};
+
+    /// 后处理命令对照：`ITV_POST_CASES` 指向用例 JSON，
+    /// `ITV_POST_MAIN` 形如 1920x1080x5.0（主视频宽高时长）。
+    #[test]
+    fn parity_dump_postprocess_command() {
+        let Ok(cases_path) = std::env::var("ITV_POST_CASES") else {
+            return;
+        };
+        let Ok(raw) = std::fs::read_to_string(cases_path) else {
+            return;
+        };
+        let cases: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
+        let main = std::env::var("ITV_POST_MAIN").unwrap_or_else(|_| "1920x1080x5.0".to_string());
+        let parts: Vec<&str> = main.split('x').collect();
+        let main_meta = (
+            parts[0].parse::<i64>().unwrap_or(1920),
+            parts[1].parse::<i64>().unwrap_or(1080),
+            parts[2].parse::<f64>().unwrap_or(5.0),
+        );
+
+        let mut out = Map::new();
+        for case in cases {
+            let id = case
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string();
+            let plan = case.get("watermark").and_then(|value| {
+                if value.is_null() {
+                    None
+                } else {
+                    Some(postprocess::WatermarkPlan {
+                        path: value.get("path")?.as_str()?.to_string(),
+                        match_method: value
+                            .get("match_method")
+                            .and_then(Value::as_str)
+                            .unwrap_or("循环")
+                            .to_string(),
+                        blend_mode: value
+                            .get("blend_mode")
+                            .and_then(Value::as_str)
+                            .unwrap_or("正常")
+                            .to_string(),
+                        alpha: value.get("alpha").and_then(Value::as_f64).unwrap_or(0.5),
+                        target_w: value.get("target_w").and_then(Value::as_i64).unwrap_or(384),
+                        target_h: value.get("target_h").and_then(Value::as_i64).unwrap_or(192),
+                        x: value.get("x").and_then(Value::as_i64).unwrap_or(1526),
+                        y: value.get("y").and_then(Value::as_i64).unwrap_or(878),
+                        looped: value
+                            .get("looped")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true),
+                        stretch_ratio: value.get("stretch_ratio").and_then(Value::as_f64),
+                    })
+                }
+            });
+            let layers: Vec<postprocess::FixedLayerPlan> = case
+                .get("fixed_layers")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| {
+                            Some(postprocess::FixedLayerPlan {
+                                path: item.get("path")?.as_str()?.to_string(),
+                                target_w: item.get("target_w")?.as_i64()?,
+                                target_h: item.get("target_h")?.as_i64()?,
+                                x: item.get("x")?.as_i64()?,
+                                y: item.get("y")?.as_i64()?,
+                                opacity: item.get("opacity")?.as_f64()?,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let bgm = case.get("bgm").and_then(|value| {
+                if value.is_null() {
+                    None
+                } else {
+                    Some(postprocess::BgmPlan {
+                        path: value.get("path")?.as_str()?.to_string(),
+                        volume: value.get("volume").and_then(Value::as_f64).unwrap_or(0.5),
+                        looped: value
+                            .get("looped")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true),
+                    })
+                }
+            });
+            let output = case
+                .get("output")
+                .and_then(Value::as_str)
+                .unwrap_or("C:/out/v.mp4");
+            let codec = case
+                .get("codec")
+                .and_then(Value::as_str)
+                .unwrap_or("libx264");
+
+            let command = postprocess::build_command(
+                output,
+                main_meta,
+                plan.as_ref(),
+                &layers,
+                bgm.as_ref(),
+                codec,
+            );
+            out.insert(
+                id,
+                json!({
+                    "args": command.args,
+                    "temp_output": command.temp_output,
+                }),
+            );
+        }
+        println!("POST_PARITY={}", Value::Object(out));
+    }
+}
+
+#[cfg(test)]
+mod parity_post_run {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// 真实执行后处理：`ITV_POST_RUN_CASES` 指向用例 JSON。
+    /// 每条用例里给出 args（不含 ffmpeg 自身与输出路径替换），
+    /// 这里把输入复制到 rs_ 前缀再跑，便于与 Python 侧产物比对。
+    #[test]
+    fn parity_run_postprocess() {
+        let Ok(cases_path) = std::env::var("ITV_POST_RUN_CASES") else {
+            return;
+        };
+        let Ok(raw) = std::fs::read_to_string(cases_path) else {
+            return;
+        };
+        let cases: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
+        let ffmpeg = crate::engine::system::resolve_ffmpeg(None).expect("ffmpeg");
+        let mut results = Vec::new();
+
+        for case in cases {
+            let id = case.get("id").and_then(Value::as_str).unwrap_or("?").to_string();
+            let source = case.get("source").and_then(Value::as_str).unwrap_or("");
+            let output = case.get("output").and_then(Value::as_str).unwrap_or("");
+            let args: Vec<String> = case
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            std::fs::copy(source, output).expect("复制源视频");
+            let mut log_lines: Vec<String> = Vec::new();
+            let outcome = process::run_with_retry(
+                &ffmpeg.to_string_lossy(),
+                &args,
+                "POST",
+                900,
+                1,
+                |line| log_lines.push(line.to_string()),
+            );
+            let temp = postprocess::build_temp_output_path_from(output);
+            let size = std::fs::metadata(&temp).map(|m| m.len()).unwrap_or(0);
+            if size > 1000 {
+                let _ = process::safe_replace_file(&temp, output);
+            }
+            results.push(json!({
+                "id": id,
+                "code": outcome.as_ref().and_then(|value| value.code),
+                "size": size,
+            }));
+        }
+        println!("POST_RUN={}", json!(results));
     }
 }
