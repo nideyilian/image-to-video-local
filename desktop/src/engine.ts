@@ -33,6 +33,8 @@ const NATIVE_METHODS = new Set([
   "library_rename",
   "library_set_metadata",
   "library_get_tags",
+  "library_smart_folders_list",
+  "library_smart_folders_save",
   "scan_images",
   "scan_subfolders",
   "scan_subfolder_groups",

@@ -97,6 +97,14 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
             Ok(result) => DispatchResponse::ok(result),
             Err(message) => DispatchResponse::failed(message),
         },
+        "library_smart_folders_list" => match write_ops::smart_folders_list(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "library_smart_folders_save" => match write_ops::smart_folders_save(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
         "scan_images" => scan_images(&object),
         "scan_subfolders" => scan_subfolders(&object),
         "scan_subfolder_groups" => scan_subfolder_groups(&object),

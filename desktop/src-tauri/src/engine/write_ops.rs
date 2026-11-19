@@ -1009,6 +1009,137 @@ pub fn get_tags(params: &Map<String, Value>) -> Result<Value, String> {
     }))
 }
 
+// ---------- 智能文件夹 ----------
+
+const SMART_FOLDERS_FILE_NAME: &str = ".smart_folders.json";
+const SMART_FIELDS: [&str; 7] = ["type", "duration", "size", "folder", "name", "tag", "starred"];
+const SMART_OPS: [&str; 6] = ["eq", "ne", "gt", "lt", "contains", "exists"];
+
+fn now_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0)
+}
+
+/// 规则文件固定在 BGM 库的上一级（与旧引擎一致）。
+fn smart_file(params: &Map<String, Value>) -> PathBuf {
+    let base = base_of("bgm", params);
+    let resolved = paths::resolve(&base).unwrap_or_else(|_| paths::absolute(&base));
+    let parent = resolved
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or(resolved);
+    let _ = fs::create_dir_all(&parent);
+    parent.join(SMART_FOLDERS_FILE_NAME)
+}
+
+pub fn smart_folders_list(params: &Map<String, Value>) -> Result<Value, String> {
+    let path = smart_file(params);
+    let data: Value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(Value::Null);
+    let folders = data
+        .get("folders")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(json!({ "path": paths::display(&path), "folders": folders }))
+}
+
+pub fn smart_folders_save(params: &Map<String, Value>) -> Result<Value, String> {
+    let folders = params
+        .get("folders")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "folders 必须是列表".to_string())?;
+
+    let mut cleaned: Vec<Value> = Vec::new();
+    for (index, folder) in folders.iter().enumerate() {
+        let object = folder
+            .as_object()
+            .ok_or_else(|| "智能文件夹必须是对象".to_string())?;
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            return Err("智能文件夹名称不能为空".to_string());
+        }
+        if name.chars().any(|ch| "<>:\"/\\|?*".contains(ch)) {
+            return Err("智能文件夹名称包含非法字符".to_string());
+        }
+        let kind = object
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if kind != "bgm" && kind != "watermark" {
+            return Err("智能文件夹类型必须是 bgm 或 watermark".to_string());
+        }
+        let conditions = object
+            .get("conditions")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "智能文件夹缺少条件列表".to_string())?;
+        for condition in conditions {
+            let condition = condition
+                .as_object()
+                .ok_or_else(|| "条件必须是对象".to_string())?;
+            let field = condition
+                .get("field")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if !SMART_FIELDS.contains(&field) {
+                return Err(format!("不支持的条件字段: {field}"));
+            }
+            let operator = condition
+                .get("op")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if !SMART_OPS.contains(&operator) {
+                return Err(format!("不支持的条件操作符: {operator}"));
+            }
+        }
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let id = if id.is_empty() {
+            format!("smart-{}-{}", now_millis(), index)
+        } else {
+            id
+        };
+        cleaned.push(json!({
+            "id": id,
+            "name": name,
+            "kind": kind,
+            "conditions": conditions,
+        }));
+    }
+
+    let path = smart_file(params);
+    let payload = json!({ "version": 1, "folders": cleaned });
+    let temporary = path.with_file_name(format!(
+        ".{SMART_FOLDERS_FILE_NAME}.{}.tmp",
+        std::process::id()
+    ));
+    fs::write(&temporary, format!("{}\n", serde_json::to_string_pretty(&payload).map_err(|error| error.to_string())?))
+        .map_err(|error| error.to_string())?;
+    if fs::rename(&temporary, &path).is_err() {
+        let _ = fs::remove_file(&path);
+        fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
+    }
+
+    Ok(json!({ "path": paths::display(&path), "folders": cleaned }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1047,6 +1178,43 @@ mod tests {
         assert_eq!(relative_folder(Some(&json!("a/b"))).unwrap(), "a/b");
         assert_eq!(relative_folder(Some(&json!("../etc"))).unwrap(), "etc");
         assert!(relative_folder(Some(&json!("a<b"))).is_err());
+    }
+
+    #[test]
+    fn smart_folders_roundtrip_and_validation() {
+        let root = std::env::temp_dir().join(format!("itv-smart-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("BGM")).expect("创建 BGM");
+        let params = json!({ "bgm_dir": root.join("BGM").to_string_lossy() })
+            .as_object()
+            .expect("params")
+            .clone();
+
+        let payload = json!({
+            "bgm_dir": params["bgm_dir"].clone(),
+            "folders": [{
+                "id": "f1",
+                "name": "轻快",
+                "kind": "bgm",
+                "conditions": [{ "field": "tag", "op": "eq", "value": "轻快" }],
+            }]
+        });
+        let saved = smart_folders_save(payload.as_object().expect("save")).expect("保存");
+        assert_eq!(saved["folders"][0]["id"], "f1");
+        assert_eq!(saved["folders"][0]["name"], "轻快");
+
+        let listed = smart_folders_list(&params).expect("读取");
+        assert_eq!(listed["folders"], saved["folders"]);
+
+        let bad = json!({
+            "folders": [{ "name": "x", "kind": "bgm", "conditions": [{ "field": "bad", "op": "eq" }] }]
+        });
+        assert!(smart_folders_save(bad.as_object().expect("bad")).is_err());
+
+        let empty_name = json!({ "folders": [{ "name": "  ", "kind": "bgm", "conditions": [] }] });
+        assert!(smart_folders_save(empty_name.as_object().expect("empty")).is_err());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
