@@ -23,6 +23,9 @@ const ENGINE_STARTUP_TIMEOUT_MS = 120_000;
 const NATIVE_METHODS = new Set([
   "library_dirs",
   "library_snapshot",
+  "library_import",
+  "library_rename",
+  "library_set_metadata",
   "scan_images",
   "scan_subfolders",
   "scan_subfolder_groups",
@@ -133,14 +136,17 @@ export class EngineBridge {
    */
   private async callNative<T>(method: string, params: Record<string, unknown>): Promise<T | typeof NOT_NATIVE> {
     if (!NATIVE_METHODS.has(method)) return NOT_NATIVE;
+    let response: NativeResponse<T>;
     try {
-      const response = await invoke<NativeResponse<T>>("engine_dispatch", { method, params });
-      if (response.handled) return response.result as T;
-      return NOT_NATIVE;
+      response = await invoke<NativeResponse<T>>("engine_dispatch", { method, params });
     } catch (error) {
       console.warn(`[engine] ${method} 的原生实现不可用，回落旧引擎`, error);
       return NOT_NATIVE;
     }
+    if (!response.handled) return NOT_NATIVE;
+    // 已接管但业务失败（例如「只能删除素材库内的文件」）：与旧引擎抛错语义一致
+    if (response.error) throw new Error(response.error);
+    return response.result as T;
   }
 
   subscribe(listener: (event: EngineEvent) => void) {

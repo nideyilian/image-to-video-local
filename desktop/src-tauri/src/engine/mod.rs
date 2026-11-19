@@ -20,6 +20,7 @@ mod scan;
 mod snapshot;
 mod sort;
 mod system;
+mod write_ops;
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -41,6 +42,11 @@ impl DispatchResponse {
     fn unhandled() -> Self {
         Self { handled: false, result: None, error: None }
     }
+
+    /// 已接管但业务上失败（如「只能删除素材库内的文件」），与 Python 抛错等价。
+    fn failed(message: impl Into<String>) -> Self {
+        Self { handled: true, result: None, error: Some(message.into()) }
+    }
 }
 
 pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
@@ -51,6 +57,18 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
     match method {
         "library_dirs" => DispatchResponse::ok(library::dirs()),
         "library_snapshot" => DispatchResponse::ok(snapshot::snapshot(&object)),
+        "library_import" => match write_ops::import_files(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "library_rename" => match write_ops::rename_item(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
+        "library_set_metadata" => match write_ops::set_metadata(&object) {
+            Ok(result) => DispatchResponse::ok(result),
+            Err(message) => DispatchResponse::failed(message),
+        },
         "scan_images" => scan_images(&object),
         "scan_subfolders" => scan_subfolders(&object),
         "scan_subfolder_groups" => scan_subfolder_groups(&object),
@@ -173,7 +191,7 @@ mod tests {
 
     #[test]
     fn unknown_method_is_left_to_the_python_engine() {
-        let response = dispatch("library_import", None);
+        let response = dispatch("library_remove", None);
         assert!(!response.handled);
         assert!(response.result.is_none());
     }
@@ -246,6 +264,29 @@ mod tests {
         });
         let result = snapshot::snapshot(params.as_object().expect("params"));
         println!("LIB_PARITY={}", result);
+    }
+
+    /// 与 Python 版逐字段对照用：`ITV_IMPORT_DIR` 素材库根目录、`ITV_IMPORT_SOURCES` 源文件 JSON 数组。
+    #[test]
+    fn parity_dump_library_import() {
+        let (Ok(dir), Ok(sources)) = (
+            std::env::var("ITV_IMPORT_DIR"),
+            std::env::var("ITV_IMPORT_SOURCES"),
+        ) else {
+            return;
+        };
+        let params = json!({
+            "kind": "bgm",
+            "paths": serde_json::from_str::<Value>(&sources).unwrap_or_else(|_| json!([])),
+            "bgm_dir": format!("{dir}/BGM"),
+            "watermark_dir": format!("{dir}/水印"),
+            "folder": "",
+        });
+        let result = match write_ops::import_files(params.as_object().expect("params")) {
+            Ok(value) => value,
+            Err(message) => json!({ "error": message }),
+        };
+        println!("IMPORT_PARITY={}", result);
     }
 
     #[test]

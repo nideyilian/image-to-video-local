@@ -20,7 +20,7 @@ use super::library;
 use super::paths;
 use super::system;
 
-const INDEX_FILE_NAME: &str = ".library_index.json";
+pub(crate) const INDEX_FILE_NAME: &str = ".library_index.json";
 
 pub const AUDIO_EXTENSIONS: [&str; 8] = [
     ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".wma", ".aiff",
@@ -46,7 +46,7 @@ fn cached_ffprobe() -> Option<&'static Path> {
         .as_deref()
 }
 
-fn has_extension(path: &Path, extensions: &[&str]) -> bool {
+pub(crate) fn has_extension(path: &Path, extensions: &[&str]) -> bool {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) => {
             let lowered = format!(".{}", ext.to_lowercase());
@@ -72,7 +72,7 @@ fn file_name(path: &Path) -> String {
 
 /// 与 Python `time.strftime("%Y-%m-%d %H:%M:%S")` 等价的本地时间。
 #[cfg(windows)]
-fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     #[repr(C)]
     #[derive(Default)]
     struct LocalFileTime {
@@ -97,7 +97,7 @@ fn now_iso() -> String {
 }
 
 #[cfg(not(windows))]
-fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     // 非 Windows 只做兜底（项目仅发 Windows 安装包），格式仍保持 YYYY-MM-DD HH:MM:SS。
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -106,7 +106,7 @@ fn now_iso() -> String {
     format!("{seconds}")
 }
 
-fn modified_ns(metadata: &fs::Metadata) -> i64 {
+pub(crate) fn modified_ns(metadata: &fs::Metadata) -> i64 {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -127,13 +127,13 @@ fn modified_ns(metadata: &fs::Metadata) -> i64 {
 }
 
 #[derive(Debug, Default)]
-struct Index {
-    version: i64,
-    kind: Option<String>,
-    entries: Map<String, Value>,
+pub(crate) struct Index {
+    pub version: i64,
+    pub kind: Option<String>,
+    pub entries: Map<String, Value>,
 }
 
-fn load_index(directory: &Path) -> Index {
+pub(crate) fn load_index(directory: &Path) -> Index {
     let data: Value = fs::read_to_string(directory.join(INDEX_FILE_NAME))
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
@@ -154,7 +154,7 @@ fn load_index(directory: &Path) -> Index {
     }
 }
 
-fn save_index(directory: &Path, index: &Index) -> std::io::Result<()> {
+pub(crate) fn save_index(directory: &Path, index: &Index) -> std::io::Result<()> {
     let target = directory.join(INDEX_FILE_NAME);
     let temporary = directory.join(format!(".{INDEX_FILE_NAME}.{}.tmp", std::process::id()));
     let payload = json!({
@@ -338,7 +338,7 @@ fn scan_tree(base: &Path, kind: &str) -> (Vec<Value>, Vec<Value>) {
     (state.items, folders)
 }
 
-fn resolve_dir(params: &Map<String, Value>, key: &str, fallback: &Path) -> PathBuf {
+pub(crate) fn resolve_dir(params: &Map<String, Value>, key: &str, fallback: &Path) -> PathBuf {
     match params.get(key).and_then(Value::as_str).map(str::trim) {
         Some(value) if !value.is_empty() => {
             // Python 会先 expanduser；这里只处理 "~" 开头的常见写法
