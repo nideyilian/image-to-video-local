@@ -856,3 +856,54 @@ mod parity_compose {
         );
     }
 }
+
+#[cfg(test)]
+mod parity_effects_all {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// 全部特效对照：`ITV_EFFECTS_ALL` 指向用例 JSON，`ITV_EFFECT_SRC` 原图，
+    /// `ITV_EFFECT_OUT_ALL` 输出目录。
+    #[test]
+    fn parity_dump_all_effects() {
+        let (Ok(cases_path), Ok(source), Ok(out_dir)) = (
+            std::env::var("ITV_EFFECTS_ALL"),
+            std::env::var("ITV_EFFECT_SRC"),
+            std::env::var("ITV_EFFECT_OUT_ALL"),
+        ) else {
+            return;
+        };
+        let Ok(raw) = std::fs::read_to_string(cases_path) else {
+            return;
+        };
+        let cases: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
+        std::fs::create_dir_all(&out_dir).ok();
+        let Some(frame) = pixels::read_image_bgr(std::path::Path::new(&source)) else {
+            return;
+        };
+        let mut report = Vec::new();
+        for (index, case) in cases.iter().enumerate() {
+            let effect = case
+                .get("effect")
+                .and_then(Value::as_str)
+                .unwrap_or("无特效")
+                .to_string();
+            let time_sec = case.get("time").and_then(Value::as_f64).unwrap_or(0.0);
+            let params = effects::EffectParams {
+                effect_type: effect.clone(),
+                time_sec,
+                duration_sec: 3.0,
+                intensity: 100.0,
+                speed: 1.0,
+            };
+            let result = effects::apply_single_image_effect(&frame, &params);
+            let file = format!("{index:03}.png");
+            result
+                .to_rgb()
+                .save(std::path::Path::new(&out_dir).join(&file))
+                .ok();
+            report.push(json!({ "index": index, "effect": effect, "time": time_sec, "file": file }));
+        }
+        println!("EFFECTS_ALL={}", Value::Array(report));
+    }
+}
