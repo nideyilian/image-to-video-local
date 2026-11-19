@@ -44,6 +44,8 @@ fn candidate_bases(project_root: Option<&Path>) -> Vec<PathBuf> {
     if let Ok(executable) = std::env::current_exe() {
         if let Some(parent) = executable.parent() {
             bases.push(parent.to_path_buf());
+            // Tauri 把 `bundle.resources` 放在 exe 同级的 resources/ 下
+            bases.push(parent.join("resources"));
         }
     }
     bases.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
@@ -194,5 +196,26 @@ mod tests {
     #[test]
     fn missing_media_returns_no_duration() {
         assert_eq!(probe_duration(None, Path::new("nope.mp4")), None);
+    }
+}
+
+#[cfg(test)]
+mod resource_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn bundled_ffmpeg_is_found_from_resources_dir() {
+        // 仓库里带了一份 ffmpeg 供打包；开发态也应能直接找到它
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let bundled = manifest.join("resources").join("ffmpeg.exe");
+        if !bundled.is_file() {
+            return; // 没带二进制时跳过（CI 上会另外下载）
+        }
+        let found = resolve_ffmpeg(Some(&manifest));
+        assert!(found.is_some(), "应能解析到 ffmpeg");
+        assert!(
+            found.unwrap().to_string_lossy().contains("ffmpeg"),
+            "解析结果应是 ffmpeg"
+        );
     }
 }

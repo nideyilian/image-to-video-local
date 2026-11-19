@@ -58,6 +58,29 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      - name: 准备内置 ffmpeg
+        # Python sidecar 移除后，ffmpeg 改由 Tauri 的 bundle.resources 随包分发。
+        # ffmpeg.exe 有 84MB，不进 git（.gitignore 已排除），改在 CI 现装现拷。
+        # 这一步失败就直接中断 —— 没有 ffmpeg 的安装包装完是不能渲染的。
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          $real = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg' -Recurse -Filter 'ffmpeg.exe' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Length -gt 10MB } | Select-Object -First 1
+          if (-not $real) { throw 'CI 里找不到真正的 ffmpeg.exe（choco shim 不能直接拷走）' }
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/resources | Out-Null
+          Copy-Item $real.FullName desktop/src-tauri/resources/ffmpeg.exe -Force
+          $size = (Get-Item desktop/src-tauri/resources/ffmpeg.exe).Length
+          Write-Host "ffmpeg 已就位: $($size / 1MB) MB"
+          if ($size -lt 10MB) { throw 'ffmpeg.exe 体积异常，可能拷到了 shim' }
+
+      - name: 校验 ffmpeg 已就位
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'desktop/src-tauri/resources/ffmpeg.exe')) {
+            throw '缺少 desktop/src-tauri/resources/ffmpeg.exe，安装包将不带 ffmpeg'
+          }
+
       - name: 构建并发布安装包
         uses: tauri-apps/tauri-action@v1
         env:

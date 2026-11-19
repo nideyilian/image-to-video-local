@@ -68,7 +68,11 @@ pub fn parse_fps(value: Option<&Value>) -> f64 {
 
 /// 与 `probe_video_meta()` 的 ffprobe 分支等价。
 pub fn probe_video_meta(video_path: &str, ffprobe: Option<&Path>) -> Option<VideoMeta> {
-    let ffprobe = ffprobe?;
+    // 没有独立 ffprobe 时用 ffmpeg 的 stderr 兜底 —— 安装包里只带了 ffmpeg，
+    // 不带 ffprobe（每个都 80MB+，两个一起比原来整个安装包还大）。
+    let Some(ffprobe) = ffprobe else {
+        return probe_via_ffmpeg(video_path);
+    };
     let mut command = Command::new(ffprobe);
     command.args([
         "-v",
@@ -257,5 +261,110 @@ mod tests {
         assert!(!src.exists());
         assert_eq!(std::fs::read(&dst).unwrap(), b"hello");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+/// 用 `ffmpeg -i` 的 stderr 解析媒体信息。
+///
+/// 只在没有 ffprobe 时使用（安装包只带 ffmpeg）。解析的是人类可读输出，形如：
+/// ```text
+///   Duration: 00:00:02.02, start: 0.000000, bitrate: 195 kb/s
+///   Stream #0:0: Video: h264 (High), yuv420p, 320x240 [SAR 1:1 DAR 4:3], 10 fps, 10 tbr
+/// ```
+/// 参数拿不到时对应字段为 0，调用方按「未知」处理（与 ffprobe 缺失时的语义一致）。
+fn probe_via_ffmpeg(video_path: &str) -> Option<VideoMeta> {
+    let ffmpeg = crate::engine::system::resolve_ffmpeg(None)?;
+    let mut command = Command::new(&ffmpeg);
+    command.args(["-hide_banner", "-i", video_path]);
+    crate::engine::system::hide_console(&mut command);
+    // ffmpeg 没有输出文件时会以非零码退出，这里只看 stderr
+    let output = command.output().ok()?;
+    let text = String::from_utf8_lossy(&output.stderr);
+
+    let mut width = 0i64;
+    let mut height = 0i64;
+    let mut fps = 0.0f64;
+    let mut duration = 0.0f64;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Duration:") {
+            if let Some(value) = trimmed.split("Duration:").nth(1) {
+                duration = parse_clock(value.trim());
+            }
+        }
+        if trimmed.contains("Video:") && width == 0 {
+            // 形如 `320x240` 的尺寸
+            for token in trimmed.split(|c: char| c == ',' || c == ' ') {
+                let token = token.trim();
+                if let Some((left, right)) = token.split_once('x') {
+                    if let (Ok(w), Ok(h)) = (left.parse::<i64>(), right.parse::<i64>()) {
+                        if w > 0 && h > 0 && w <= 16384 && h <= 16384 {
+                            width = w;
+                            height = h;
+                            break;
+                        }
+                    }
+                }
+            }
+            // 形如 `10 fps`
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            for (index, part) in parts.iter().enumerate() {
+                if *part == "fps" && index > 0 {
+                    if let Ok(value) = parts[index - 1].parse::<f64>() {
+                        fps = value;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let frames = if fps > 0.0 && duration > 0.0 {
+        (fps * duration).round() as i64
+    } else {
+        0
+    };
+    Some(VideoMeta {
+        width,
+        height,
+        fps,
+        frames,
+        duration,
+    })
+}
+
+/// 解析 `HH:MM:SS.ss`。
+fn parse_clock(value: &str) -> f64 {
+    let head = value.split(',').next().unwrap_or("").trim();
+    let parts: Vec<&str> = head.split(':').collect();
+    if parts.len() != 3 {
+        return 0.0;
+    }
+    let hours: f64 = parts[0].trim().parse().unwrap_or(0.0);
+    let minutes: f64 = parts[1].trim().parse().unwrap_or(0.0);
+    let seconds: f64 = parts[2].trim().parse().unwrap_or(0.0);
+    hours * 3600.0 + minutes * 60.0 + seconds
+}
+
+#[cfg(test)]
+mod fallback_probe_tests {
+    use super::*;
+
+    #[test]
+    fn clock_parsing() {
+        assert!((parse_clock("00:00:02.02, start: 0.0") - 2.02).abs() < 1e-6);
+        assert!((parse_clock("01:02:03.50") - 3723.5).abs() < 1e-6);
+        assert_eq!(parse_clock("garbage"), 0.0);
+    }
+
+    #[test]
+    fn ffmpeg_fallback_probes_a_real_file() {
+        let fixture = std::env::var("ITV_FALLBACK_PROBE");
+        let Ok(path) = fixture else { return };
+        let meta = probe_via_ffmpeg(&path).expect("应能解析出尺寸");
+        assert!(meta.width > 0 && meta.height > 0, "{meta:?}");
     }
 }
