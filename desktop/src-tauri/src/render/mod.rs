@@ -16,6 +16,14 @@ pub mod batch;
 pub mod codec;
 pub mod compositor;
 pub mod effects;
+pub mod parallel;
+pub mod profile;
+pub mod resize_fast;
+
+#[cfg(test)]
+mod effects_baseline_test;
+#[cfg(test)]
+mod resize_bench_test;
 pub mod encoder;
 pub mod imageinfo;
 pub mod pixels;
@@ -1039,6 +1047,7 @@ mod parity_batch {
         };
         let mut hooks = compositor::CollectHooks::default();
         let outcome = batch::run_batch(&config, &ffmpeg, &mut hooks);
+        println!("{}", crate::render::profile::report());
         println!(
             "BATCH={}",
             match outcome {

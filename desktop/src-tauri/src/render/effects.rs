@@ -86,7 +86,6 @@ pub enum BorderMode {
 /// 会出现空洞和锯齿，与 OpenCV 完全不同。
 pub fn warp_affine(source: &BgrFrame, matrix: Affine, border: BorderMode) -> BgrFrame {
     let width = source.width as i64;
-    let height = source.height as i64;
     let mut result = BgrFrame::black(source.width, source.height);
 
     // 逆矩阵
@@ -102,16 +101,27 @@ pub fn warp_affine(source: &BgrFrame, matrix: Affine, border: BorderMode) -> Bgr
     let i11 = matrix.m00 * inv_det;
     let i12 = (matrix.m10 * matrix.m02 - matrix.m00 * matrix.m12) * inv_det;
 
-    for y in 0..height {
-        for x in 0..width {
-            let fx = x as f64;
+    // 每个像素的结果只取决于它自己的坐标，行与行之间没有依赖 ——
+    // 因此可以按行切块并行，输出逐字节不变（effects_baseline 守着这一点）。
+    let row_bytes = source.width as usize * 3;
+    super::parallel::par_rows_mut(&mut result, |start_row, rows, chunk| {
+        for local_row in 0..rows {
+            let y = (start_row + local_row) as i64;
             let fy = y as f64;
-            let sx = i00 * fx + i01 * fy + i02;
-            let sy = i10 * fx + i11 * fy + i12;
-            let value = sample_bilinear(source, sx, sy, border);
-            result.set_pixel(x as u32, y as u32, value);
+            // 预先算好与 x 无关的部分，省掉每个像素一次乘法
+            let sx_base = i01 * fy + i02;
+            let sy_base = i11 * fy + i12;
+            let offset = local_row * row_bytes;
+            for x in 0..width {
+                let fx = x as f64;
+                let sx = i00 * fx + sx_base;
+                let sy = i10 * fx + sy_base;
+                let value = sample_bilinear(source, sx, sy, border);
+                let at = offset + x as usize * 3;
+                chunk[at..at + 3].copy_from_slice(&value);
+            }
         }
-    }
+    });
     result
 }
 

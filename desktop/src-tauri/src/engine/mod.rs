@@ -17,7 +17,7 @@ mod effect_assets;
 mod effect_preview;
 mod extract;
 mod fingerprint;
-mod hash;
+pub(crate) mod hash;
 pub(crate) mod jobs;
 mod library;
 pub(crate) mod paths;
