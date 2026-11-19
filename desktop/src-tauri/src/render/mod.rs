@@ -8,6 +8,7 @@
 
 pub mod audio;
 pub mod codec;
+pub mod compositor;
 pub mod effects;
 pub mod encoder;
 pub mod imageinfo;
@@ -755,5 +756,98 @@ mod parity_effects {
             }
         }
         println!("EFFECT_PARITY={}", Value::Array(report));
+    }
+}
+
+#[cfg(test)]
+mod parity_compose {
+    use super::*;
+    use serde_json::json;
+
+    /// 端到端导出对照：`ITV_COMPOSE_DIR` 图片目录，`ITV_COMPOSE_OUT` 输出文件。
+    #[test]
+    fn parity_run_compose() {
+        let (Ok(dir), Ok(out)) =
+            (std::env::var("ITV_COMPOSE_DIR"), std::env::var("ITV_COMPOSE_OUT"))
+        else {
+            return;
+        };
+        let entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .map(|items| items.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default();
+        let mut images: Vec<String> = entries
+            .into_iter()
+            .filter(|path| {
+                path.extension()
+                    .map(|ext| ext.to_string_lossy().to_lowercase() == "png")
+                    .unwrap_or(false)
+            })
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        images.sort();
+        if images.is_empty() {
+            return;
+        }
+
+        let duration: f64 = std::env::var("ITV_COMPOSE_DURATION")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(1.0);
+        let fps: i64 = std::env::var("ITV_COMPOSE_FPS")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(30);
+        let transition_frames: i64 = std::env::var("ITV_COMPOSE_TRANS_FRAMES")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(8);
+        let transition_type =
+            std::env::var("ITV_COMPOSE_TRANS").unwrap_or_else(|_| "淡入淡出".to_string());
+        let effect = std::env::var("ITV_COMPOSE_EFFECT").unwrap_or_else(|_| "无特效".to_string());
+        let use_effect = effect != "无特效";
+
+        let options = compositor::ComposeOptions {
+            images,
+            output_path: out.clone(),
+            duration,
+            fps,
+            width: 320,
+            height: 240,
+            resize_mode: "适应".into(),
+            transition_frames,
+            transition_type,
+            target_bitrate: 1000,
+            selected_codec: "H264".into(),
+            effect_override: Some(effect.clone()),
+        };
+        let config = audio::JsonConfig::new(&json!({
+            "use_video_effect": use_effect,
+            "video_effect_type": effect,
+            "video_effect_intensity": 100.0,
+            "video_effect_speed": 1.0,
+        }));
+        let ffmpeg = crate::engine::system::resolve_ffmpeg(None).expect("ffmpeg");
+        let mut hooks = compositor::QuietHooks;
+        let result = compositor::create_video(
+            &options,
+            &config,
+            &ffmpeg.to_string_lossy(),
+            &mut hooks,
+            None,
+        );
+        println!(
+            "COMPOSE_RESULT={}",
+            match result {
+                Ok(value) => json!({
+                    "ok": true,
+                    "frames": value.frames_written,
+                    "total": value.total_frames,
+                    "width": value.width,
+                    "height": value.height,
+                    "size": std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0),
+                }),
+                Err(error) => json!({ "ok": false, "error": error.to_string() }),
+            }
+        );
     }
 }
