@@ -26,7 +26,11 @@ pub mod resize_fast;
 #[cfg(test)]
 mod catalog_parity_test;
 #[cfg(test)]
+mod compare_tool;
+#[cfg(test)]
 mod effect_properties_test;
+#[cfg(test)]
+mod transitions_baseline_test;
 #[cfg(test)]
 mod effects_baseline_test;
 #[cfg(test)]
@@ -711,7 +715,7 @@ mod parity_transitions {
 
         let mut report = Vec::new();
         for (index, (name, kind)) in cases.iter().enumerate() {
-            let frames = transitions::generate_frames(&first, &second, *kind, num_frames);
+            let frames = transitions::generate_frames(&first, &second, *kind, num_frames, &Default::default());
             for (frame_index, frame) in frames.iter().enumerate() {
                 let file = format!("{index:02}__{frame_index:02}.png");
                 frame
@@ -957,7 +961,7 @@ mod parity_transitions_all {
         let mut report = Vec::new();
         for (index, name) in names.iter().enumerate() {
             let kind = transitions::parse(name);
-            let frames = transitions::generate_frames(&first, &second, kind, num_frames);
+            let frames = transitions::generate_frames(&first, &second, kind, num_frames, &Default::default());
             for (frame_index, frame) in frames.iter().enumerate() {
                 frame
                     .to_rgb()

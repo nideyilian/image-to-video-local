@@ -404,7 +404,9 @@ pub fn render_frame(params: &Map<String, Value>) -> Result<Option<Value>, String
                 let fps = number(&config, "fps", 30.0).max(1.0) as i64;
                 let frame_count = ((transition_duration * fps as f64).round() as i64).max(1) as usize;
                 let kind = transitions::parse(&transition_type);
-                let frames = transitions::generate_frames(&image, second, kind, frame_count);
+                // 预览用默认参数（空表），与正式渲染的缺省行为一致
+                let frames =
+                    transitions::generate_frames(&image, second, kind, frame_count, &Default::default());
                 if !frames.is_empty() {
                     let index = ((progress * frames.len() as f64) as usize).min(frames.len() - 1);
                     image = frames[index].clone();

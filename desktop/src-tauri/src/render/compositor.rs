@@ -191,6 +191,9 @@ pub fn create_video(
     // - 帧数算错时能单独定位（`frame_script` 的测试跑一次就知道）
     // - 改帧策略不用碰下面的像素代码
     // - 两边独立演进，改一边不会悄悄弄坏另一边
+    // 转场专属参数（与特效同一条通路）
+    let transition_extra = effect_params::resolve_from_config(config, &options.transition_type);
+
     let script = frame_script::build_script(&frame_script::ScriptOptions {
         total_images: options.images.len(),
         frames_per_img: frame_plan.frames_per_img,
@@ -362,11 +365,15 @@ pub fn create_video(
                     )
                 };
 
+                // 转场专属参数：按当前转场 ID 从配置取，缺的用声明默认值。
+                // 与特效同一条通路（effect_params），所以「按特效 id 分组存」
+                // 的约定对转场也一样成立。
                 let frames = transitions::generate_frames(
                     current,
                     &next_frame,
                     transition,
                     *total as usize,
+                    &transition_extra,
                 );
                 for frame in frames {
                     if hooks.cancelled() {

@@ -537,21 +537,48 @@ pub const TRANSITIONS: &[ItemSpec] = &[
         id: "百叶窗",
         group: "几何展开",
         summary: "条形百叶窗逐条翻开",
-        params: &[],
+        // 条数原来是硬编码 10。太少变成大块翻板，太多会失去百叶窗的形状感。
+        params: &[ParamSpec {
+            key: "blinds",
+            label: "条数",
+            kind: ParamKind::Factor,
+            min: 2.0,
+            max: 60.0,
+            default: 10.0,
+            choices: &[],
+        }],
         aliases: &[],
     },
     ItemSpec {
         id: "棋盘格",
         group: "几何展开",
         summary: "方格逐个切换",
-        params: &[],
+        // 格子边长原来是硬编码 20px。数值越小格子越密。
+        params: &[ParamSpec {
+            key: "grid",
+            label: "格子边长",
+            kind: ParamKind::Factor,
+            min: 4.0,
+            max: 200.0,
+            default: 20.0,
+            choices: &[],
+        }],
         aliases: &[],
     },
     ItemSpec {
         id: "方块过渡",
         group: "几何展开",
         summary: "大块拼接切换",
-        params: &[],
+        // 方块边长原来是硬编码 40px。
+        params: &[ParamSpec {
+            key: "block",
+            label: "方块边长",
+            kind: ParamKind::Factor,
+            min: 8.0,
+            max: 300.0,
+            default: 40.0,
+            choices: &[],
+        }],
         aliases: &[],
     },
     ItemSpec {
@@ -628,7 +655,27 @@ pub const TRANSITIONS: &[ItemSpec] = &[
         id: "波浪",
         group: "视觉特效",
         summary: "波浪状推进",
-        params: &[],
+        // 振幅与波长原来硬编码 20.0 / 0.02。
+        params: &[
+            ParamSpec {
+                key: "amplitude",
+                label: "振幅",
+                kind: ParamKind::Factor,
+                min: 1.0,
+                max: 200.0,
+                default: 20.0,
+                choices: &[],
+            },
+            ParamSpec {
+                key: "frequency",
+                label: "波长密度",
+                kind: ParamKind::Factor,
+                min: 0.001,
+                max: 0.2,
+                default: 0.02,
+                choices: &[],
+            },
+        ],
         aliases: &[],
     },
     ItemSpec {
@@ -663,7 +710,16 @@ pub const TRANSITIONS: &[ItemSpec] = &[
         id: "碎片飞散",
         group: "视觉特效",
         summary: "碎成小块飞走",
-        params: &[],
+        // 碎片边长原来是硬编码 40px。越小碎得越细。
+        params: &[ParamSpec {
+            key: "shard",
+            label: "碎片边长",
+            kind: ParamKind::Factor,
+            min: 8.0,
+            max: 300.0,
+            default: 40.0,
+            choices: &[],
+        }],
         aliases: &[],
     },
     ItemSpec {

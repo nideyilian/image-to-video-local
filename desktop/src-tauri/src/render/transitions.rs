@@ -143,6 +143,7 @@ pub fn generate_frames(
     second: &BgrFrame,
     transition: Transition,
     num_frames: usize,
+    extra: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<BgrFrame> {
     if num_frames == 0 {
         return Vec::new();
@@ -155,7 +156,7 @@ pub fn generate_frames(
     // （等于原图），导出视频里每个转场都"跳"一下 —— 10 帧的视频只有第 4 帧不一致，
     // 因为是那唯一一个转场帧。
     let generate_count = num_frames + 2;
-    let mut frames = generate_raw(first, second, transition, generate_count);
+    let mut frames = generate_raw(first, second, transition, generate_count, extra);
     if frames.len() >= num_frames + 2 {
         frames = frames[1..frames.len() - 1].to_vec();
     } else if frames.len() > num_frames {
@@ -169,10 +170,13 @@ fn generate_raw(
     second: &BgrFrame,
     transition: Transition,
     count: usize,
+    extra: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<BgrFrame> {
     if count == 0 {
         return Vec::new();
     }
+    // 参数由各个转场函数自己取（每个函数只关心自己那几个键），
+    // 这里只负责把 extra 透传下去。
     match transition {
         Transition::Fade | Transition::Fallback => linspace01(count)
             .into_iter()
@@ -182,13 +186,13 @@ fn generate_raw(
         Transition::SlideUp => slide(first, second, count, false),
         Transition::CircleExpand => circle_expand(first, second, count),
         Transition::Zoom => zoom(first, second, count),
-        Transition::Blinds => blinds(first, second, count),
+        Transition::Blinds => blinds(first, second, count, extra),
         Transition::Pixelate => pixelate(first, second, count),
         Transition::Rotate => rotate(first, second, count),
-        Transition::Checkerboard => checkerboard(first, second, count),
-        Transition::Wave => wave(first, second, count),
+        Transition::Checkerboard => checkerboard(first, second, count, extra),
+        Transition::Wave => wave(first, second, count, extra),
         Transition::ColorMix => color_mix(first, second, count),
-        Transition::Block => block(first, second, count),
+        Transition::Block => block(first, second, count, extra),
         Transition::ZoomInImpact => zoom_in_impact(first, second, count),
         Transition::ZoomOutExplode => zoom_out_explode(first, second, count),
         Transition::RotateZoom => rotate_zoom(first, second, count),
@@ -198,7 +202,7 @@ fn generate_raw(
         Transition::DiagonalWipe => diagonal_wipe(first, second, count),
         Transition::DoorOpen => door_open(first, second, count),
         Transition::Flash => flash(first, second, count),
-        Transition::Shatter => shatter(first, second, count),
+        Transition::Shatter => shatter(first, second, count, extra),
         Transition::GlowSpread => glow_spread(first, second, count),
         Transition::RadialSweep => radial_sweep(first, second, count),
         Transition::VortexDistort => vortex_distort(first, second, count),
@@ -325,19 +329,33 @@ fn zoom(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
         .collect()
 }
 
-fn blinds(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
+fn blinds(
+    first: &BgrFrame,
+    second: &BgrFrame,
+    count: usize,
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<BgrFrame> {
+    // 专属参数取值，缺省用原硬编码值 —— 保证不传参数时画面逐字节不变
+    let param = |key: &str, fallback: f64| -> f64 {
+        extra
+            .get(key)
+            .and_then(|value| value.as_f64())
+            .filter(|value| value.is_finite())
+            .unwrap_or(fallback)
+    };
     // ⚠️ 是「每条百叶窗从中心向上下同时展开」，不是「一条一条轮流显示」。
     // 第一版按后者实现，对照测试发现 20% 的像素不一致。
-    const NUM_BLINDS: i64 = 10;
+    // 条数可调：默认 10 与改造前一致。太少会变成大块翻板，太多会失去百叶窗的形。
+    let num_blinds = param("blinds", 10.0).round().clamp(2.0, 60.0) as i64;
     let height = first.height as i64;
-    let blind_height = height / NUM_BLINDS;
+    let blind_height = height / num_blinds.max(1);
     linspace01(count)
         .into_iter()
         .map(|progress| {
             let mut frame = first.clone();
             let open_height = (blind_height as f64 * progress).trunc() as i64;
             if open_height > 0 {
-                for index in 0..NUM_BLINDS {
+                for index in 0..num_blinds {
                     let y_start = index * blind_height;
                     let y_end = ((index + 1) * blind_height).min(height);
                     let center = (y_start + y_end) / 2;
@@ -490,10 +508,24 @@ fn rotate(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
 }
 
 /// `棋盘格`：逐格随机切换（格数随进度增加）
-fn checkerboard(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
-    const GRID: i64 = 20;
-    let rows = first.height as i64 / GRID;
-    let cols = first.width as i64 / GRID;
+fn checkerboard(
+    first: &BgrFrame,
+    second: &BgrFrame,
+    count: usize,
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<BgrFrame> {
+    // 专属参数取值，缺省用原硬编码值 —— 保证不传参数时画面逐字节不变
+    let param = |key: &str, fallback: f64| -> f64 {
+        extra
+            .get(key)
+            .and_then(|value| value.as_f64())
+            .filter(|value| value.is_finite())
+            .unwrap_or(fallback)
+    };
+    // 格子边长可调：默认 20px 与改造前一致。数值越小格子越密。
+    let grid = param("grid", 20.0).round().clamp(4.0, 200.0) as i64;
+    let rows = (first.height as i64 / grid).max(1);
+    let cols = (first.width as i64 / grid).max(1);
     let mut rng = SplitMix64::new(0xC0FFEE);
     // 预生成格子顺序（避免每帧重新随机导致画面闪烁）
     let total = (rows * cols).max(1) as usize;
@@ -514,15 +546,15 @@ fn checkerboard(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFra
             let mut frame = first.clone();
             let switches = (progress * total as f64) as usize;
             for &(row, col) in order.iter().take(switches.min(order.len())) {
-                let y0 = row * GRID;
-                let x0 = col * GRID;
+                let y0 = row * grid;
+                let x0 = col * grid;
                 copy_rect(
                     &mut frame,
                     second,
                     x0,
                     y0,
-                    (x0 + GRID).min(first.width as i64),
-                    (y0 + GRID).min(first.height as i64),
+                    (x0 + grid).min(first.width as i64),
+                    (y0 + grid).min(first.height as i64),
                 );
             }
             frame
@@ -531,9 +563,24 @@ fn checkerboard(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFra
 }
 
 /// `波浪`：按行正弦错位推进
-fn wave(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
-    const AMPLITUDE: f64 = 20.0;
-    const FREQUENCY: f64 = 0.02;
+fn wave(
+    first: &BgrFrame,
+    second: &BgrFrame,
+    count: usize,
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<BgrFrame> {
+    // 专属参数取值，缺省用原硬编码值 —— 保证不传参数时画面逐字节不变
+    let param = |key: &str, fallback: f64| -> f64 {
+        extra
+            .get(key)
+            .and_then(|value| value.as_f64())
+            .filter(|value| value.is_finite())
+            .unwrap_or(fallback)
+    };
+    // 振幅与波长可调：默认 20.0 / 0.02 与改造前一致。
+    // frequency 是「每像素的相位增量」，越大波越密。
+    let amplitude = param("amplitude", 20.0).clamp(1.0, 200.0);
+    let frequency = param("frequency", 0.02).clamp(0.001, 0.2);
     let width = first.width as f64;
     linspace01(count)
         .into_iter()
@@ -541,7 +588,7 @@ fn wave(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
             let mut frame = first.clone();
             for y in 0..first.height {
                 let wave_offset =
-                    (AMPLITUDE * (FREQUENCY * y as f64 + progress * 2.0 * PI).sin()) as i64;
+                    (amplitude * (frequency * y as f64 + progress * 2.0 * PI).sin()) as i64;
                 let wave_progress = (progress + wave_offset as f64 / width) % 1.0;
                 let split_x = (width * wave_progress) as i64;
                 if split_x > 0 {
@@ -666,10 +713,24 @@ fn color_mix(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame>
 }
 
 /// `方块过渡`：40px 方块随机顺序出现
-fn block(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
-    const BLOCK: i64 = 40;
-    let rows = (first.height as i64 + BLOCK - 1) / BLOCK;
-    let cols = (first.width as i64 + BLOCK - 1) / BLOCK;
+fn block(
+    first: &BgrFrame,
+    second: &BgrFrame,
+    count: usize,
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<BgrFrame> {
+    // 专属参数取值，缺省用原硬编码值 —— 保证不传参数时画面逐字节不变
+    let param = |key: &str, fallback: f64| -> f64 {
+        extra
+            .get(key)
+            .and_then(|value| value.as_f64())
+            .filter(|value| value.is_finite())
+            .unwrap_or(fallback)
+    };
+    // 方块边长可调：默认 40px 与改造前一致。
+    let block_size = param("block", 40.0).round().clamp(8.0, 300.0) as i64;
+    let rows = (first.height as i64 + block_size - 1) / block_size;
+    let cols = (first.width as i64 + block_size - 1) / block_size;
     let total = (rows * cols).max(1) as usize;
     let mut rng = SplitMix64::new(0xB10C);
     let mut order: Vec<usize> = (0..total).collect();
@@ -686,15 +747,15 @@ fn block(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
             for &block_index in order.iter().take(blocks.min(order.len())) {
                 let row = block_index as i64 / cols;
                 let col = block_index as i64 % cols;
-                let y0 = row * BLOCK;
-                let x0 = col * BLOCK;
+                let y0 = row * block_size;
+                let x0 = col * block_size;
                 copy_rect(
                     &mut frame,
                     second,
                     x0,
                     y0,
-                    (x0 + BLOCK).min(first.width as i64),
-                    (y0 + BLOCK).min(first.height as i64),
+                    (x0 + block_size).min(first.width as i64),
+                    (y0 + block_size).min(first.height as i64),
                 );
             }
             frame
@@ -1014,10 +1075,24 @@ fn flash(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
 }
 
 /// `碎片飞散`：img1 切成 40px 碎片旋转飞散，露出 img2
-fn shatter(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
-    const SHARD: i64 = 40;
-    let rows = (first.height as i64 + SHARD - 1) / SHARD;
-    let cols = (first.width as i64 + SHARD - 1) / SHARD;
+fn shatter(
+    first: &BgrFrame,
+    second: &BgrFrame,
+    count: usize,
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<BgrFrame> {
+    // 专属参数取值，缺省用原硬编码值 —— 保证不传参数时画面逐字节不变
+    let param = |key: &str, fallback: f64| -> f64 {
+        extra
+            .get(key)
+            .and_then(|value| value.as_f64())
+            .filter(|value| value.is_finite())
+            .unwrap_or(fallback)
+    };
+    // 碎片边长可调：默认 40px 与改造前一致。越小碎得越细。
+    let shard = param("shard", 40.0).round().clamp(8.0, 300.0) as i64;
+    let rows = (first.height as i64 + shard - 1) / shard;
+    let cols = (first.width as i64 + shard - 1) / shard;
     // Python 用 `np.random.seed(42)` 固定种子，这里用固定种子的等价实现
     let mut rng = SplitMix64::new(42);
     let mut velocities: Vec<(f64, f64, f64)> = Vec::new();
@@ -1035,10 +1110,10 @@ fn shatter(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> {
             let mut index = 0usize;
             for row in 0..rows {
                 for col in 0..cols {
-                    let y1 = row * SHARD;
-                    let y2 = (y1 + SHARD).min(first.height as i64);
-                    let x1 = col * SHARD;
-                    let x2 = (x1 + SHARD).min(first.width as i64);
+                    let y1 = row * shard;
+                    let y2 = (y1 + shard).min(first.height as i64);
+                    let x1 = col * shard;
+                    let x2 = (x1 + shard).min(first.width as i64);
                     let shard = super::pixels::crop(first, x1, y1, (x2 - x1) as u32, (y2 - y1) as u32);
                     let (vel_x, vel_y, rotation) = velocities[index];
                     let alpha = (1.0 - progress * 1.2).max(0.0);
@@ -1515,7 +1590,7 @@ mod tests {
             Transition::Pixelate,
         ] {
             for num_frames in [1usize, 2, 5, 8] {
-                let frames = generate_frames(&a, &b, transition, num_frames);
+                let frames = generate_frames(&a, &b, transition, num_frames, &Default::default());
                 assert_eq!(
                     frames.len(),
                     num_frames,
@@ -1531,7 +1606,7 @@ mod tests {
         // 0*(1-a) + 255*a，a=0.5 → 127.5 → 截断 127（若四舍五入会是 128）
         let a = solid(2, 2, [0, 0, 0]);
         let b = solid(2, 2, [255, 255, 255]);
-        let frames = generate_raw(&a, &b, Transition::Fade, 3);
+        let frames = generate_raw(&a, &b, Transition::Fade, 3, &Default::default());
         assert_eq!(frames[1].pixel(0, 0), Some([127, 127, 127]));
         assert_eq!(frames[0].pixel(0, 0), Some([0, 0, 0]));
         assert_eq!(frames[2].pixel(0, 0), Some([255, 255, 255]));
@@ -1541,7 +1616,7 @@ mod tests {
     fn fade_first_and_last_are_dropped() {
         let a = solid(4, 4, [0, 0, 0]);
         let b = solid(4, 4, [100, 100, 100]);
-        let frames = generate_frames(&a, &b, Transition::Fade, 3);
+        let frames = generate_frames(&a, &b, Transition::Fade, 3, &Default::default());
         // 生成 5 帧 [0, 25, 50, 75, 100]，掐头去尾 → [25, 50, 75]
         assert_eq!(frames.len(), 3);
         assert_eq!(frames[0].pixel(0, 0), Some([25, 25, 25]));
@@ -1552,7 +1627,7 @@ mod tests {
     fn horizontal_slide_splits_at_truncated_positions() {
         let a = solid(10, 4, [10, 10, 10]);
         let b = solid(10, 4, [200, 200, 200]);
-        let frames = generate_raw(&a, &b, Transition::SlideLeft, 3);
+        let frames = generate_raw(&a, &b, Transition::SlideLeft, 3, &Default::default());
         // 切分点 [0, 5, 10]
         assert_eq!(frames[0].pixel(0, 0), Some([10, 10, 10]), "切分 0：全是 a");
         assert_eq!(frames[1].pixel(4, 0), Some([200, 200, 200]), "切分 5：左侧 b");
@@ -1564,7 +1639,7 @@ mod tests {
     fn vertical_slide_splits_rows() {
         let a = solid(4, 10, [10, 10, 10]);
         let b = solid(4, 10, [200, 200, 200]);
-        let frames = generate_raw(&a, &b, Transition::SlideUp, 3);
+        let frames = generate_raw(&a, &b, Transition::SlideUp, 3, &Default::default());
         assert_eq!(frames[1].pixel(0, 4), Some([200, 200, 200]));
         assert_eq!(frames[1].pixel(0, 5), Some([10, 10, 10]));
     }
@@ -1573,7 +1648,7 @@ mod tests {
     fn circle_expand_grows_from_center() {
         let a = solid(40, 40, [0, 0, 0]);
         let b = solid(40, 40, [255, 255, 255]);
-        let frames = generate_raw(&a, &b, Transition::CircleExpand, 3);
+        let frames = generate_raw(&a, &b, Transition::CircleExpand, 3, &Default::default());
         // radius 0 → 中心像素满足 dx²+dy² <= 0，应为 b
         assert_eq!(frames[0].pixel(20, 20), Some([255, 255, 255]));
         assert_eq!(frames[0].pixel(0, 0), Some([0, 0, 0]), "半径 0 时角落仍是 a");
@@ -1588,7 +1663,7 @@ mod tests {
     fn zoom_is_two_layer_zoom_and_blend() {
         let a = solid(40, 40, [0, 0, 0]);
         let b = solid(40, 40, [200, 200, 200]);
-        let frames = generate_raw(&a, &b, Transition::Zoom, 3);
+        let frames = generate_raw(&a, &b, Transition::Zoom, 3, &Default::default());
         // progress 0：img2 缩到 20x20 居中（200），img1 保持 40x40（0）与黑底混合
         // 中心区域：frame 是 200，img1 是 0，alpha=1 → 结果取 img1 的 0
         assert_eq!(frames[0].pixel(20, 20), Some([0, 0, 0]));
@@ -1603,7 +1678,7 @@ mod tests {
     fn blinds_open_from_each_stripe_center() {
         let a = solid(20, 100, [0, 0, 0]);
         let b = solid(20, 100, [255, 255, 255]);
-        let frames = generate_raw(&a, &b, Transition::Blinds, 3);
+        let frames = generate_raw(&a, &b, Transition::Blinds, 3, &Default::default());
         // blind_height = 10；progress 0 → open_height = 0，全不显示
         assert_eq!(frames[0].pixel(0, 0), Some([0, 0, 0]), "progress 0 全是 a");
         // progress 0.5 → open_height = 5，第一条从中心 5 向两侧展开 [3, 8)
@@ -1619,7 +1694,7 @@ mod tests {
         // 40x40：start_size = 40/4 = 10 → pixel_sizes 从 10 降到 1
         let a = solid(40, 40, [0, 0, 0]);
         let b = solid(40, 40, [200, 200, 200]);
-        let frames = generate_raw(&a, &b, Transition::Pixelate, 3);
+        let frames = generate_raw(&a, &b, Transition::Pixelate, 3, &Default::default());
         assert_eq!(frames.len(), 3);
         // 最后一帧 pixel_size = 1 → 直接返回整张 img2
         assert_eq!(frames[2].pixel(0, 0), Some([200, 200, 200]));
@@ -1639,6 +1714,6 @@ mod tests {
     fn zero_frames_returns_empty() {
         let a = solid(4, 4, [0, 0, 0]);
         let b = solid(4, 4, [255, 255, 255]);
-        assert!(generate_frames(&a, &b, Transition::Fade, 0).is_empty());
+        assert!(generate_frames(&a, &b, Transition::Fade, 0, &Default::default()).is_empty());
     }
 }

@@ -320,23 +320,34 @@ fn missing_params_match_explicit_defaults() {
 /// 用户照样能拖，但拖了没用。这条测试就是防它。
 #[test]
 fn declared_param_keys_are_exercised_by_implementations() {
-    use super::catalog::{find_effect, EFFECTS};
-    let source = include_str!("effects.rs");
+    use super::catalog::{find_effect, find_transition, EFFECTS, TRANSITIONS};
 
-    for item in EFFECTS {
-        for spec in item.params {
-            // 实现里必须出现该键名
-            let needle = format!("\"{}\"", spec.key);
-            assert!(
-                source.contains(&needle),
-                "「{}」声明了参数「{}」，但 effects.rs 里没读它 —— 界面上会是个调了没用的滑杆",
-                item.id,
-                spec.key
-            );
-        }
-        // 声明了参数的特效，必须能在 catalog 里查到（自洽性）
-        if !item.params.is_empty() {
-            assert!(find_effect(item.id).is_some());
+    // 效现在特效和转场都可能有专属参数，两边都要查。
+    // 只查 effects.rs 会漏掉转场 —— 上一轮的「假控件」正是这么漏的。
+    let cases: [(&str, &[super::catalog::ItemSpec]); 2] = [
+        ("effects.rs", EFFECTS),
+        ("transitions.rs", TRANSITIONS),
+    ];
+
+    for (file, items) in cases {
+        let source = match file {
+            "effects.rs" => include_str!("effects.rs"),
+            _ => include_str!("transitions.rs"),
+        };
+        for item in items {
+            for spec in item.params {
+                let needle = format!("\"{}\"", spec.key);
+                assert!(
+                    source.contains(&needle),
+                    "「{}」声明了参数「{}」，但 {file} 里没读它 —— 界面上会是个调了没用的滑杆",
+                    item.id,
+                    spec.key
+                );
+            }
+            if !item.params.is_empty() {
+                let found = find_effect(item.id).or_else(|| find_transition(item.id));
+                assert!(found.is_some(), "「{}」声明了参数却查不到", item.id);
+            }
         }
     }
 }

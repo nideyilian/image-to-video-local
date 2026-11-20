@@ -92,7 +92,9 @@ pub fn resolve_value(config: &Value, item_id: &str, spec: &ParamSpec) -> Value {
 ///
 /// 实现代码用这个结果，而不是自己去 `config` 里翻 —— 这样夹取和默认值只有一处。
 pub fn resolve(config: &Value, item_id: &str) -> Map<String, Value> {
-    let Some(item) = catalog::find_effect(item_id) else {
+    let Some(item) = catalog::find_effect(item_id)
+        .or_else(|| catalog::find_transition(item_id))
+    else {
         return Map::new();
     };
     let mut out = Map::new();
@@ -106,7 +108,9 @@ pub fn resolve(config: &Value, item_id: &str) -> Map<String, Value> {
 ///
 /// 返回的是纯 JSON，前端不需要知道 Rust 的类型。
 pub fn params_for(config: &Value, item_id: &str) -> Value {
-    let Some(item) = catalog::find_effect(item_id) else {
+    let Some(item) = catalog::find_effect(item_id)
+        .or_else(|| catalog::find_transition(item_id))
+    else {
         return json!([]);
     };
     let list: Vec<Value> = item
@@ -140,7 +144,9 @@ pub fn params_for(config: &Value, item_id: &str) -> Value {
 /// 没声明参数的（大多数）不在，界面就只显示通用的强度/速度。
 pub fn all_definitions() -> Value {
     let mut map = Map::new();
-    for item in catalog::EFFECTS {
+    // 特效和转场共用一张定义表：界面拿到的结构一致，不需要区分来源。
+    // 两者 id 不重复（`catalog::tests::ids_are_unique` 守着）。
+    for item in catalog::EFFECTS.iter().chain(catalog::TRANSITIONS.iter()) {
         if item.params.is_empty() {
             continue;
         }
