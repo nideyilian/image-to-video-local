@@ -15,11 +15,17 @@ pub mod audio;
 pub mod batch;
 pub mod codec;
 pub mod compositor;
+pub mod catalog;
 pub mod effects;
+pub mod frame_script;
 pub mod parallel;
 pub mod profile;
 pub mod resize_fast;
 
+#[cfg(test)]
+mod catalog_parity_test;
+#[cfg(test)]
+mod effect_properties_test;
 #[cfg(test)]
 mod effects_baseline_test;
 #[cfg(test)]

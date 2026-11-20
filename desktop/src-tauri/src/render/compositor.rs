@@ -12,9 +12,10 @@
 use std::path::Path;
 
 use super::audio::RenderConfig;
-use super::effects::{self, EffectParams};
+use super::effects;
 use super::encoder::{self, EncodeOptions};
 use super::pixels::{self, BgrFrame};
+use super::frame_script;
 use super::plan;
 use super::transitions;
 
@@ -182,114 +183,204 @@ pub fn create_video(
     let speed = config.f64_of("video_effect_speed", 1.0);
     let transition = transitions::parse(&options.transition_type);
 
+    // ---- 帧脚本：先算出「整段视频有哪些帧」 ----
+    //
+    // 这一段是纯计算，不碰像素。它回答「第 N 帧用第几张图、什么特效参数、
+    // 还是某段转场的第几步」。把它抽出来的好处：
+    // - 帧数算错时能单独定位（`frame_script` 的测试跑一次就知道）
+    // - 改帧策略不用碰下面的像素代码
+    // - 两边独立演进，改一边不会悄悄弄坏另一边
+    let script = frame_script::build_script(&frame_script::ScriptOptions {
+        total_images: options.images.len(),
+        frames_per_img: frame_plan.frames_per_img,
+        display_frames_per_img: frame_plan.display_frames_per_img,
+        last_img_frames: frame_plan.last_img_frames,
+        transition_frames,
+        fps: options.fps,
+        effect_enabled,
+        effect_type: effect_type.clone(),
+        effect_intensity: intensity,
+        effect_speed: speed,
+        transition_active: transition_frames > 0 && options.transition_type != "无转场",
+    });
+    debug_assert_eq!(
+        script.len() as i64,
+        total_frames,
+        "帧脚本长度与帧计划不一致 —— 说明两边算帧数的规则跑偏了"
+    );
+
+    // 排查用：把帧脚本的结构转储出来，供两个版本对比「帧序有没有变」。
+    // 正常渲染零开销（只在环境变量存在时写入）。
+    // 用法：ITV_DUMP_SCRIPT=路径，与 `ITV_BATCH_CONFIG` 配合。
+    if let Ok(path) = std::env::var("ITV_DUMP_SCRIPT") {
+        let lines: Vec<String> = script
+            .steps
+            .iter()
+            .map(|step| match &step.source {
+                frame_script::FrameSource::Still {
+                    image_index,
+                    frame_in_image,
+                } => format!("{}\tStill\t{image_index}\t{frame_in_image}", step.index),
+                frame_script::FrameSource::Effect {
+                    image_index,
+                    frame_in_image,
+                    params,
+                } => format!(
+                    "{}\tEffect\t{image_index}\t{frame_in_image}\t{:.6}",
+                    step.index, params.time_sec
+                ),
+                frame_script::FrameSource::Transition {
+                    image_index,
+                    step: in_step,
+                    total,
+                } => format!("{}\tTransition\t{image_index}\t{in_step}\t{total}", step.index),
+            })
+            .collect();
+        let _ = std::fs::write(path, lines.join("\n"));
+    }
+
     let mut last_good: Option<BgrFrame> = None;
     let mut written: i64 = 0;
+    // 缓存当前解码好的图，避免同一张图被重复解码
+    let mut loaded_index: Option<usize> = None;
+    let mut loaded_frame: Option<BgrFrame> = None;
+    let mut next_loaded_index: Option<usize> = None;
+    let mut next_loaded_frame: Option<BgrFrame> = None;
 
-    for (image_index, image_path) in options.images.iter().enumerate() {
+    // ---- 按脚本执行 ----
+    //
+    // 逐帧走脚本。转场是一批帧一起算的（`generate_frames` 一次产出整段），
+    // 所以遇到 `Transition` 时把该段一次性算完写完，然后跳到下一段。
+    let mut cursor = 0usize;
+    while cursor < script.steps.len() {
         if hooks.cancelled() {
             session.abort();
             return Err(ComposeError::Cancelled);
         }
-        hooks.log(&format!(
-            "处理图片 {}/{}: {}",
-            image_index + 1,
-            total_images,
-            Path::new(image_path)
-                .file_name()
-                .map(|value| value.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        ));
 
-        let mut current = match load_frame(image_path, out_w, out_h, &options.resize_mode) {
-            Some(frame) => {
-                let decorated = match decorate.as_mut() {
-                    Some(decorate) => match decorate(&frame, image_index) {
-                        Some(value) => value,
-                        None => {
-                            hooks.log(&format!("跟随水印处理失败，使用原帧: {image_path}"));
-                            frame
-                        }
-                    },
-                    None => frame,
-                };
-                Some(decorated)
-            }
-            None => None,
-        }
-        .or_else(|| {
-            // 图片加载失败：用上一张成功帧补位，保证总时长严格按设置
-            last_good.clone().inspect(|_| {
-                hooks.log(&format!("图片加载失败，用相邻帧补位保持时长: {image_path}"));
+        let image_index = script.steps[cursor].source.primary_image();
+
+        // 该图需要时才解码（同图连续帧复用）
+        if loaded_index != Some(image_index) {
+            hooks.log(&format!(
+                "处理图片 {}/{}: {}",
+                image_index + 1,
+                total_images,
+                Path::new(&options.images[image_index])
+                    .file_name()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ));
+            let frame = load_frame(
+                &options.images[image_index],
+                out_w,
+                out_h,
+                &options.resize_mode,
+            )
+            .map(|frame| match decorate.as_mut() {
+                Some(decorate) => match decorate(&frame, image_index) {
+                    Some(value) => value,
+                    None => {
+                        hooks.log(&format!(
+                            "跟随水印处理失败，使用原帧: {}",
+                            options.images[image_index]
+                        ));
+                        frame
+                    }
+                },
+                None => frame,
             })
-        })
-        .ok_or_else(|| ComposeError::FirstImageFailed(image_path.clone()))?;
-
-        last_good = Some(current.clone());
-
-        let is_last = image_index as i64 == total_images - 1;
-        let static_frames = if is_last {
-            frame_plan.last_img_frames
-        } else {
-            frame_plan.display_frames_per_img
-        };
-
-        if effect_enabled && static_frames > 0 {
-            // 逐帧算特效（代替重复写同一帧）
-            let effect_frames = static_frames.max(1);
-            let duration_sec = (effect_frames as f64 / options.fps.max(1) as f64).max(0.001);
-            for frame_index in 0..effect_frames {
-                if hooks.cancelled() {
-                    session.abort();
-                    return Err(ComposeError::Cancelled);
-                }
-                let params = EffectParams {
-                    effect_type: effect_type.clone(),
-                    time_sec: frame_index as f64 / options.fps.max(1) as f64,
-                    duration_sec,
-                    intensity,
-                    speed,
-                };
-                let frame = effects::apply_single_image_effect(&current, &params);
-                write_or_abort(&mut session, &frame, &mut written, total_frames, hooks)?;
-            }
-        } else {
-            for _ in 0..static_frames.max(0) {
-                if hooks.cancelled() {
-                    session.abort();
-                    return Err(ComposeError::Cancelled);
-                }
-                write_or_abort(&mut session, &current, &mut written, total_frames, hooks)?;
-            }
-        }
-
-        // 转场（最后一张之后没有）
-        if !is_last && transition_frames > 0 && options.transition_type != "无转场" {
-            let next_path = &options.images[image_index + 1];
-            let next_frame = load_frame(next_path, out_w, out_h, &options.resize_mode)
-                .map(|frame| match decorate.as_mut() {
-                    Some(decorate) => decorate(&frame, image_index + 1).unwrap_or(frame),
-                    None => frame,
+            .or_else(|| {
+                // 图片加载失败：用上一张成功帧补位，保证总时长严格按设置
+                last_good.clone().inspect(|_| {
+                    hooks.log(&format!(
+                        "图片加载失败，用相邻帧补位保持时长: {}",
+                        options.images[image_index]
+                    ));
                 })
-                .unwrap_or_else(|| {
-                    hooks.log(&format!("下一张图加载失败，用当前帧占位: {next_path}"));
-                    current.clone()
-                });
-            let frames = transitions::generate_frames(
-                &current,
-                &next_frame,
-                transition,
-                transition_frames as usize,
-            );
-            for frame in frames {
-                if hooks.cancelled() {
-                    session.abort();
-                    return Err(ComposeError::Cancelled);
-                }
+            })
+            .ok_or_else(|| ComposeError::FirstImageFailed(options.images[image_index].clone()))?;
+
+            last_good = Some(frame.clone());
+            loaded_index = Some(image_index);
+            loaded_frame = Some(frame);
+        }
+
+        let current = loaded_frame.as_ref().expect("刚解码过，必然存在");
+
+        match &script.steps[cursor].source {
+            frame_script::FrameSource::Still { .. } | frame_script::FrameSource::Effect { .. } => {
+                // 静态帧 / 特效帧：逐帧算，连续同图帧共享解码结果
+                let step = &script.steps[cursor];
+                let frame = match &step.source {
+                    frame_script::FrameSource::Effect { params, .. } => {
+                        effects::apply_single_image_effect(current, params)
+                    }
+                    _ => current.clone(),
+                };
                 write_or_abort(&mut session, &frame, &mut written, total_frames, hooks)?;
+                cursor += 1;
+            }
+            frame_script::FrameSource::Transition { total, .. } => {
+                // 转场：一次性把这一段算完
+                let next_index = image_index + 1;
+                let next_frame = if let (Some(index), Some(frame)) =
+                    (next_loaded_index, next_loaded_frame.as_ref())
+                {
+                    if index == next_index {
+                        frame.clone()
+                    } else {
+                        decode_next(
+                            &options.images[next_index],
+                            out_w,
+                            out_h,
+                            &options.resize_mode,
+                            &mut decorate,
+                            next_index,
+                            current,
+                            &mut next_loaded_index,
+                            &mut next_loaded_frame,
+                            hooks,
+                        )
+                    }
+                } else {
+                    decode_next(
+                        &options.images[next_index],
+                        out_w,
+                        out_h,
+                        &options.resize_mode,
+                        &mut decorate,
+                        next_index,
+                        current,
+                        &mut next_loaded_index,
+                        &mut next_loaded_frame,
+                        hooks,
+                    )
+                };
+
+                let frames = transitions::generate_frames(
+                    current,
+                    &next_frame,
+                    transition,
+                    *total as usize,
+                );
+                for frame in frames {
+                    if hooks.cancelled() {
+                        session.abort();
+                        return Err(ComposeError::Cancelled);
+                    }
+                    write_or_abort(&mut session, &frame, &mut written, total_frames, hooks)?;
+                }
+                // 转场跑完，下一段一定是下一张图的静态帧。
+                // 直接把当前缓存切到下一张，省掉一次「重新解码同一张图」，
+                // 也避免 loaded_index 停在旧图上导致后续判断错乱。
+                loaded_index = Some(next_index);
+                loaded_frame = next_loaded_frame.clone();
+                next_loaded_index = None;
+                next_loaded_frame = None;
+                cursor += *total as usize;
             }
         }
-        // 避免未使用告警：current 在转场后不再需要
-        let _ = &mut current;
     }
 
     hooks.progress(written, total_frames);
@@ -320,6 +411,37 @@ fn make_even(value: u32) -> u32 {
     } else {
         value + 1
     }
+}
+
+/// 解码转场需要的下一张图，并缓存起来供后续复用。
+///
+/// 加载失败时用当前帧占位（保持时长不跑偏），并把缓存标记为已加载 ——
+/// 下一段转场如果还是这张图，就不必再试一次。
+#[allow(clippy::too_many_arguments)]
+fn decode_next(
+    path: &str,
+    out_w: u32,
+    out_h: u32,
+    resize_mode: &str,
+    decorate: &mut Option<&mut dyn FnMut(&BgrFrame, usize) -> Option<BgrFrame>>,
+    index: usize,
+    fallback: &BgrFrame,
+    cache_index: &mut Option<usize>,
+    cache_frame: &mut Option<BgrFrame>,
+    hooks: &mut dyn ComposeHooks,
+) -> BgrFrame {
+    let frame = load_frame(path, out_w, out_h, resize_mode)
+        .map(|frame| match decorate {
+            Some(decorate) => decorate(&frame, index).unwrap_or(frame),
+            None => frame,
+        })
+        .unwrap_or_else(|| {
+            hooks.log(&format!("下一张图加载失败，用当前帧占位: {path}"));
+            fallback.clone()
+        });
+    *cache_index = Some(index);
+    *cache_frame = Some(frame.clone());
+    frame
 }
 
 fn write_or_abort(

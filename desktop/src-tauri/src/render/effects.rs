@@ -222,7 +222,10 @@ pub fn center_crop(source: &BgrFrame, target_w: u32, target_h: u32) -> BgrFrame 
 }
 
 /// 特效参数（对应 `apply_single_image_effect` 的入参）。
-#[derive(Debug, Clone)]
+///
+/// 实现了 `PartialEq`：`frame_script` 需要比对两帧是否用了相同参数
+/// （将来做帧复用优化时要用），而且测试里直接比较参数比逐个字段断言清楚。
+#[derive(Debug, Clone, PartialEq)]
 pub struct EffectParams {
     pub effect_type: String,
     pub time_sec: f64,
