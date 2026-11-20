@@ -125,7 +125,22 @@ export function useEngineEffectPreview(
     );
     const hasVideoWatermark = Boolean(workspace.config.use_watermark && workspace.config.watermark_path);
     const hasTransition = Boolean(workspace.config.use_transition && nextFrame?.source);
-    if (!active || !frame?.source || (!isEffectEnabled(workspace.config) && !hasImageWatermark && !hasVideoWatermark && !hasTransition)) {
+    // ⚠️ 调色也必须算作「有需要预览的东西」。
+    //
+    // 之前漏了这一项：只开调色、不开特效/水印/转场时，下面的条件成立，
+    // 于是**直接清空预览并 return**，压根不会请求后端 —— 用户拖调色滑杆
+    // 时画面纹丝不动，判定「功能坏了」。后端其实早就支持调色了。
+    const hasColorGrade = Boolean(
+      workspace.config.color_brightness
+      || workspace.config.color_contrast
+      || workspace.config.color_saturation
+      || workspace.config.color_temperature,
+    );
+    if (
+      !active
+      || !frame?.source
+      || (!isEffectEnabled(workspace.config) && !hasImageWatermark && !hasVideoWatermark && !hasTransition && !hasColorGrade)
+    ) {
       latestIdentityRef.current = "";
       pendingRef.current = null;
       setUrl(null);

@@ -1326,6 +1326,77 @@ mod parity_effect_preview {
 }
 
 #[cfg(test)]
+mod preview_responds_to_color_test {
+    //! 真实预览分发：调色不同必须产出不同的预览文件。
+    //!
+    //! 这条针对的是「拖滑杆画面不动」——可能是三处一起坏：
+    //! 1. 前端没发请求（`hasColorGrade` 判断漏了）
+    //! 2. 后端没应用调色（`render_frame` 漏了 color::apply）
+    //! 3. 缓存键没带调色（键没变 → 复用旧图）
+    //! 这里覆盖 2 和 3。
+
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn preview_responds_to_color_grade() {
+        let Ok(root) = std::env::var("ITV_E2E_DIR") else {
+            return;
+        };
+        let image = std::path::PathBuf::from(&root).join("images");
+        let Some(source) = std::fs::read_dir(&image)
+            .ok()
+            .and_then(|it| it.flatten().map(|e| e.path()).find(|p| p.is_file()))
+        else {
+            return;
+        };
+
+        let render = |brightness: f64| {
+            dispatch(
+                "preview_effect_frame",
+                Some(json!({
+                    "path": source.to_string_lossy(),
+                    "config": {
+                        "resolution_preset": "320x180",
+                        "video_effect_type": "无特效",
+                        "use_video_effect": false,
+                        "color_brightness": brightness,
+                        "color_saturation": 0.0,
+                        "color_contrast": 0.0,
+                        "color_temperature": 0.0,
+                    },
+                    "time_sec": 0.0,
+                    "preview_sequence": 0,
+                    "max_width": 320,
+                    "max_height": 180,
+                })),
+            )
+        };
+
+        let plain = render(0.0);
+        let bright = render(85.0);
+        let path_of = |r: &DispatchResponse| {
+            r.result
+                .as_ref()
+                .and_then(|v| v.get("preview_path"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        let (Some(a), Some(b)) = (path_of(&plain), path_of(&bright)) else {
+            panic!("预览没返回 preview_path：plain={:?} bright={:?}", plain.error, bright.error);
+        };
+
+        // 缓存键不同 → 文件不同
+        assert_ne!(a, b, "调色不同却命中同一个预览缓存文件");
+
+        let da = std::fs::read(&a).unwrap_or_default();
+        let db = std::fs::read(&b).unwrap_or_default();
+        assert!(!da.is_empty() && !db.is_empty(), "预览文件为空");
+        assert_ne!(da, db, "调色 0 与 85 的预览图字节相同 —— 预览没有应用调色");
+    }
+}
+
+#[cfg(test)]
 mod end_to_end_color_test {
     //! 真实链路验证：从「界面发出的 start_job」到磁盘上的视频。
     //!

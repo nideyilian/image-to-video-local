@@ -489,8 +489,25 @@ pub fn render_frame(params: &Map<String, Value>) -> Result<Option<Value>, String
     // ---- 落盘 ----
     // 缓存键带 `rs-` 前缀：Rust 的 JPEG 编码器与 cv2 不同，字节必然不同，
     // 共用 Python 的键会出现「键相同、内容不同」的脏缓存。
+    // ⚠️ 缓存键必须包含**所有影响像素的输入**。
+    //
+    // 之前漏了调色与特效专属参数：调了滑杆，键没变，于是直接复用旧图 ——
+    // 表现就是「拖了没反应」，比报错更难查（因为导出是对的）。
+    // 这里把画面相关的配置整体序列化进键，宁可键长一点，也不要脏缓存。
+    let grade = crate::render::color::ColorGrade::from_config(
+        &crate::render::audio::JsonConfig(config.clone()),
+    );
+    let effect_extra = crate::render::effect_params::resolve_from_config(
+        &crate::render::audio::JsonConfig(config.clone()),
+        &effect_type,
+    );
+    let grade_key = format!(
+        "{}:{}:{}:{}",
+        grade.brightness, grade.contrast, grade.saturation, grade.temperature
+    );
+    let extra_key = serde_json::to_string(&effect_extra).unwrap_or_default();
     let cache_key = format!(
-        "rs-effect-preview:{}:{}:{}x{}:{}:{}:{time_sec}:{preview_sequence}",
+        "rs-effect-preview:{}:{}:{}x{}:{}:{}:{time_sec}:{preview_sequence}:{grade_key}:{extra_key}",
         paths::display(&paths::absolute(&source_path)),
         effect_type,
         width,
@@ -703,6 +720,37 @@ mod tests {
         let before: f64 = frame.data.iter().map(|v| *v as f64).sum::<f64>();
         let after: f64 = out.data.iter().map(|v| *v as f64).sum::<f64>();
         assert!(after > before, "亮度 +80 应该让画面变亮：{before} → {after}");
+    }
+
+    /// **缓存键必须随调色参数变化。**
+    ///
+    /// 预览图按缓存键落盘复用。键里不带调色，就会出现：拖了滑杆 → 后端
+    /// 算了新图 → 但缓存键没变 → 直接返回旧图。用户看到的就是「完全不动」，
+    /// 而且没有任何报错。这是本次「还是不动」的第二个真凶。
+    #[test]
+    fn preview_cache_key_includes_color_grade() {
+        // 构造两个只有调色不同的配置，序列化后必须不同
+        let base = config_with(&[("video_effect_type", json!("无特效"))]);
+        let mut warm = base.clone();
+        warm.insert("color_temperature".into(), json!(60));
+        let mut cold = base.clone();
+        cold.insert("color_temperature".into(), json!(-60));
+
+        let key_of = |config: &Map<String, Value>| {
+            let grade = crate::render::color::ColorGrade::from_config(
+                &crate::render::audio::JsonConfig(config.clone()),
+            );
+            format!(
+                "{}:{}:{}:{}",
+                grade.brightness, grade.contrast, grade.saturation, grade.temperature
+            )
+        };
+
+        assert_ne!(
+            key_of(&warm),
+            key_of(&cold),
+            "调色不同的两个配置产生了相同的缓存键 —— 预览会复用旧图，表现为「拖了不动」"
+        );
     }
 
     /// 预览读到的调色参数必须与配置一致（防止字段名写错导致永远是 0）。
