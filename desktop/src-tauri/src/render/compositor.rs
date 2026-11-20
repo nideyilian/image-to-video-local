@@ -12,6 +12,7 @@
 use std::path::Path;
 
 use super::audio::RenderConfig;
+use super::effect_params;
 use super::effects;
 use super::encoder::{self, EncodeOptions};
 use super::pixels::{self, BgrFrame};
@@ -201,6 +202,9 @@ pub fn create_video(
         effect_type: effect_type.clone(),
         effect_intensity: intensity,
         effect_speed: speed,
+        // 专属参数：按当前特效 ID 从配置里取，缺的用声明默认值。
+        // 这一步统一在这里做，实现代码只管用 `params.param("键", 默认)`。
+        effect_extra: effect_params::resolve_from_config(config, &effect_type),
         transition_active: transition_frames > 0 && options.transition_type != "无转场",
     });
     debug_assert_eq!(

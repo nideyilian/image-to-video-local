@@ -54,13 +54,7 @@ fn flat_frame(width: u32, height: u32, color: [u8; 3]) -> BgrFrame {
 }
 
 fn params(effect: &str, time_sec: f64) -> EffectParams {
-    EffectParams {
-        effect_type: effect.to_string(),
-        time_sec,
-        duration_sec: 3.0,
-        intensity: 100.0,
-        speed: 1.0,
-    }
+    EffectParams::new(effect, time_sec, 3.0, 100.0, 1.0)
 }
 
 /// 平均亮度，用来判断是否「整幅变黑/变白」。
@@ -253,4 +247,96 @@ fn general_assertions_cover_every_declared_effect() {
     assert_eq!(GENERIC_CHECKS.len(), 5);
     assert!(!EFFECTS.is_empty(), "目录里一个特效都没有？");
     println!("通用断言覆盖 {} 个特效 × 5 个时间点", EFFECTS.len());
+}
+/// **专属参数必须真的影响画面** —— 这是整条链路（catalog 声明 → 配置存储 →
+/// 参数解析 → 实现读取）是否真接通的唯一证据。
+///
+/// 光声明参数不改实现，界面会出现一个「调了没用」的滑杆，比没有更糟。
+#[test]
+fn declared_params_change_pixels() {
+    let frame = probe_frame(160, 96);
+
+    // 故障抖动的「错位幅度」：拉到最小和最大，画面必须不同
+    let base = EffectParams::new("故障抖动", 0.37, 3.0, 100.0, 1.0);
+    let mut strong = base.clone();
+    strong.extra.insert("shift".into(), serde_json::json!(200.0));
+    let weak = base.clone();
+    let at_weak = apply_single_image_effect(&frame, &weak);
+    let at_strong = apply_single_image_effect(&frame, &strong);
+    let diff = mean_diff(&at_weak, &at_strong);
+    assert!(
+        diff > 0.5,
+        "「故障抖动」的错位幅度参数没起作用（强弱两档平均差只有 {diff:.3}）"
+    );
+
+    // 滚动快门的「滚动条数」：同理
+    let base = EffectParams::new("滚动快门", 0.2, 3.0, 100.0, 1.0);
+    let mut many = base.clone();
+    many.extra.insert("bands".into(), serde_json::json!(16.0));
+    let few = base.clone();
+    let at_few = apply_single_image_effect(&frame, &few);
+    let at_many = apply_single_image_effect(&frame, &many);
+    let diff = mean_diff(&at_few, &at_many);
+    assert!(
+        diff > 0.5,
+        "「滚动快门」的滚动条数参数没起作用（少/多两档平均差只有 {diff:.3}）"
+    );
+}
+
+/// 不传专属参数时，结果必须与「显式传默认值」完全一致。
+///
+/// 这条保证「老配置（没有 effect_params 字段）照常工作」——
+/// 缺省路径不能和默认值路径产生任何偏差。
+#[test]
+fn missing_params_match_explicit_defaults() {
+    let frame = probe_frame(120, 72);
+    for effect in ["故障抖动", "滚动快门"] {
+        let bare = EffectParams::new(effect, 0.31, 3.0, 100.0, 1.0);
+        let explicit = match effect {
+            "故障抖动" => {
+                let mut params = bare.clone();
+                params.extra.insert("shift".into(), serde_json::json!(100.0));
+                params.extra.insert("freq".into(), serde_json::json!(3.0));
+                params
+            }
+            _ => {
+                let mut params = bare.clone();
+                params.extra.insert("bands".into(), serde_json::json!(4.0));
+                params
+            }
+        };
+        let at_bare = apply_single_image_effect(&frame, &bare);
+        let at_explicit = apply_single_image_effect(&frame, &explicit);
+        assert_eq!(
+            at_bare.data, at_explicit.data,
+            "「{effect}」缺省参数与显式默认值的结果不一致 —— 老配置会变样"
+        );
+    }
+}
+
+/// 声明了参数的特效，参数键必须与实现里读的键一致。
+///
+/// 声明写 `"shift"` 而实现读 `"offset"` 这种错，界面照样显示滑杆、
+/// 用户照样能拖，但拖了没用。这条测试就是防它。
+#[test]
+fn declared_param_keys_are_exercised_by_implementations() {
+    use super::catalog::{find_effect, EFFECTS};
+    let source = include_str!("effects.rs");
+
+    for item in EFFECTS {
+        for spec in item.params {
+            // 实现里必须出现该键名
+            let needle = format!("\"{}\"", spec.key);
+            assert!(
+                source.contains(&needle),
+                "「{}」声明了参数「{}」，但 effects.rs 里没读它 —— 界面上会是个调了没用的滑杆",
+                item.id,
+                spec.key
+            );
+        }
+        // 声明了参数的特效，必须能在 catalog 里查到（自洽性）
+        if !item.params.is_empty() {
+            assert!(find_effect(item.id).is_some());
+        }
+    }
 }

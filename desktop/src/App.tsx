@@ -43,6 +43,7 @@ import type {
   SystemSnapshot,
   ValidationIssue,
   VideoConfig,
+  EffectParamSchema,
   Workspace,
 } from "./types";
 import "./App.css";
@@ -199,6 +200,9 @@ export default function App() {
     health: null,
   });
   const [system, setSystem] = useState<SystemSnapshot | null>(null);
+  // 特效/转场的专属参数定义，启动时向引擎拉一次。
+  // 空对象也能跑：界面只是不显示额外控件，用通用的强度/速度。
+  const [paramSchema, setParamSchema] = useState<EffectParamSchema>({});
   const [ready, setReady] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
@@ -326,6 +330,14 @@ export default function App() {
           defaults = await engine.call<VideoConfig>("default_config");
           if (!cancelled) setEngineState({ connected: true, connecting: false, previewOnly: false, message: "本地引擎正常", health });
           await refreshSystem();
+          // 拉一次特效参数定义；失败就保持空表，界面退回通用的强度/速度，
+          // 不影响任何已有功能。
+          try {
+            const schema = await engine.call<EffectParamSchema>("effect_param_schema", {});
+            if (!cancelled) setParamSchema(schema ?? {});
+          } catch {
+            if (!cancelled) setParamSchema({});
+          }
         } else if (!cancelled) {
           setEngineState({ connected: false, connecting: false, previewOnly: true, message: "界面预览模式", health: null });
         }
@@ -389,6 +401,31 @@ export default function App() {
     patchWorkspace(workspace.id, { validationIssues: result.issues, validationErrors: result.issues.map((issue) => issue.message) });
     return { valid: result.valid, errors: result.issues.map((issue) => issue.message) };
   }, [patchWorkspace]);
+
+  /**
+   * 改某个特效/转场的专属参数。
+   *
+   * 存进 `config.effect_params[特效id][参数键]` —— 按特效分开存，
+   * 所以切换特效时各自的调参不会互相覆盖。
+   */
+  const updateEffectParam = useCallback(
+    (itemId: string, key: string, value: number | boolean) => {
+      setWorkspaces((current) => current.map((workspace) => {
+        if (workspace.id !== activeId) return workspace;
+        const existing = workspace.config.effect_params ?? {};
+        const forItem = existing[itemId] ?? {};
+        return {
+          ...workspace,
+          config: {
+            ...workspace.config,
+            effect_params: { ...existing, [itemId]: { ...forItem, [key]: value } },
+          },
+          dirty: true,
+        };
+      }));
+    },
+    [activeId],
+  );
 
   const updateConfig = useCallback(<K extends keyof VideoConfig>(key: K, value: VideoConfig[K]) => {
     if (key === "input_dir") {
@@ -1010,6 +1047,8 @@ export default function App() {
           validationIssues={activeWorkspace.validationIssues}
           onOpenLibraryTab={openLibraryTab}
           subfolderScan={subfolderScans[activeWorkspace.id] ?? null}
+          paramSchema={paramSchema}
+          onParamChange={updateEffectParam}
         />
       </main>
 

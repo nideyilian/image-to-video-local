@@ -106,6 +106,9 @@ pub struct ScriptOptions {
     pub effect_type: String,
     pub effect_intensity: f64,
     pub effect_speed: f64,
+    /// 该特效的专属参数（来自配置，由 `effect_params::resolve` 算出）。
+    /// 空表表示没设过，实现代码会用各自的默认值。
+    pub effect_extra: serde_json::Map<String, serde_json::Value>,
     /// 是否有转场（除了 `transition_frames > 0`，还要看类型不是「无转场」）。
     pub transition_active: bool,
 }
@@ -150,6 +153,7 @@ pub fn build_script(options: &ScriptOptions) -> FrameScript {
                                 duration_sec,
                                 intensity: options.effect_intensity,
                                 speed: options.effect_speed,
+                                extra: options.effect_extra.clone(),
                             },
                         },
                     });
@@ -206,6 +210,7 @@ mod tests {
             effect_type: "无特效".to_string(),
             effect_intensity: 100.0,
             effect_speed: 1.0,
+            effect_extra: serde_json::Map::new(),
             transition_active: true,
         }
     }

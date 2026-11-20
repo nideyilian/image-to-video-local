@@ -233,6 +233,49 @@ pub struct EffectParams {
     /// 强度百分比（默认 100）。
     pub intensity: f64,
     pub speed: f64,
+    /// 该特效的**专属参数**（来自 `catalog` 的声明，值由 `effect_params` 解析）。
+    ///
+    /// 用 `serde_json::Map` 而不是固定字段，是因为每个特效的参数各不相同：
+    /// 「故障抖动」要色彩偏移量，「滚动快门」要滚动条数。
+    /// 实现代码用 [`EffectParams::param`] 取，取不到就用自己给的默认值 ——
+    /// 这样旧配置（没有这个字段）照样能跑。
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl EffectParams {
+    /// 不带专属参数的构造器。测试和预览用它，避免每次都要写一个空 Map。
+    pub fn new(
+        effect_type: impl Into<String>,
+        time_sec: f64,
+        duration_sec: f64,
+        intensity: f64,
+        speed: f64,
+    ) -> Self {
+        EffectParams {
+            effect_type: effect_type.into(),
+            time_sec,
+            duration_sec,
+            intensity,
+            speed,
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    /// 取一个专属参数，缺省时用 `fallback`。
+    ///
+    /// 只接受数字，其它类型（字符串、null）一律当缺省 —— 渲染代码不该
+    /// 因为配置里写错一个字就崩。
+    pub fn param(&self, key: &str, fallback: f64) -> f64 {
+        self.extra
+            .get(key)
+            .and_then(|value| match value {
+                serde_json::Value::Number(number) => number.as_f64(),
+                serde_json::Value::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
+                _ => None,
+            })
+            .filter(|value| value.is_finite())
+            .unwrap_or(fallback)
+    }
 }
 
 /// 与 `apply_single_image_effect()` 等价。
@@ -633,8 +676,13 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
 
         // ---------- 通道 / 模糊 / 边缘类 ----------
         "故障抖动" => {
-            let shift =
-                ((3.0 + 7.0 * intensity_scale) * (2.0 * PI * 3.0 * speed * time_sec).sin()) as i64;
+            // 专属参数（catalog 声明）：错位幅度是百分比，频率是倍数。
+            // 缺省值时与改造前完全一致（100% / 3.0 Hz），所以旧配置画面不变。
+            let shift_scale = params.param("shift", 100.0) / 100.0;
+            let glitch_freq = params.param("freq", 3.0).clamp(0.1, 20.0);
+            let shift = ((3.0 + 7.0 * intensity_scale) * shift_scale
+                * (2.0 * PI * glitch_freq * speed * time_sec).sin())
+                as i64;
             let mut glitch = frame.clone();
             // B/R 通道反向水平平移（对应 np.roll(r, shift) / np.roll(b, -shift)）
             for y in 0..frame.height {
@@ -740,11 +788,12 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
         }
 
         "滚动快门" => {
+            // 专属参数：滚动条数（默认 4.0，与改造前一致）
+            let bands = params.param("bands", 4.0).clamp(0.5, 40.0);
             let mut out = frame.clone();
             for y in 0..frame.height {
-                let phase = 2.0
-                    * PI
-                    * ((y as f64 / 1.0f64.max(height)) * 4.0 + speed * time_sec * 2.0);
+                let phase =
+                    2.0 * PI * ((y as f64 / 1.0f64.max(height)) * bands + speed * time_sec * 2.0);
                 let shift = ((3.0 + 10.0 * intensity_scale) * phase.sin()) as i64;
                 for x in 0..frame.width {
                     let src = roll_index(x as i64 - shift, frame.width as i64);
@@ -1265,13 +1314,7 @@ mod tests {
     }
 
     fn params(effect: &str, time_sec: f64) -> EffectParams {
-        EffectParams {
-            effect_type: effect.to_string(),
-            time_sec,
-            duration_sec: 3.0,
-            intensity: 100.0,
-            speed: 1.0,
-        }
+        EffectParams::new(effect, time_sec, 3.0, 100.0, 1.0)
     }
 
     #[test]

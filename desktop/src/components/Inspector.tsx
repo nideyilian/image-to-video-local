@@ -10,10 +10,113 @@ import {
   WATERMARK_POSITIONS,
   WATERMARK_SIZE_MODES,
 } from "../constants";
-import type { SubfolderScan, ValidationIssue, VideoConfig, WatermarkLayer } from "../types";
+import type {
+  EffectParamSchema,
+  SubfolderScan,
+  ValidationIssue,
+  VideoConfig,
+  WatermarkLayer,
+} from "../types";
 import { Field, PathField } from "./Controls";
 
 type ConfigKey = keyof VideoConfig;
+
+/**
+ * 特效/转场的**专属参数控件**。
+ *
+ * 这些控件不是写死的，而是按引擎返回的 `EffectParamSchema` 生成：
+ * 哪个特效能调什么，由 `src-tauri/src/render/catalog.rs` 声明，
+ * 加参数只需要改那一个文件，界面自动跟上。
+ *
+ * 没声明参数的（大多数特效）不显示任何额外控件，保持原来的强度/速度两栏。
+ */
+function EffectParamControls({
+  itemId,
+  schema,
+  values,
+  disabled,
+  onChange,
+}: {
+  itemId: string;
+  schema: EffectParamSchema;
+  values: Record<string, number | boolean>;
+  disabled: boolean;
+  onChange: (key: string, value: number | boolean) => void;
+}) {
+  const specs = schema[itemId];
+  if (!specs || specs.length === 0) return null;
+
+  return (
+    <>
+      {specs.map((spec) => {
+        const current = values[spec.key] ?? spec.value;
+        if (spec.kind === "toggle") {
+          return (
+            <Field key={spec.key} label={spec.label}>
+              <input
+                type="checkbox"
+                disabled={disabled}
+                checked={Boolean(current)}
+                onChange={(event) => onChange(spec.key, event.target.checked)}
+              />
+            </Field>
+          );
+        }
+        if (spec.kind === "choice") {
+          const index = Number(current) || 0;
+          return (
+            <Field key={spec.key} label={spec.label}>
+              <select
+                disabled={disabled}
+                value={String(index)}
+                onChange={(event) => onChange(spec.key, Number(event.target.value))}
+              >
+                {spec.choices.map((label, position) => (
+                  <option key={label} value={position}>{label}</option>
+                ))}
+              </select>
+            </Field>
+          );
+        }
+        // percent / factor 都是数字输入，只是步长与单位不同
+        const step = spec.kind === "percent" ? 1 : 0.1;
+        return (
+          <Field key={spec.key} label={spec.kind === "percent" ? `${spec.label}（%）` : spec.label}>
+            <input
+              type="number"
+              disabled={disabled}
+              min={spec.min}
+              max={spec.max}
+              step={step}
+              value={Number(current)}
+              onChange={(event) => onChange(spec.key, Number(event.target.value))}
+            />
+          </Field>
+        );
+      })}
+    </>
+  );
+}
+
+/**
+ * 参数当前值：从配置的 `effect_params[特效id]` 里取，缺的用声明默认值。
+ *
+ * 与后端 `effect_params::resolve_value` 保持同一套规则 —— 界面显示什么，
+ * 渲染就用什么，不会出现「看着是 60，实际跑的是默认值」。
+ */
+function currentParamValues(
+  config: VideoConfig,
+  itemId: string,
+  schema: EffectParamSchema,
+): Record<string, number | boolean> {
+  const stored = config.effect_params?.[itemId] ?? {};
+  const specs = schema[itemId] ?? [];
+  const result: Record<string, number | boolean> = { ...stored };
+  for (const spec of specs) {
+    if (!(spec.key in result)) result[spec.key] = spec.value;
+  }
+  return result;
+}
 
 const INSPECTOR_TABS = [
   { id: "basic", label: "基础" },
@@ -191,6 +294,8 @@ export function Inspector({
   validationIssues,
   onOpenLibraryTab,
   subfolderScan,
+  paramSchema,
+  onParamChange,
 }: {
   config: VideoConfig;
   onChange: <K extends ConfigKey>(key: K, value: VideoConfig[K]) => void;
@@ -202,6 +307,10 @@ export function Inspector({
   onOpenLibraryTab: (tab: "effect" | "transition" | "bgm" | "watermark") => void;
   /** 「按子文件夹抽取」的扫描明细；其它选图方式或尚未读取时为 null */
   subfolderScan: SubfolderScan | null;
+  /** 各特效的专属参数定义（引擎返回）。空对象表示一个都没声明。 */
+  paramSchema: EffectParamSchema;
+  /** 改某个特效的某个专属参数。 */
+  onParamChange: (itemId: string, key: string, value: number | boolean) => void;
 }) {
   const [layerPage, setLayerPage] = useState(0);
   // 「按子文件夹抽取」下每个视频的图片数由子文件夹个数决定，「图片数」这一栏不参与计算
@@ -373,6 +482,13 @@ export function Inspector({
             <SegmentedControl label="模式" value={transitionMode} options={FEATURE_MODE_OPTIONS} onChange={changeTransitionMode} />
             <div className="parameter-grid parameter-grid-motion">
               <Field label="当前转场" wide><select disabled={transitionMode !== "fixed"} value={config.transition_type} onChange={(event) => onChange("transition_type", event.target.value)}>{TRANSITIONS.map((value) => <option key={value}>{value}</option>)}</select></Field>
+              <EffectParamControls
+                itemId={config.transition_type}
+                schema={paramSchema}
+                values={currentParamValues(config, config.transition_type, paramSchema)}
+                disabled={transitionMode !== "fixed"}
+                onChange={(key, value) => onParamChange(config.transition_type, key, value)}
+              />
             </div>
             <div className="random-pool-row"><span><small>随机转场池</small><strong>已选 {config.enabled_transitions.length} / {TRANSITIONS.length}</strong></span><button type="button" className="inspector-config-button" onClick={() => onOpenLibraryTab("transition")}><LibraryBig size={14} />在素材库配置</button></div>
           </section>
@@ -384,6 +500,13 @@ export function Inspector({
               <Field label="当前特效" wide><select disabled={effectMode !== "fixed"} value={config.video_effect_type} onChange={(event) => onChange("video_effect_type", event.target.value)}><option>无特效</option>{VIDEO_EFFECTS.map((value) => <option key={value}>{value}</option>)}</select></Field>
               <Field label="强度（%）"><input disabled={effectMode === "off"} type="number" min={1} max={9999} step={1} value={config.video_effect_intensity} onChange={(event) => onChange("video_effect_intensity", Number(event.target.value))} /></Field>
               <Field label="速度"><input disabled={effectMode === "off"} type="number" min={0.01} max={9999} step={0.1} value={config.video_effect_speed} onChange={(event) => onChange("video_effect_speed", Number(event.target.value))} /></Field>
+              <EffectParamControls
+                itemId={config.video_effect_type}
+                schema={paramSchema}
+                values={currentParamValues(config, config.video_effect_type, paramSchema)}
+                disabled={effectMode === "off"}
+                onChange={(key, value) => onParamChange(config.video_effect_type, key, value)}
+              />
             </div>
             <div className="random-pool-row"><span><small>随机特效池</small><strong>已选 {config.enabled_video_effects.length} / {VIDEO_EFFECTS.length}</strong></span><button type="button" className="inspector-config-button" onClick={() => onOpenLibraryTab("effect")}><LibraryBig size={14} />在素材库配置</button></div>
           </section>

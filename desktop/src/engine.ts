@@ -55,6 +55,8 @@ const NATIVE_METHODS = new Set([
   // 其余由原生侧返回 handled=false 交回旧引擎
   "preview_effect_frame",
   "effect_preview_animation",
+  // 特效/转场的参数元信息：界面据此生成专属控件（见 render/catalog.rs）
+  "effect_param_schema",
 ]);
 
 /** `handled: false` = Rust 不接这个请求（未迁移 / 需要旧引擎的语义），交给 sidecar。 */

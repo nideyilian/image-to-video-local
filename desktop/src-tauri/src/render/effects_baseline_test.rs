@@ -57,13 +57,7 @@ fn collect_hashes() -> Vec<(String, String)> {
     let mut rows = Vec::new();
     for effect in PROBE_EFFECTS {
         for step in 0..5 {
-            let params = EffectParams {
-                effect_type: effect.to_string(),
-                time_sec: step as f64 * 0.13,
-                duration_sec: 3.0,
-                intensity: 100.0,
-                speed: 1.0,
-            };
+            let params = EffectParams::new(effect, step as f64 * 0.13, 3.0, 100.0, 1.0);
             let output = apply_single_image_effect(&frame, &params);
             rows.push((
                 format!("{effect}@{step}"),
@@ -134,13 +128,7 @@ fn resize_effects_stay_visually_equal() {
     let frame = test_frame(160, 96);
     for effect in RESIZE_EFFECTS {
         for step in 0..5 {
-            let params = EffectParams {
-                effect_type: effect.to_string(),
-                time_sec: step as f64 * 0.13,
-                duration_sec: 3.0,
-                intensity: 100.0,
-                speed: 1.0,
-            };
+            let params = EffectParams::new(effect, step as f64 * 0.13, 3.0, 100.0, 1.0);
             let output = apply_single_image_effect(&frame, &params);
             // 至少保证输出尺寸正确、不是全黑
             assert_eq!((output.width, output.height), (frame.width, frame.height));

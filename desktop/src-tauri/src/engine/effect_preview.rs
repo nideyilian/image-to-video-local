@@ -416,6 +416,8 @@ pub fn render_frame(params: &Map<String, Value>) -> Result<Option<Value>, String
 
     if effect_enabled && !transition_active {
         let effect_params = effects::EffectParams {
+            // 预览走的是通用强度/速度，不带专属参数 —— 与正式渲染的默认行为一致
+            extra: serde_json::Map::new(),
             effect_type: effect_type.clone(),
             time_sec,
             duration_sec: static_duration,

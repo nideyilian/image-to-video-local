@@ -376,7 +376,8 @@ pub const EFFECTS: &[ItemSpec] = &[
         id: "滚动快门",
         group: "变形扭曲",
         summary: "逐行位移，模拟果冻效应",
-        params: &[],
+        // 滚动条数原来硬编码为 4.0，改小会变成横向渐变、改大会变成细密条纹。
+        params: &[ParamSpec::factor("bands", "滚动条数", 4.0)],
         aliases: &[],
     },
     // ---- 风格化 ----
@@ -384,7 +385,12 @@ pub const EFFECTS: &[ItemSpec] = &[
         id: "故障抖动",
         group: "风格化",
         summary: "数码故障感的错位与抖动",
-        params: &[],
+        // 这两个参数直击原实现的硬编码：位移幅度原来写死为
+        // `3.0 + 7.0 * intensity`，抖动频率写死为 3.0 Hz。
+        params: &[
+            ParamSpec::percent("shift", "错位幅度", 100.0),
+            ParamSpec::factor("freq", "抖动频率", 3.0),
+        ],
         aliases: &[],
     },
     ItemSpec {

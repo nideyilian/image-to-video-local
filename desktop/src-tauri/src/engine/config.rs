@@ -168,6 +168,13 @@ pub fn normalize_config(raw: Option<&Value>) -> Value {
         }
         target.insert("custom_prefix".to_string(), json!(prefix));
         target.insert("bgm_files".to_string(), Value::Array(bgm_files));
+        // 特效专属参数：缺省给空表。结构是「特效 id → 参数键 → 值」，
+        // 没设过的由 `effect_params::resolve` 用 catalog 里的默认值兜底，
+        // 所以这里不需要预填任何内容 —— 预填反而会让「用户没改过」和
+        // 「用户改成了默认值」无法区分。
+        if !target.contains_key("effect_params") {
+            target.insert("effect_params".to_string(), json!({}));
+        }
     }
     config
 }
@@ -402,7 +409,8 @@ mod tests {
     #[test]
     fn default_config_matches_expected_shape() {
         let config = default_config();
-        assert_eq!(config.as_object().map(|map| map.len()), Some(46));
+        // 46 → 47：新增 effect_params（特效专属参数，2026-11-20）
+        assert_eq!(config.as_object().map(|map| map.len()), Some(47));
         assert_eq!(config["resolution_preset"], "1280x720");
         assert_eq!(config["image_selection_mode"], "随机选择");
         assert_eq!(

@@ -16,6 +16,7 @@ pub mod batch;
 pub mod codec;
 pub mod compositor;
 pub mod catalog;
+pub mod effect_params;
 pub mod effects;
 pub mod frame_script;
 pub mod parallel;
@@ -763,13 +764,8 @@ mod parity_effects {
         let mut report = Vec::new();
         for (index, effect) in effects.iter().enumerate() {
             for (time_index, time_sec) in times.iter().enumerate() {
-                let params = effects::EffectParams {
-                    effect_type: effect.to_string(),
-                    time_sec: *time_sec,
-                    duration_sec: 3.0,
-                    intensity: 100.0,
-                    speed: 1.0,
-                };
+                let params =
+                    effects::EffectParams::new(effect.to_string(), *time_sec, 3.0, 100.0, 1.0);
                 let result = effects::apply_single_image_effect(&frame, &params);
                 let file = format!("{index:02}__{time_index:02}.png");
                 result
@@ -908,13 +904,7 @@ mod parity_effects_all {
                 .unwrap_or("无特效")
                 .to_string();
             let time_sec = case.get("time").and_then(Value::as_f64).unwrap_or(0.0);
-            let params = effects::EffectParams {
-                effect_type: effect.clone(),
-                time_sec,
-                duration_sec: 3.0,
-                intensity: 100.0,
-                speed: 1.0,
-            };
+            let params = effects::EffectParams::new(effect.clone(), time_sec, 3.0, 100.0, 1.0);
             let result = effects::apply_single_image_effect(&frame, &params);
             let file = format!("{index:03}.png");
             result

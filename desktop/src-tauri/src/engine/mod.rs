@@ -340,6 +340,11 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
         "scan_subfolders" => scan_subfolders(&object),
         "scan_subfolder_groups" => scan_subfolder_groups(&object),
         "default_config" => DispatchResponse::ok(config::default_config()),
+        // 特效/转场参数元信息：界面启动时拉一次，据此生成专属控件。
+        // 只有声明了参数的特效才会出现在结果里，其余仍用通用的强度/速度。
+        "effect_param_schema" => {
+            DispatchResponse::ok(super::render::effect_params::all_definitions())
+        }
         "normalize_config" => {
             DispatchResponse::ok(config::normalize_config(object.get("config")))
         }

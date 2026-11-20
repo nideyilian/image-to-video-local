@@ -1019,6 +1019,9 @@ class ImageToVideoTab:
                 "enabled_video_effects": self.get_enabled_video_effects(),
                 "video_effect_intensity": self.video_effect_intensity.get(),
                 "video_effect_speed": self.video_effect_speed.get(),
+                # 特效专属参数（按特效 id 分组）。旧界面没有编辑这些的控件，
+                # 原样透传已有的值，避免「用新界面调好、用旧界面打开一次就丢」。
+                "effect_params": dict(getattr(self, "_effect_params", None) or {}),
                 "effect_preview_time": self.effect_preview_time.get(),
                 "use_bgm": self.use_bgm.get(),
                 "bgm_dir": self.bgm_dir.get(),

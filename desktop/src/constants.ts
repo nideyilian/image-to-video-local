@@ -66,6 +66,8 @@ export const FALLBACK_CONFIG: VideoConfig = {
   enabled_video_effects: [...VIDEO_EFFECTS],
   video_effect_intensity: 100,
   video_effect_speed: 1.3,
+  // 各特效的专属参数，按「特效 id → 参数键 → 值」存；空表表示全用声明默认值
+  effect_params: {},
   use_bgm: false,
   bgm_dir: "",
   bgm_files: [],

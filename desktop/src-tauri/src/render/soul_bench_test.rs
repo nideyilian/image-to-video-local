@@ -45,13 +45,7 @@ fn soul_out_cost_breakdown() {
     let source = frame(1920, 1080);
     let (w, h) = (source.width as f64, source.height as f64);
 
-    let params = EffectParams {
-        effect_type: "灵魂出窍".to_string(),
-        time_sec: 0.5,
-        duration_sec: 3.0,
-        intensity: 100.0,
-        speed: 1.0,
-    };
+    let params = EffectParams::new("灵魂出窍", 0.5, 3.0, 100.0, 1.0);
     bench("完整 灵魂出窍", 10, || {
         std::hint::black_box(apply_single_image_effect(&source, &params));
     });

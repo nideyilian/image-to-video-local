@@ -97,6 +97,16 @@ def build_default_config() -> dict[str, Any]:
         "enabled_video_effects": DEFAULT_VIDEO_EFFECTS.copy(),
         "video_effect_intensity": 100.0,
         "video_effect_speed": 1.3,
+        # 各特效/转场的专属参数，按「特效 id → 参数键 → 值」两级存。
+        # 空表表示全用 catalog 里的声明默认值 —— 不预填，这样能区分
+        # 「用户没改过」和「用户改成了默认值」。
+        # 结构与消费方见 desktop/src-tauri/src/render/effect_params.rs
+        "effect_params": {},
+        # 各特效/转场的专属参数，按「特效 id → 参数键 → 值」两级存。
+        # 空表表示全用 catalog 里的声明默认值 —— 不预填，这样能区分
+        # 「用户没改过」和「用户改成了默认值」。
+        # 结构与消费方见 desktop/src-tauri/src/render/effect_params.rs
+        "effect_params": {},
         "use_bgm": False,
         "bgm_dir": "",
         "bgm_files": [],

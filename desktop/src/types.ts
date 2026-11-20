@@ -32,6 +32,14 @@ export type VideoConfig = {
   enabled_video_effects: string[];
   video_effect_intensity: number;
   video_effect_speed: number;
+  /**
+   * 各特效/转场的**专属参数**，按「特效 id → 参数键 → 值」两级存。
+   *
+   * 为什么要嵌套而不是拉平成 `effect_xxx` 一堆字段：切换特效时各自的调参
+   * 互不干扰 —— 调好「故障抖动」再切到「镜头呼吸」，切回来设置还在。
+   * 结构见 `src-tauri/src/render/effect_params.rs`。
+   */
+  effect_params: Record<string, Record<string, number | boolean>>;
   use_bgm: boolean;
   bgm_dir: string;
   bgm_files: string[];
@@ -308,3 +316,19 @@ export type LibraryExtractSummary = {
   cancelled: number;
   total: number;
 };
+
+/** 一个特效专属参数的定义（由引擎 `effect_param_schema` 返回）。 */
+export type EffectParamSpec = {
+  key: string;
+  label: string;
+  /** percent = 百分比滑杆；factor = 倍数；choice = 下拉；toggle = 开关 */
+  kind: "percent" | "factor" | "choice" | "toggle";
+  min: number;
+  max: number;
+  default: number;
+  choices: string[];
+  value: number | boolean;
+};
+
+/** 全部特效的参数定义，键是特效 id。只有声明了参数的特效才在里面。 */
+export type EffectParamSchema = Record<string, EffectParamSpec[]>;
