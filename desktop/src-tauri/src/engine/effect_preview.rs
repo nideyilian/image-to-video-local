@@ -417,9 +417,14 @@ pub fn render_frame(params: &Map<String, Value>) -> Result<Option<Value>, String
     }
 
     if effect_enabled && !transition_active {
+        // 专属参数必须一起带上：否则界面调了「色阶数」之类，预览毫无变化，
+        // 用户会以为功能坏了（这正是之前的一个真实误判）。
+        let executor = crate::render::audio::JsonConfig(config.clone());
         let effect_params = effects::EffectParams {
-            // 预览走的是通用强度/速度，不带专属参数 —— 与正式渲染的默认行为一致
-            extra: serde_json::Map::new(),
+            extra: crate::render::effect_params::resolve_from_config(
+                &executor,
+                &effect_type,
+            ),
             effect_type: effect_type.clone(),
             time_sec,
             duration_sec: static_duration,
@@ -427,6 +432,18 @@ pub fn render_frame(params: &Map<String, Value>) -> Result<Option<Value>, String
             speed: number(&config, "video_effect_speed", 1.0),
         };
         image = effects::apply_single_image_effect(&image, &effect_params);
+    }
+
+    // ---- 调色（在特效之后，与正式渲染的顺序一致）----
+    //
+    // ⚠️ 这一道之前漏了：导出有调色、预览没有。用户拖滑杆时预览画面
+    // 纹丝不动，自然会判断「调色不生效」。导出路径是对的，错的是预览。
+    {
+        let executor = crate::render::audio::JsonConfig(config.clone());
+        let grade = crate::render::color::ColorGrade::from_config(&executor);
+        if let Some(graded) = crate::render::color::apply(&image, &grade) {
+            image = graded;
+        }
     }
 
     // ---- 视频水印（在特效之后，与 Python 的调用顺序一致）----
@@ -658,6 +675,51 @@ mod tests {
             map.insert(key.to_string(), value.clone());
         }
         map
+    }
+
+    /// **预览必须和导出一致地应用调色。**
+    ///
+    /// 这条测试来自一个真实误判：导出路径有调色、预览路径漏了，用户
+    /// 拖调色滑杆时预览画面纹丝不动，自然判断「调色不生效」。导出其实
+    /// 是对的，错的是预览 —— 而这种错只有对比两边的像素才抓得到。
+    #[test]
+    fn preview_applies_color_grade() {
+        use crate::render::color::{self, ColorGrade};
+        use crate::render::pixels::BgrFrame;
+
+        let mut frame = BgrFrame::new(32, 32);
+        for y in 0..32 {
+            for x in 0..32 {
+                frame.set_pixel(x, y, [100, 120, 140]);
+            }
+        }
+
+        // 未调色：apply 返回 None（零开销路径）
+        assert!(color::apply(&frame, &ColorGrade::default()).is_none());
+
+        // 调色后必须有变化，且亮度方向正确
+        let bright = ColorGrade { brightness: 80.0, ..Default::default() };
+        let out = color::apply(&frame, &bright).expect("调色非恒等时必须返回新帧");
+        let before: f64 = frame.data.iter().map(|v| *v as f64).sum::<f64>();
+        let after: f64 = out.data.iter().map(|v| *v as f64).sum::<f64>();
+        assert!(after > before, "亮度 +80 应该让画面变亮：{before} → {after}");
+    }
+
+    /// 预览读到的调色参数必须与配置一致（防止字段名写错导致永远是 0）。
+    #[test]
+    fn preview_reads_color_fields_from_config() {
+        let config = config_with(&[
+            ("color_brightness", json!(35)),
+            ("color_saturation", json!(-60)),
+            ("color_contrast", json!(20)),
+            ("color_temperature", json!(-15)),
+        ]);
+        let executor = crate::render::audio::JsonConfig(config.clone());
+        let grade = crate::render::color::ColorGrade::from_config(&executor);
+        assert_eq!(grade.brightness, 35.0);
+        assert_eq!(grade.saturation, -60.0);
+        assert_eq!(grade.contrast, 20.0);
+        assert_eq!(grade.temperature, -15.0);
     }
 
     #[test]

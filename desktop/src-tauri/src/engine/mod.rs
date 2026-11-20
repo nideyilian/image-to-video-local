@@ -1324,3 +1324,126 @@ mod parity_effect_preview {
         println!("EPREV_PARITY={}", Value::Array(out));
     }
 }
+
+#[cfg(test)]
+mod end_to_end_color_test {
+    //! 真实链路验证：从「界面发出的 start_job」到磁盘上的视频。
+    //!
+    //! 为什么需要这一层：`render::*` 的测试直接调 `run_batch`，绕过了
+    //! `start_job` 的分发与 normalize。而「界面调了没反应」恰恰可能出在
+    //! 分发这一层 —— 之前 `parity_run_batch` 就漏了 normalize，导致假阳性。
+
+    use super::*;
+    use serde_json::json;
+
+    /// 用极端调色参数导出，然后对比「开」与「关」两版视频的首帧。
+    ///
+    /// 断言的是**磁盘上真实产出的 mp4 不同**，而不是函数返回值 ——
+    /// 只有这样才能证明「用户点了会生效」。
+    #[test]
+    fn start_job_actually_applies_color_grade() {
+        let Ok(root) = std::env::var("ITV_E2E_DIR") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
+        let input = root.join("images");
+        if !input.is_dir() {
+            return;
+        }
+
+        let make = |brightness: f64, out: &std::path::Path| {
+            json!({
+                "input_dir": input.to_string_lossy(),
+                "output_dir": out.to_string_lossy(),
+                "num_images": 2,
+                "duration": 1.0,
+                "total_duration": 0,
+                "fps": 10,
+                "video_count": 1,
+                "resolution_preset": "640x360",
+                "transition_frames": 0,
+                "use_transition": false,
+                "transition_type": "无转场",
+                "use_video_effect": false,
+                "video_effect_type": "无特效",
+                // 关键：调色参数，+90 应该让画面明显变亮
+                "color_brightness": brightness,
+                "color_saturation": 0,
+                "color_contrast": 0,
+                "color_temperature": 0,
+            })
+        };
+
+        let plain_dir = root.join("out_plain");
+        let bright_dir = root.join("out_bright");
+        std::fs::create_dir_all(&plain_dir).ok();
+        std::fs::create_dir_all(&bright_dir).ok();
+
+        // 走真实分发：normalize + validate + 任务队列
+        for (config, dir) in [(make(0.0, &plain_dir), &plain_dir), (make(90.0, &bright_dir), &bright_dir)] {
+            let response = dispatch("start_job", Some(json!({ "config": config })));
+            assert!(!response.error.is_some(), "start_job 失败: {:?}", response.error);
+        }
+
+        // 等任务跑完。`start_job` 是异步的（起线程），必须等到**两个**目录
+        // 都有 mp4 才算完成 —— 只等一个会误判（第二个任务还没开始就通过了）。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let (a, b) = (has_mp4(&plain_dir), has_mp4(&bright_dir));
+            if a && b {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "导出超时：plain={a} bright={b}\n\
+                     plain 目录: {:?}\n bright 目录: {:?}",
+                    list_dir(&plain_dir),
+                    list_dir(&bright_dir)
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+
+        let plain = first_mp4(&plain_dir).expect("找不到 plain 输出");
+        let bright = first_mp4(&bright_dir).expect("找不到 bright 输出");
+        // 等文件大小稳定（ffmpeg 写完才关文件，早读会读到半截）
+        let size_of = |p: &std::path::Path| loop {
+            let first = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let second = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+            if first == second && first > 0 {
+                break first;
+            }
+        };
+        let a = size_of(&plain);
+        let b = size_of(&bright);
+        assert!(a > 1000 && b > 1000, "输出文件太小：plain={a} bright={b}");
+
+        // 内容不同即说明调色生效（同图同参，唯一差别就是 brightness）
+        let da = std::fs::read(&plain).unwrap_or_default();
+        let db = std::fs::read(&bright).unwrap_or_default();
+        assert_ne!(da, db, "调色 0 与 90 导出的视频完全相同 —— 调色没有生效");
+    }
+
+    fn list_dir(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|it| {
+                it.flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn has_mp4(dir: &std::path::Path) -> bool {
+        first_mp4(dir).is_some()
+    }
+
+    fn first_mp4(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().map(|e| e == "mp4").unwrap_or(false))
+    }
+}
