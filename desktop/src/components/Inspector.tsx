@@ -105,6 +105,60 @@ function EffectParamControls({
  * 渲染就用什么，不会出现「看着是 60，实际跑的是默认值」。
  */
 /**
+ * 调色滑杆。
+ *
+ * 为什么是滑杆不是输入框：调色是**试错型操作** —— 用户不知道 -40 和 -30
+ * 差多少，得边拖边看。输入框要「想一个数 → 输入 → 回车 → 看效果 → 再改」，
+ * 一轮两秒；滑杆是连续反馈，拖到满意就松手。
+ *
+ * 双击归零：比起找「重置」按钮再点，直接双击那个滑杆更快，而且只重置
+ * 这一项、不牵连其它三项。
+ */
+function ColorSlider({
+  label,
+  lowLabel,
+  highLabel,
+  field,
+  config,
+  onChange,
+}: {
+  label: string;
+  /** 滑杆左端（-100）的含义，贴在滑杆左下方 */
+  lowLabel: string;
+  /** 滑杆右端（+100）的含义，贴在滑杆右下方 */
+  highLabel: string;
+  field: "color_brightness" | "color_contrast" | "color_saturation" | "color_temperature";
+  config: VideoConfig;
+  onChange: <K extends ConfigKey>(key: K, value: VideoConfig[K]) => void;
+}) {
+  const value = config[field];
+  return (
+    <label className="color-slider" onDoubleClick={() => onChange(field, 0)} title="双击归零">
+      <span className="color-slider-head">
+        <span>{label}</span>
+        <strong className={value === 0 ? "is-zero" : undefined}>
+          {value > 0 ? `+${value}` : value}
+        </strong>
+      </span>
+      <input
+        type="range"
+        className="range-input"
+        min={-100}
+        max={100}
+        step={1}
+        value={value}
+        onChange={(event) => onChange(field, Number(event.target.value))}
+        aria-label={label}
+      />
+      <span className="color-slider-ends">
+        <span>{lowLabel}</span>
+        <span>{highLabel}</span>
+      </span>
+    </label>
+  );
+}
+
+/**
  * 四个调色参数是否全为 0（即「不调色」）。
  *
  * 用来控制「重置」按钮是否可点 —— 全 0 时点了也没用，不如禁掉，
@@ -550,37 +604,12 @@ export function Inspector({
               顺序由渲染固定（亮度→对比度→饱和度→色温），这里是并列呈现，
               用户不需要关心先后。
             */}
-            <div className="parameter-grid parameter-grid-motion">
-              <Field label="亮度">
-                <input
-                  type="number" min={-100} max={100} step={1}
-                  value={config.color_brightness}
-                  onChange={(event) => onChange("color_brightness", Number(event.target.value))}
-                />
-              </Field>
-              <Field label="对比度">
-                <input
-                  type="number" min={-100} max={100} step={1}
-                  value={config.color_contrast}
-                  onChange={(event) => onChange("color_contrast", Number(event.target.value))}
-                />
-              </Field>
-              <Field label="饱和度">
-                <input
-                  type="number" min={-100} max={100} step={1}
-                  value={config.color_saturation}
-                  onChange={(event) => onChange("color_saturation", Number(event.target.value))}
-                />
-              </Field>
-              <Field label="色温">
-                <input
-                  type="number" min={-100} max={100} step={1}
-                  value={config.color_temperature}
-                  onChange={(event) => onChange("color_temperature", Number(event.target.value))}
-                />
-              </Field>
+            <div className="color-grade-grid">
+              <ColorSlider label="亮度" lowLabel="暗" highLabel="亮" field="color_brightness" config={config} onChange={onChange} />
+              <ColorSlider label="对比度" lowLabel="平" highLabel="硬" field="color_contrast" config={config} onChange={onChange} />
+              <ColorSlider label="饱和度" lowLabel="灰" highLabel="艳" field="color_saturation" config={config} onChange={onChange} />
+              <ColorSlider label="色温" lowLabel="冷" highLabel="暖" field="color_temperature" config={config} onChange={onChange} />
             </div>
-            <p className="inspector-hint">负值偏蓝/压暗，正值偏黄/提亮；四项全 0 表示不调色。</p>
           </section>
         </div>
 

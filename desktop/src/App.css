@@ -5555,3 +5555,62 @@ body.is-marquee-active {
 .library-smart-condition select:nth-child(2) { flex: 1; }
 .library-smart-condition select:nth-child(3),
 .library-smart-condition input { flex: 1; }
+
+/* 调色面板：四个纵向滑杆，两列排。
+   每项是「名称 + 当前值」一行、滑杆一行、方向提示一行 ——
+   方向提示比刻度重要：用户不需要知道 -100 是啥，只需要知道往左是暗。 */
+.color-grade-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  width: 100%;
+  max-width: 312px;
+  margin-top: 2px;
+}
+
+.color-slider {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  cursor: pointer;
+  /* 双击归零，避免选中文字 */
+  user-select: none;
+}
+
+.color-slider-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.color-slider-head strong {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--accent-strong);
+}
+
+/* 0 值时弱化，让「哪几项调过」一眼可见 */
+.color-slider-head strong.is-zero {
+  color: var(--faint);
+  font-weight: 500;
+}
+
+.color-slider input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+/* 两端标签分别贴滑杆左右 —— 文字的位置要对应滑杆上那个位置，
+   写成「暗 ← → 亮」挤在左边等于没有位置信息。 */
+.color-slider-ends {
+  display: flex;
+  justify-content: space-between;
+  /* 9px 在深色背景上几乎看不清；10px + muted 才够读 */
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.2px;
+}
