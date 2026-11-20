@@ -44,9 +44,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "resources/ffmpeg.exe"
-    ]
+    "resources": []
   },
   "plugins": {
     "updater": {

@@ -83,6 +83,9 @@ pub fn run() {
         .setup(|app| {
             // 任务队列靠它把 job.* 事件推给前端（前端在 engine.ts 里桥接到订阅者）
             engine::set_app_handle(app.handle().clone());
+            // 清掉旧版本释放过的 ffmpeg（升级后旧文件没用了，留着白占 87MB）。
+            // 放后台线程：扫一个目录不该拖慢启动。
+            std::thread::spawn(engine::embedded_ffmpeg::cleanup_stale);
             Ok(())
         })
         .run(tauri::generate_context!())

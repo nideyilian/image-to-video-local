@@ -1051,6 +1051,10 @@ mod parity_batch {
             None => return,
         };
         let mut hooks = compositor::CollectHooks::default();
+        // ⚠️ 必须先 normalize，与真实链路（start_job）保持一致。
+        // 之前直接拿原始 JSON 跑，绕过了 normalize 这一步 —— 导致
+        // 「内核测试通过、界面调了没反应」这种假阳性，排查方向全错。
+        let config = crate::engine::config::normalize_config(Some(&config));
         let outcome = batch::run_batch(&config, &ffmpeg, &mut hooks);
         println!("{}", crate::render::profile::report());
         println!(

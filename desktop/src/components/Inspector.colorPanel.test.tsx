@@ -119,4 +119,28 @@ describe("调色面板", () => {
     // FALLBACK_CONFIG 四个都是 0，应该全部带 is-zero
     expect(zeros.length, "四项全 0 时四个数字都该弱化").toBe(4);
   });
+
+  it("拖动滑杆会把值传给 onChange（用对字段名）", () => {
+    const { onChange } = renderInspector();
+    const slider = [...container!.querySelectorAll<HTMLInputElement>('input[type="range"]')].find(
+      (item) => item.getAttribute("aria-label") === "亮度",
+    )!;
+    // 模拟用户拖动：改 value 并触发 input/change
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(slider, "42");
+    act(() => {
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(onChange, "拖动滑杆必须触发 onChange").toHaveBeenCalled();
+    expect(onChange).toHaveBeenCalledWith("color_brightness", 42);
+  });
+
+  it("双击滑杆把该项单独归零", () => {
+    const { onChange } = renderInspector();
+    const wrapper = container!.querySelector(".color-slider")!;
+    act(() => {
+      wrapper.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith("color_brightness", 0);
+  });
 });

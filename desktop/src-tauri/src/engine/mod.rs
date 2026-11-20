@@ -14,6 +14,7 @@
 pub(crate) mod config;
 mod dedup;
 mod effect_assets;
+pub mod embedded_ffmpeg;
 mod effect_preview;
 mod extract;
 mod fingerprint;

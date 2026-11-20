@@ -164,3 +164,38 @@ def test_rust_engine_default_config_matches_python() -> None:
         "open('desktop/src-tauri/src/engine/default_config.json', 'w', encoding='utf-8', newline='\\n')"
         ".write(json.dumps(b(), ensure_ascii=False, indent=1) + '\\n')\""
     )
+
+
+def test_effect_lists_match_core():
+    """特效列表：前端下拉 / Python 默认 / Rust 目录三方必须完全一致。
+
+    ⚠️ 这条是补漏：`缓慢拉远`/`右下平移`/`左上平移`/`缓慢推近` 内核早就实现了，
+    但前端 `VIDEO_EFFECTS` 里没有 —— 用户在下拉里根本选不到。之前的
+    `catalog_parity` 只核对「目录 ↔ 实现」，没核对「目录 ↔ 界面」，所以没能发现。
+    """
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+
+    ts = (root / "desktop" / "src" / "constants.ts").read_text(encoding="utf-8")
+    block = re.search(r"export const VIDEO_EFFECTS[^=]*=\s*\[(.*?)\]", ts, re.S)
+    assert block, "找不到前端 VIDEO_EFFECTS"
+    front = re.findall(r'"([^"]+)"', block.group(1))
+
+    rs = (root / "desktop" / "src-tauri" / "src" / "render" / "catalog.rs").read_text(encoding="utf-8")
+    core_block = re.search(r"pub const EFFECTS: &\[ItemSpec\] = &\[(.*?)\n\];", rs, re.S)
+    assert core_block, "找不到 Rust catalog EFFECTS"
+    core = re.findall(r'id: "([^"]+)"', core_block.group(1))
+
+    from src.engine.config import DEFAULT_VIDEO_EFFECTS
+
+    assert front == list(DEFAULT_VIDEO_EFFECTS), (
+        "前端 VIDEO_EFFECTS 与 Python DEFAULT_VIDEO_EFFECTS 不一致：\n"
+        f"  仅前端有：{sorted(set(front) - set(DEFAULT_VIDEO_EFFECTS))}\n"
+        f"  仅 Python 有：{sorted(set(DEFAULT_VIDEO_EFFECTS) - set(front))}"
+    )
+    assert set(front) == set(core), (
+        "前端 VIDEO_EFFECTS 与 Rust catalog 不一致（界面选不到内核已实现的特效）：\n"
+        f"  仅前端有：{sorted(set(front) - set(core))}\n"
+        f"  仅内核有：{sorted(set(core) - set(front))}"
+    )

@@ -106,6 +106,13 @@ pub fn resolve_ffmpeg(project_root: Option<&Path>) -> Option<PathBuf> {
         }
     }
 
+    // 单文件免安装版：ffmpeg 编在 exe 内部，按需释放到缓存目录。
+    // 放在「磁盘上找过之后」—— 用户自己装了 ffmpeg 或放到 resources/
+    // 就优先用他的，我们这份只作兜底（也避免每次都去碰 87MB 缓存）。
+    if let Some(extracted) = super::embedded_ffmpeg::materialize() {
+        return Some(extracted);
+    }
+
     // 打包版可能带 imageio_ffmpeg 的二进制（Python 侧靠 import，这里直接扫目录）
     for base in candidate_bases(project_root) {
         let directory = base.join("imageio_ffmpeg").join("binaries");

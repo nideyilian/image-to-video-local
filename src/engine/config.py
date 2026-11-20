@@ -71,6 +71,12 @@ DEFAULT_VIDEO_EFFECTS = [
     "色调分离",
     "半调网点",
     "灵魂出窍",
+    # 这 4 个内核早就实现了，但列表里漏了很久 —— 界面下拉选不到。
+    # 有 tests/test_config_contract_parity.py::test_effect_lists_match_core 守着。
+    "缓慢拉远",
+    "右下平移",
+    "左上平移",
+    "缓慢推近",
 ]
 
 VIDEO_EFFECT_ALIASES = {"心跳跃动": "心跳跳动"}

@@ -316,6 +316,14 @@ impl JobManager {
                 job_id: thread_job_id.clone(),
                 last_progress: -1,
             };
+            // 排查用：把真正交给渲染的配置转储出来。
+            // 「界面调了没生效」时，先看这里有没有那个字段 —— 能一眼分清
+            // 是前端没发过来，还是后端读到没生效。
+            if let Ok(path) = std::env::var("ITV_DUMP_CONFIG") {
+                if let Ok(text) = serde_json::to_string_pretty(&config_value) {
+                    let _ = std::fs::write(path, text);
+                }
+            }
             let ffmpeg = crate::engine::system::resolve_ffmpeg(None);
             let outcome = match ffmpeg {
                 Some(ffmpeg) => {

@@ -406,6 +406,60 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 调色字段必须能穿过 normalize —— 这是「界面调了没生效」最容易断的一环。
+    #[test]
+    fn normalize_keeps_color_fields() {
+        let raw = json!({
+            "color_brightness": 55.0,
+            "color_contrast": -30.0,
+            "color_saturation": 70.0,
+            "color_temperature": 25.0,
+        });
+        let normalized = normalize_config(Some(&raw));
+        assert_eq!(normalized["color_brightness"], json!(55.0));
+        assert_eq!(normalized["color_contrast"], json!(-30.0));
+        assert_eq!(normalized["color_saturation"], json!(70.0));
+        assert_eq!(normalized["color_temperature"], json!(25.0));
+    }
+
+    /// effect_params 也必须能穿过去。
+    #[test]
+    fn normalize_keeps_effect_params() {
+        let raw = json!({
+            "effect_params": { "色调分离": { "steps": 3.0 } },
+        });
+        let normalized = normalize_config(Some(&raw));
+        assert_eq!(
+            normalized["effect_params"]["色调分离"]["steps"],
+            json!(3.0)
+        );
+    }
+
+    /// 端到端：从「界面会发出的 JSON」走完整 normalize，确认字段没丢。
+    ///
+    /// 这条模拟的是 `start_job` 收到的原始配置 —— 如果 normalize 有白名单
+    /// 过滤，这里会立刻暴露。
+    #[test]
+    fn normalize_preserves_passthrough_of_unknown_keys() {
+        let raw = json!({
+            "color_brightness": 42.0,
+            "color_saturation": -60.0,
+            "effect_params": { "色调分离": { "steps": 3.0 } },
+            "video_effect_type": "色调分离",
+            "use_video_effect": true,
+        });
+        let normalized = normalize_config(Some(&raw));
+        assert_eq!(normalized["color_brightness"], json!(42.0), "亮度被丢了");
+        assert_eq!(normalized["color_saturation"], json!(-60.0), "饱和度被丢了");
+        assert_eq!(
+            normalized["effect_params"]["色调分离"]["steps"],
+            json!(3.0),
+            "effect_params 被丢了"
+        );
+        assert_eq!(normalized["video_effect_type"], json!("色调分离"));
+        assert_eq!(normalized["use_video_effect"], json!(true));
+    }
+
     #[test]
     fn default_config_matches_expected_shape() {
         let config = default_config();
@@ -416,8 +470,10 @@ mod tests {
         assert_eq!(config["image_selection_mode"], "随机选择");
         assert_eq!(
             config["enabled_video_effects"].as_array().map(Vec::len),
-            // 39 → 42：新增 色差分离 / 色调分离 / 半调网点（2026-11-20）
-            Some(42)
+            // 39 → 42：新增 色差分离 / 色调分离 / 半调网点
+            // 42 → 46：补回 缓慢拉远 / 右下平移 / 左上平移 / 缓慢推近
+            // （这 4 个内核早有实现，列表漏了很久，界面选不到）
+            Some(46)
         );
         assert_eq!(
             config["enabled_transitions"].as_array().map(Vec::len),
