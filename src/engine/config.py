@@ -67,6 +67,9 @@ DEFAULT_VIDEO_EFFECTS = [
     "边缘闪烁",
     "透视俯仰",
     "滚动快门",
+    "色差分离",
+    "色调分离",
+    "半调网点",
     "灵魂出窍",
 ]
 
@@ -102,11 +105,23 @@ def build_default_config() -> dict[str, Any]:
         # 「用户没改过」和「用户改成了默认值」。
         # 结构与消费方见 desktop/src-tauri/src/render/effect_params.rs
         "effect_params": {},
+        # 调色（对整段一致，不随时间变化）。0 = 不变，范围 -100 ~ 100。
+        # 顺序固定：亮度 → 对比度 → 饱和度 → 色温（见 render/color.rs）
+        "color_brightness": 0.0,
+        "color_contrast": 0.0,
+        "color_saturation": 0.0,
+        "color_temperature": 0.0,
         # 各特效/转场的专属参数，按「特效 id → 参数键 → 值」两级存。
         # 空表表示全用 catalog 里的声明默认值 —— 不预填，这样能区分
         # 「用户没改过」和「用户改成了默认值」。
         # 结构与消费方见 desktop/src-tauri/src/render/effect_params.rs
         "effect_params": {},
+        # 调色（对整段一致，不随时间变化）。0 = 不变，范围 -100 ~ 100。
+        # 顺序固定：亮度 → 对比度 → 饱和度 → 色温（见 render/color.rs）
+        "color_brightness": 0.0,
+        "color_contrast": 0.0,
+        "color_saturation": 0.0,
+        "color_temperature": 0.0,
         "use_bgm": False,
         "bgm_dir": "",
         "bgm_files": [],

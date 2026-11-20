@@ -721,6 +721,87 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
             glitch
         }
 
+        // ---------- 以下三个参考 Concat 的包名，用 CPU 重写 ----------
+        // Concat 的实现是 WGSL 着色器（AGPL-3.0），这里没有照抄代码，
+        // 只借了「做什么」的想法，实现是重新写的 CPU 版本。
+
+        "色差分离" => {
+            // 红/蓝通道向外扩散，模拟镜头色散。强度越大分离越明显。
+            let spread = ((2.0 + 10.0 * intensity_scale)
+                * (0.6 + 0.4 * (2.0 * PI * 1.2 * speed * time_sec).sin())) as i64;
+            let mut out = frame.clone();
+            for y in 0..frame.height {
+                for x in 0..frame.width {
+                    // 半径方向：以画面中心为原点向外推
+                    let dx = x as i64 - frame.width as i64 / 2;
+                    let dy = y as i64 - frame.height as i64 / 2;
+                    let distance = ((dx * dx + dy * dy) as f64).sqrt().max(1.0);
+                    // 越靠外分离越多（真实的色散就是这样）
+                    let falloff = distance / (frame.width as f64 * 0.5).max(1.0);
+                    let offset = (spread as f64 * falloff) as i64;
+                    let src_r = roll_index(x as i64 + offset, frame.width as i64);
+                    let src_b = roll_index(x as i64 - offset, frame.width as i64);
+                    if let (Some(red), Some(blue), Some(center)) = (
+                        frame.pixel(src_r as u32, y),
+                        frame.pixel(src_b as u32, y),
+                        frame.pixel(x, y),
+                    ) {
+                        // BGR：0=B、1=G、2=R
+                        out.set_pixel(x, y, [blue[0], center[1], red[2]]);
+                    }
+                }
+            }
+            out
+        }
+
+        "色调分离" => {
+            // 把每个通道压到 N 级台阶上，形成海报效果。级数越少越抽象。
+            let steps = params.param("steps", 6.0).round().clamp(2.0, 32.0);
+            // 强度控制「往台阶上靠多少」：100% 完全量化，0% 保持原样
+            let blend = intensity_scale.clamp(0.0, 1.0);
+            let mut out = frame.clone();
+            for pixel in out.data.chunks_exact_mut(3) {
+                for channel in pixel.iter_mut() {
+                    let original = *channel as f64;
+                    let quantized = (original / 255.0 * (steps - 1.0)).round() / (steps - 1.0) * 255.0;
+                    let mixed = original + (quantized - original) * blend;
+                    *channel = mixed.clamp(0.0, 255.0).round() as u8;
+                }
+            }
+            out
+        }
+
+        "半调网点" => {
+            // 把亮度转成不同大小的圆点，模拟印刷网点。
+            // 网点边长可调：越小点越密、越像真印刷。
+            let cell = params.param("cell", 4.0).round().clamp(2.0, 24.0) as i64;
+            let mut out = frame.clone();
+            for y in 0..frame.height {
+                for x in 0..frame.width {
+                    // 所在网点的左上角
+                    let cell_x = (x as i64 / cell) * cell;
+                    let cell_y = (y as i64 / cell) * cell;
+                    // 用网点中心的亮度决定这个点多大
+                    let center_x = (cell_x + cell / 2).clamp(0, frame.width as i64 - 1) as u32;
+                    let center_y = (cell_y + cell / 2).clamp(0, frame.height as i64 - 1) as u32;
+                    let center = frame.pixel(center_x, center_y).unwrap_or([0, 0, 0]);
+                    let luma = 0.114 * center[0] as f64
+                        + 0.587 * center[1] as f64
+                        + 0.299 * center[2] as f64;
+                    // 亮度越高点越大；半径上限是半个网格
+                    let radius = (luma / 255.0).sqrt() * (cell as f64) * 0.5;
+                    // 当前像素到网点中心的距离
+                    let dx = (x as i64 - (cell_x + cell / 2)) as f64;
+                    let dy = (y as i64 - (cell_y + cell / 2)) as f64;
+                    let distance = (dx * dx + dy * dy).sqrt();
+                    // 点在圈内画白、圈外画黑 —— 这是印刷网点的经典形态
+                    let value = if distance <= radius { 255u8 } else { 0 };
+                    out.set_pixel(x, y, [value, value, value]);
+                }
+            }
+            out
+        }
+
         "镜像扫光" => {
             // 与「呼吸变焦扫光」共用扫光逻辑，只是不带缩放、位置按 progress 推进
             sweep_light(frame, progress, 0.08 + 0.04 * intensity_scale, 0.22 + 0.18 * intensity_scale)

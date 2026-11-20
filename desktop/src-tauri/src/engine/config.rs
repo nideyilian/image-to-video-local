@@ -410,12 +410,14 @@ mod tests {
     fn default_config_matches_expected_shape() {
         let config = default_config();
         // 46 → 47：新增 effect_params（特效专属参数，2026-11-20）
-        assert_eq!(config.as_object().map(|map| map.len()), Some(47));
+        // 47 → 51：新增 4 个调色字段（color_brightness 等，2026-11-20）
+        assert_eq!(config.as_object().map(|map| map.len()), Some(51));
         assert_eq!(config["resolution_preset"], "1280x720");
         assert_eq!(config["image_selection_mode"], "随机选择");
         assert_eq!(
             config["enabled_video_effects"].as_array().map(Vec::len),
-            Some(39)
+            // 39 → 42：新增 色差分离 / 色调分离 / 半调网点（2026-11-20）
+            Some(42)
         );
         assert_eq!(
             config["enabled_transitions"].as_array().map(Vec::len),

@@ -121,14 +121,19 @@ pub struct ItemSpec {
 // ---------------------------------------------------------------------------
 
 /// 分组的显示顺序。新增分组时加在这里，否则界面会把它排到最后。
+/// 分组顺序即界面上的呈现顺序。
+///
+/// ⚠️ 这里的维度是**用户意图**，不是实现方式。
+///
+/// 早期按运动方式分（基础缩放/平移漂移/旋转摆动…），那是开发者的视角 ——
+/// 用户想的是「我想要什么感觉」，不是「这个特效在做什么数学运算」。
+/// 参考项目 Concat 的 `category` 也是意图维度（Cinematic / Shake / Retro）。
 pub const EFFECT_GROUPS: &[&str] = &[
-    "基础缩放",
-    "平移漂移",
-    "旋转摆动",
-    "复合运动",
-    "变形扭曲",
-    "风格化",
-    "特殊",
+    "平稳推进",
+    "手持感",
+    "强节奏",
+    "迷幻扭曲",
+    "复古故障",
 ];
 
 /// 全部特效声明，顺序即界面下拉的顺序。
@@ -139,35 +144,35 @@ pub const EFFECTS: &[ItemSpec] = &[
     // ---- 基础缩放：只有一个缩放动作，靠强度/速度调快慢 ----
     ItemSpec {
         id: "心跳跳动",
-        group: "基础缩放",
+        group: "强节奏",
         summary: "有节奏地放大缩小，像心跳",
         params: &[],
         aliases: &["心跳跃动"],
     },
     ItemSpec {
         id: "反复缩放",
-        group: "基础缩放",
+        group: "强节奏",
         summary: "匀速来回放大缩小",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "轻微摇摆",
-        group: "基础缩放",
+        group: "手持感",
         summary: "小幅度的左右摆动",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "镜头呼吸",
-        group: "基础缩放",
+        group: "平稳推进",
         summary: "缓慢推进再退回，源自轻微放大",
         params: &[],
         aliases: &["轻微放大"],
     },
     ItemSpec {
         id: "脉冲放大",
-        group: "基础缩放",
+        group: "强节奏",
         summary: "快速脉冲式放大，源自轻微缩小",
         params: &[],
         aliases: &["轻微缩小"],
@@ -175,28 +180,28 @@ pub const EFFECTS: &[ItemSpec] = &[
     // ---- 平移漂移：整幅画面位移 ----
     ItemSpec {
         id: "左右晃动",
-        group: "平移漂移",
+        group: "手持感",
         summary: "横向来回平移，源自左右平移",
         params: &[],
         aliases: &["左右平移"],
     },
     ItemSpec {
         id: "上下浮动",
-        group: "平移漂移",
+        group: "手持感",
         summary: "纵向上下浮动，源自上下平移",
         params: &[],
         aliases: &["上下平移"],
     },
     ItemSpec {
         id: "圆周漂移",
-        group: "平移漂移",
+        group: "平稳推进",
         summary: "沿圆周轨迹缓慢移动",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "8字漂移",
-        group: "平移漂移",
+        group: "平稳推进",
         summary: "走一个横 8 字",
         params: &[],
         aliases: &[],
@@ -204,28 +209,28 @@ pub const EFFECTS: &[ItemSpec] = &[
     // ---- 旋转摆动 ----
     ItemSpec {
         id: "旋转摆动",
-        group: "旋转摆动",
+        group: "迷幻扭曲",
         summary: "绕画面中心来回旋转，源自旋转缩放",
         params: &[],
         aliases: &["旋转缩放"],
     },
     ItemSpec {
         id: "旋转呼吸",
-        group: "旋转摆动",
+        group: "迷幻扭曲",
         summary: "旋转叠加呼吸缩放",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "摇摆推拉",
-        group: "旋转摆动",
+        group: "平稳推进",
         summary: "一边摇一边推近",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "心跳摇摆",
-        group: "旋转摆动",
+        group: "强节奏",
         summary: "心跳节奏叠加轻微摇摆",
         params: &[],
         aliases: &[],
@@ -233,105 +238,105 @@ pub const EFFECTS: &[ItemSpec] = &[
     // ---- 复合运动：多个轴同时动 ----
     ItemSpec {
         id: "螺旋摆动",
-        group: "复合运动",
+        group: "迷幻扭曲",
         summary: "边转边缩边平移，走螺旋",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "双轴呼吸",
-        group: "复合运动",
+        group: "手持感",
         summary: "横纵两个方向独立缩放，会轻微变形",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "波浪平移",
-        group: "复合运动",
+        group: "平稳推进",
         summary: "横纵相位不同的波浪式位移",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "径向脉冲旋转",
-        group: "复合运动",
+        group: "强节奏",
         summary: "径向脉冲与旋转叠加",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "镜头抖动呼吸",
-        group: "复合运动",
+        group: "手持感",
         summary: "手持抖动叠加缓慢呼吸",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "反向双旋",
-        group: "复合运动",
+        group: "迷幻扭曲",
         summary: "内外反向旋转，形成对扭",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "呼吸变焦扫光",
-        group: "复合运动",
+        group: "强节奏",
         summary: "呼吸缩放叠加一条扫过的光带",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "旋摆模糊脉冲",
-        group: "复合运动",
+        group: "强节奏",
         summary: "旋转摆动叠加周期性的模糊脉冲",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "透视呼吸摆动",
-        group: "复合运动",
+        group: "迷幻扭曲",
         summary: "带透视倾斜的呼吸摆动",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "涡旋推拉",
-        group: "复合运动",
+        group: "迷幻扭曲",
         summary: "涡旋感叠加推拉",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "变焦摇移",
-        group: "复合运动",
+        group: "平稳推进",
         summary: "变焦同时横向摇移",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "旋转漂移闪动",
-        group: "复合运动",
+        group: "强节奏",
         summary: "旋转漂移叠加亮度闪动",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "双频摆动",
-        group: "复合运动",
+        group: "手持感",
         summary: "两个不同频率的摆动叠加",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "环形巡航",
-        group: "复合运动",
+        group: "平稳推进",
         summary: "沿环形轨迹巡航",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "呼吸鱼眼旋摆",
-        group: "复合运动",
+        group: "迷幻扭曲",
         summary: "鱼眼变形叠加呼吸旋摆",
         params: &[],
         aliases: &[],
@@ -339,42 +344,42 @@ pub const EFFECTS: &[ItemSpec] = &[
     // ---- 变形扭曲 ----
     ItemSpec {
         id: "水波扭曲",
-        group: "变形扭曲",
+        group: "迷幻扭曲",
         summary: "像水面涟漪一样扭曲画面",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "漩涡旋转",
-        group: "变形扭曲",
+        group: "迷幻扭曲",
         summary: "绕中心扭转，越靠外扭得越厉害",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "鱼眼镜头",
-        group: "变形扭曲",
+        group: "迷幻扭曲",
         summary: "广角鱼眼的桶形畸变",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "径向拉伸",
-        group: "变形扭曲",
+        group: "迷幻扭曲",
         summary: "沿径向往外拉伸",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "透视俯仰",
-        group: "变形扭曲",
+        group: "迷幻扭曲",
         summary: "模拟上下俯仰的透视变化",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "滚动快门",
-        group: "变形扭曲",
+        group: "复古故障",
         summary: "逐行位移，模拟果冻效应",
         // 滚动条数原来硬编码为 4.0，改小会变成横向渐变、改大会变成细密条纹。
         params: &[ParamSpec::factor("bands", "滚动条数", 4.0)],
@@ -383,7 +388,7 @@ pub const EFFECTS: &[ItemSpec] = &[
     // ---- 风格化 ----
     ItemSpec {
         id: "故障抖动",
-        group: "风格化",
+        group: "复古故障",
         summary: "数码故障感的错位与抖动",
         // 这两个参数直击原实现的硬编码：位移幅度原来写死为
         // `3.0 + 7.0 * intensity`，抖动频率写死为 3.0 Hz。
@@ -395,57 +400,97 @@ pub const EFFECTS: &[ItemSpec] = &[
     },
     ItemSpec {
         id: "镜像扫光",
-        group: "风格化",
+        group: "迷幻扭曲",
         summary: "镜像反射叠加扫过的光",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "呼吸模糊",
-        group: "风格化",
+        group: "迷幻扭曲",
         summary: "模糊程度随呼吸周期变化",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "边缘闪烁",
-        group: "风格化",
+        group: "强节奏",
         summary: "画面边缘周期性亮灭",
         params: &[],
         aliases: &[],
     },
     // ---- 特殊 ----
     ItemSpec {
+        id: "色差分离",
+        group: "复古故障",
+        // 参考 Concat 的 concat.chromatic-aberration（原名），CPU 重写
+        summary: "红蓝通道向外分离，模拟镜头色散",
+        params: &[],
+        aliases: &[],
+    },
+    ItemSpec {
+        id: "色调分离",
+        group: "复古故障",
+        // 参考 Concat 的 concat.posterize，CPU 重写
+        summary: "把颜色压成少数几级台阶，海报效果",
+        params: &[ParamSpec {
+            key: "steps",
+            label: "色阶数",
+            kind: ParamKind::Factor,
+            min: 2.0,
+            max: 32.0,
+            default: 6.0,
+            choices: &[],
+        }],
+        aliases: &[],
+    },
+    ItemSpec {
+        id: "半调网点",
+        group: "复古故障",
+        // 参考 Concat 的 concat.halftone，CPU 重写
+        summary: "亮度转成圆点，模拟印刷网点",
+        params: &[ParamSpec {
+            key: "cell",
+            label: "网点大小",
+            kind: ParamKind::Factor,
+            min: 2.0,
+            max: 24.0,
+            default: 4.0,
+            choices: &[],
+        }],
+        aliases: &[],
+    },
+    ItemSpec {
         id: "灵魂出窍",
-        group: "特殊",
+        group: "复古故障",
         summary: "剪映同款：放大并叠加，16 帧循环曲线",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "缓慢拉远",
-        group: "特殊",
+        group: "平稳推进",
         summary: "持续缓慢缩小",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "右下平移",
-        group: "平移漂移",
+        group: "平稳推进",
         summary: "从左上往右下平移",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "左上平移",
-        group: "平移漂移",
+        group: "平稳推进",
         summary: "从右下往左上平移",
         params: &[],
         aliases: &[],
     },
     ItemSpec {
         id: "缓慢推近",
-        group: "特殊",
+        group: "平稳推进",
         // ⚠️ 这条是 catalog_parity 测试抓出来的：effects.rs 早就实现了它，
         // 但从来没有出现在界面的下拉里，用户一直选不到。
         summary: "持续缓慢放大",

@@ -23,6 +23,7 @@ export const VIDEO_EFFECTS = [
   "涡旋推拉", "变焦摇移", "旋转漂移闪动", "双频摆动", "环形巡航",
   "呼吸鱼眼旋摆", "水波扭曲", "漩涡旋转", "鱼眼镜头", "故障抖动",
   "镜像扫光", "呼吸模糊", "径向拉伸", "边缘闪烁", "透视俯仰", "滚动快门",
+  "色差分离", "色调分离", "半调网点",
   "灵魂出窍",
 ];
 
@@ -68,6 +69,11 @@ export const FALLBACK_CONFIG: VideoConfig = {
   video_effect_speed: 1.3,
   // 各特效的专属参数，按「特效 id → 参数键 → 值」存；空表表示全用声明默认值
   effect_params: {},
+  // 调色（对整段一致）。0 = 不变；顺序固定：亮度→对比度→饱和度→色温
+  color_brightness: 0,
+  color_contrast: 0,
+  color_saturation: 0,
+  color_temperature: 0,
   use_bgm: false,
   bgm_dir: "",
   bgm_files: [],

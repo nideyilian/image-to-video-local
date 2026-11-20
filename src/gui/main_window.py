@@ -991,6 +991,33 @@ class ImageToVideoTab:
         # 关闭窗口
         self.parent.destroy()
     
+    def _read_color(self, key: str) -> float:
+        """读调色参数。
+
+        旧 Tk 界面没有调色的编辑控件，但配置里可能有值（新界面调好的）。\n
+        这里从当前配置对象里取，取不到就给 0（不变），保证「用旧界面打开
+        一次不会把调色丢掉」。
+        """
+        try:
+            source = getattr(self, "_color_params", None) or {}
+            return float(source.get(key, 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _read_color(self, key: str) -> float:
+        """读调色参数。
+
+        旧 Tk 界面没有调色的编辑控件，但配置里可能有值（新界面调好的）。
+
+        这里从当前配置对象里取，取不到就给 0（不变），保证「用旧界面打开
+        一次不会把调色丢掉」。
+        """
+        try:
+            source = getattr(self, "_color_params", None) or {}
+            return float(source.get(key, 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
     def save_config(self, show_message=False):
         """保存当前配置到文件"""
         try:
@@ -1022,6 +1049,11 @@ class ImageToVideoTab:
                 # 特效专属参数（按特效 id 分组）。旧界面没有编辑这些的控件，
                 # 原样透传已有的值，避免「用新界面调好、用旧界面打开一次就丢」。
                 "effect_params": dict(getattr(self, "_effect_params", None) or {}),
+                # 调色：旧界面没有编辑控件，原样透传避免丢失
+                "color_brightness": self._read_color("color_brightness"),
+                "color_contrast": self._read_color("color_contrast"),
+                "color_saturation": self._read_color("color_saturation"),
+                "color_temperature": self._read_color("color_temperature"),
                 "effect_preview_time": self.effect_preview_time.get(),
                 "use_bgm": self.use_bgm.get(),
                 "bgm_dir": self.bgm_dir.get(),

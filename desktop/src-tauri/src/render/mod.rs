@@ -16,6 +16,7 @@ pub mod batch;
 pub mod codec;
 pub mod compositor;
 pub mod catalog;
+pub mod color;
 pub mod effect_params;
 pub mod effects;
 pub mod frame_script;

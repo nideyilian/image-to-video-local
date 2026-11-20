@@ -104,6 +104,21 @@ function EffectParamControls({
  * 与后端 `effect_params::resolve_value` 保持同一套规则 —— 界面显示什么，
  * 渲染就用什么，不会出现「看着是 60，实际跑的是默认值」。
  */
+/**
+ * 四个调色参数是否全为 0（即「不调色」）。
+ *
+ * 用来控制「重置」按钮是否可点 —— 全 0 时点了也没用，不如禁掉，
+ * 让用户一眼看出当前有没有调过色。
+ */
+function hasColorGrade(config: VideoConfig): boolean {
+  return (
+    config.color_brightness !== 0 ||
+    config.color_contrast !== 0 ||
+    config.color_saturation !== 0 ||
+    config.color_temperature !== 0
+  );
+}
+
 function currentParamValues(
   config: VideoConfig,
   itemId: string,
@@ -312,6 +327,12 @@ export function Inspector({
   /** 改某个特效的某个专属参数。 */
   onParamChange: (itemId: string, key: string, value: number | boolean) => void;
 }) {
+  const resetColorGrade = () => {
+    onChange("color_brightness", 0);
+    onChange("color_contrast", 0);
+    onChange("color_saturation", 0);
+    onChange("color_temperature", 0);
+  };
   const [layerPage, setLayerPage] = useState(0);
   // 「按子文件夹抽取」下每个视频的图片数由子文件夹个数决定，「图片数」这一栏不参与计算
   const subfolderPicked = config.image_selection_mode === SUBFOLDER_SELECTION_MODE;
@@ -509,6 +530,57 @@ export function Inspector({
               />
             </div>
             <div className="random-pool-row"><span><small>随机特效池</small><strong>已选 {config.enabled_video_effects.length} / {VIDEO_EFFECTS.length}</strong></span><button type="button" className="inspector-config-button" onClick={() => onOpenLibraryTab("effect")}><LibraryBig size={14} />在素材库配置</button></div>
+          </section>
+
+          <section className="inspector-static-section">
+            <header className="inspector-section-heading">
+              <strong>调色</strong>
+              <button
+                type="button"
+                className="inspector-config-button"
+                disabled={!hasColorGrade(config)}
+                onClick={resetColorGrade}
+                title="把四项都归零"
+              >
+                重置
+              </button>
+            </header>
+            {/*
+              调色作用于整段视频，不随帧变化 —— 与上面「特效」的随动效果不同。
+              顺序由渲染固定（亮度→对比度→饱和度→色温），这里是并列呈现，
+              用户不需要关心先后。
+            */}
+            <div className="parameter-grid parameter-grid-motion">
+              <Field label="亮度">
+                <input
+                  type="number" min={-100} max={100} step={1}
+                  value={config.color_brightness}
+                  onChange={(event) => onChange("color_brightness", Number(event.target.value))}
+                />
+              </Field>
+              <Field label="对比度">
+                <input
+                  type="number" min={-100} max={100} step={1}
+                  value={config.color_contrast}
+                  onChange={(event) => onChange("color_contrast", Number(event.target.value))}
+                />
+              </Field>
+              <Field label="饱和度">
+                <input
+                  type="number" min={-100} max={100} step={1}
+                  value={config.color_saturation}
+                  onChange={(event) => onChange("color_saturation", Number(event.target.value))}
+                />
+              </Field>
+              <Field label="色温">
+                <input
+                  type="number" min={-100} max={100} step={1}
+                  value={config.color_temperature}
+                  onChange={(event) => onChange("color_temperature", Number(event.target.value))}
+                />
+              </Field>
+            </div>
+            <p className="inspector-hint">负值偏蓝/压暗，正值偏黄/提亮；四项全 0 表示不调色。</p>
           </section>
         </div>
 

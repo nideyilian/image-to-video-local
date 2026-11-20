@@ -123,6 +123,15 @@ fn no_effect_goes_fully_black_or_white() {
     }
 }
 
+/// 有些特效**本来就该是静态的** —— 纯逐像素变换，与时间无关。
+///
+/// 判断标准：它改变的是「每个像素怎么映射」，而不是「画面怎么动」。
+/// 硬给它们加时间变化是错的（比如让色调分离的色阶数随时间抖，画面会闪）。
+///
+/// 这类特效由 `static_effects_do_not_change_over_time` 反向断言：
+/// 同一输入不同时间点必须**完全一致**，这才是它们正确工作的标志。
+const STATIC_EFFECTS: [&str; 2] = ["色调分离", "半调网点"];
+
 /// 这条最有价值：证明特效**真的随时间变化**。
 ///
 /// 一个写错的特效常常是「参数算出来了但没用上」，画面一直不动 ——
@@ -139,6 +148,9 @@ fn every_effect_actually_moves_over_time() {
     let times: Vec<f64> = (0..=30).map(|i| i as f64 * 0.03).collect();
 
     for item in EFFECTS {
+        if STATIC_EFFECTS.contains(&item.id) {
+            continue;
+        }
         let base = apply_single_image_effect(&frame, &params(item.id, times[0]));
         let mut best = 0.0f64;
         let mut best_t = 0.0;
@@ -349,5 +361,37 @@ fn declared_param_keys_are_exercised_by_implementations() {
                 assert!(found.is_some(), "「{}」声明了参数却查不到", item.id);
             }
         }
+    }
+}
+
+/// 静态特效：不同时间点必须**逐字节一致**。
+///
+/// 这条是 `every_effect_actually_moves_over_time` 的补集 ——
+/// 那条防止「参数算了没用上」，这条防止「静态特效被误加了时间抖动」
+/// （画面会无故闪烁，用户看着像坏了）。
+#[test]
+fn static_effects_do_not_change_over_time() {
+    let frame = probe_frame(120, 72);
+    for name in STATIC_EFFECTS {
+        let at_zero = apply_single_image_effect(&frame, &params(name, 0.0));
+        for step in 1..10 {
+            let t = step as f64 * 0.11;
+            let later = apply_single_image_effect(&frame, &params(name, t));
+            assert_eq!(
+                at_zero.data, later.data,
+                "「{name}」在 t={t:.2} 时画面变了，但它是逐像素变换、不该随时间变化"
+            );
+        }
+    }
+}
+
+/// 静态特效列表必须都是目录里真实存在的条目，防止改名后失效。
+#[test]
+fn static_effect_names_are_real() {
+    for name in STATIC_EFFECTS {
+        assert!(
+            EFFECTS.iter().any(|item| item.id == name),
+            "STATIC_EFFECTS 里的「{name}」在目录里不存在"
+        );
     }
 }

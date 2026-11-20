@@ -40,6 +40,14 @@ export type VideoConfig = {
    * 结构见 `src-tauri/src/render/effect_params.rs`。
    */
   effect_params: Record<string, Record<string, number | boolean>>;
+  /** 亮度，-100 ~ 100，0 = 不变 */
+  color_brightness: number;
+  /** 对比度，-100 ~ 100 */
+  color_contrast: number;
+  /** 饱和度，-100 ~ 100（-100 为灰度） */
+  color_saturation: number;
+  /** 色温，-100 ~ 100（负偏蓝、正偏黄） */
+  color_temperature: number;
   use_bgm: boolean;
   bgm_dir: string;
   bgm_files: string[];

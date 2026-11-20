@@ -12,6 +12,7 @@
 use std::path::Path;
 
 use super::audio::RenderConfig;
+use super::color;
 use super::effect_params;
 use super::effects;
 use super::encoder::{self, EncodeOptions};
@@ -191,6 +192,10 @@ pub fn create_video(
     // - 帧数算错时能单独定位（`frame_script` 的测试跑一次就知道）
     // - 改帧策略不用碰下面的像素代码
     // - 两边独立演进，改一边不会悄悄弄坏另一边
+    // 调色：对整段一致（不随时间变化），所以在循环外算一次。
+    // 全 0 参数时 `apply` 直接返回 None，零开销、不改变既有输出。
+    let grade = color::ColorGrade::from_config(config);
+
     // 转场专属参数（与特效同一条通路）
     let transition_extra = effect_params::resolve_from_config(config, &options.transition_type);
 
@@ -325,6 +330,10 @@ pub fn create_video(
                     }
                     _ => current.clone(),
                 };
+                // 调色放在特效之后：先让画面动起来，再统一色调。
+                // 反过来（先调色再特效）会让缩放/旋转把调色边缘一起放大，
+                // 出现一圈颜色不同的边框。
+                let frame = color::apply(&frame, &grade).unwrap_or(frame);
                 write_or_abort(&mut session, &frame, &mut written, total_frames, hooks)?;
                 cursor += 1;
             }
@@ -380,6 +389,8 @@ pub fn create_video(
                         session.abort();
                         return Err(ComposeError::Cancelled);
                     }
+                    // 转场帧同样要调色，否则转场那段会突然恢复原色
+                    let frame = color::apply(&frame, &grade).unwrap_or(frame);
                     write_or_abort(&mut session, &frame, &mut written, total_frames, hooks)?;
                 }
                 // 转场跑完，下一段一定是下一张图的静态帧。
