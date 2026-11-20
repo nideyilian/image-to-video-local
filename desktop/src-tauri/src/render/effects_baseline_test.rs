@@ -33,7 +33,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// 覆盖全部仿射类特效 + 各个时间点（相位不同会走不同的矩阵）。
-const PROBE_EFFECTS: [&str; 12] = [
+const PROBE_EFFECTS: [&str; 15] = [
     "旋转呼吸",
     "摇摆推拉",
     "圆周漂移",
@@ -46,6 +46,10 @@ const PROBE_EFFECTS: [&str; 12] = [
     "左右晃动",
     "上下浮动",
     "缓慢推近",
+    // 以下三个有独立实现，容易被漏在保护网外
+    "灵魂出窍",
+    "旋转摆动",
+    "脉冲放大",
 ];
 
 fn collect_hashes() -> Vec<(String, String)> {

@@ -339,6 +339,30 @@ pub fn blend_weighted(first: &BgrFrame, second: &BgrFrame, alpha: f64) -> BgrFra
     let height = first.height.max(second.height);
     let mut result = BgrFrame::black(width, height);
     let inverse = 1.0 - alpha;
+
+    // 尺寸一致时走快路径：按字节线性扫 + 按行并行。
+    // 逐像素版本每像素两次边界检查、两次下标计算，1080p 实测 18.8ms；
+    // 纯拷贝只要 1ms —— 开销全在这些重复计算上。
+    if first.width == width && first.height == height
+        && second.width == width && second.height == height
+    {
+        let row_bytes = width as usize * 3;
+        let data_a = &first.data;
+        let data_b = &second.data;
+        super::parallel::par_rows_mut(&mut result, |start_row, _rows, chunk| {
+            let byte_start = start_row * row_bytes;
+            let byte_end = byte_start + chunk.len();
+            let src_a = &data_a[byte_start..byte_end];
+            let src_b = &data_b[byte_start..byte_end];
+            for index in 0..chunk.len() {
+                let value = src_a[index] as f64 * inverse + src_b[index] as f64 * alpha;
+                chunk[index] = value.round().clamp(0.0, 255.0) as u8;
+            }
+        });
+        return result;
+    }
+
+    // 尺寸不一致时退回逐像素（会补黑边），这种情况很少见
     for y in 0..height {
         for x in 0..width {
             let a = first.pixel(x, y).unwrap_or([0, 0, 0]);

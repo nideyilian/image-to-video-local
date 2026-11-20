@@ -103,6 +103,11 @@ pub fn warp_affine(source: &BgrFrame, matrix: Affine, border: BorderMode) -> Bgr
 
     // 每个像素的结果只取决于它自己的坐标，行与行之间没有依赖 ——
     // 因此可以按行切块并行，输出逐字节不变（effects_baseline 守着这一点）。
+    //
+    // ⚠️ 这里刻意保持「逐像素调 sample_bilinear」的写法。曾试着把 y 方向的
+    // 采样点提到行外复用、并绕过 fetch 直接用字节偏移，结果快了几毫秒，
+    // 但浮点累加顺序一变，`摇摆推拉` 的输出就变了 —— 基线当场拦住。
+    // 这条函数被所有仿射特效共用，不值得为几毫秒冒这个险。
     let row_bytes = source.width as usize * 3;
     super::parallel::par_rows_mut(&mut result, |start_row, rows, chunk| {
         for local_row in 0..rows {

@@ -24,6 +24,10 @@ pub mod resize_fast;
 mod effects_baseline_test;
 #[cfg(test)]
 mod resize_bench_test;
+#[cfg(test)]
+mod soul_bench_test;
+#[cfg(test)]
+mod zoom_equiv_test;
 pub mod encoder;
 pub mod imageinfo;
 pub mod pixels;
