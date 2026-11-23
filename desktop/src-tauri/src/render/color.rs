@@ -106,7 +106,7 @@ pub fn apply(frame: &BgrFrame, grade: &ColorGrade) -> Option<BgrFrame> {
     let warm = grade.temperature / 100.0 * 40.0;
 
     let mut out = frame.clone();
-    for pixel in out.data.chunks_exact_mut(3) {
+    for pixel in out.data.as_chunks_mut::<3>().0 {
         let mut r = pixel[2] as f64;
         let mut g = pixel[1] as f64;
         let mut b = pixel[0] as f64;

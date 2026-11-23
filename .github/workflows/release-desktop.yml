@@ -46,8 +46,13 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      - name: 安装 Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: 安装 Rust（与 code-check 保持同一版本）
+        # 与 `code-check.yml` 钉同一版本：发布产物必须由「检查过的那套工具链」构建，
+        # 否则会出现「CI 检查用的是 A 版本、出包用的是 B 版本」的隐性偏差。
+        # 版本须与 `desktop/src-tauri/rust-toolchain.toml` 一致。
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
 
       - name: 缓存 Rust 构建产物
         uses: swatinem/rust-cache@v2

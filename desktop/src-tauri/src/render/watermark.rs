@@ -1102,7 +1102,7 @@ pub fn read_video_watermark_frame(
     }
     // RGBA → BGRA
     let mut data = Vec::with_capacity(expected);
-    for pixel in output.stdout[..expected].chunks_exact(4) {
+    for pixel in output.stdout[..expected].as_chunks::<4>().0 {
         data.push(pixel[2]);
         data.push(pixel[1]);
         data.push(pixel[0]);

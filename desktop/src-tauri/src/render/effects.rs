@@ -764,7 +764,7 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
             // 强度控制「往台阶上靠多少」：100% 完全量化，0% 保持原样
             let blend = intensity_scale.clamp(0.0, 1.0);
             let mut out = frame.clone();
-            for pixel in out.data.chunks_exact_mut(3) {
+            for pixel in out.data.as_chunks_mut::<3>().0 {
                 for channel in pixel.iter_mut() {
                     let original = *channel as f64;
                     let quantized =

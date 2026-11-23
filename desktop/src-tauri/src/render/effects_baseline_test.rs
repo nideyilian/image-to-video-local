@@ -134,7 +134,9 @@ fn resize_effects_stay_visually_equal() {
             assert_eq!((output.width, output.height), (frame.width, frame.height));
             let non_black = output
                 .data
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .filter(|p| p.iter().any(|v| *v > 4))
                 .count();
             assert!(

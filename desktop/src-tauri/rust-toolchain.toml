@@ -1,0 +1,20 @@
+# 固定 Rust 工具链版本。
+#
+# 为什么钉住：
+# CI 里原本用的是 `dtolnay/rust-toolchain@stable`（浮动）。Rust 每 6 周发一版，
+# clippy 会随之新增 lint；由于 CI 跑的是 `-D warnings`，**任何一个新 lint 都会
+# 让 CI 突然变红，而代码一行没动**。
+#
+# 2026-11-23 就撞上了：本地 1.95.0 的 clippy 零告警，CI 的 1.100.0 新增了
+# `chunks_exact_to_as_chunks`，直接判定失败 —— 排查时还以为是代码写错了。
+#
+# 钉版本之后，升级工具链变成一件**有意识的动作**：改这个文件 → 本地跑
+# `cargo clippy --all-targets -- -D warnings` → 修掉新 lint → 提交。
+# 同时保留 `rust-version` 之类的兼容声明不受影响。
+#
+# 升级方法：把下面的版本号改掉，在本地跑一遍完整验证链（见 .workbuddy 或 README），
+# 一起提交。不要只改这个文件就推，否则 CI 会因为新 lint 红掉。
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+# 不用 profile = "minimal"：CI 需要 clippy 和 rustfmt，本机也需要。

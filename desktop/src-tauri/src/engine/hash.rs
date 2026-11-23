@@ -40,10 +40,13 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     }
     padded.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in padded.chunks_exact(64) {
+    // `as_chunks::<64>()` 比 `chunks_exact(64)` 更直接：返回的是 `&[[u8; 64]]`，
+    // 下标访问不再有运行时边界检查，也不会被 clippy 建议改（1.100 起的
+    // `chunks_exact_to_as_chunks`）。后面的 `.1` 是余数片段，SHA 填充后必为空。
+    for chunk in padded.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
-        for (index, word) in chunk.chunks_exact(4).enumerate() {
-            w[index] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        for (index, word) in chunk.as_chunks::<4>().0.iter().enumerate() {
+            w[index] = u32::from_be_bytes(*word);
         }
         for index in 16..64 {
             let s0 = w[index - 15].rotate_right(7)
@@ -145,11 +148,11 @@ impl Sha256Stream {
                 self.compress(&block);
             }
         }
-        let mut chunks = bytes.chunks_exact(64);
-        for chunk in &mut chunks {
+        let (blocks, remainder) = bytes.as_chunks::<64>();
+        for chunk in blocks {
             self.compress(chunk);
         }
-        self.buffer.extend_from_slice(chunks.remainder());
+        self.buffer.extend_from_slice(remainder);
     }
 
     pub fn finish_hex(mut self) -> String {
@@ -160,7 +163,7 @@ impl Sha256Stream {
             tail.push(0);
         }
         tail.extend_from_slice(&bit_len.to_be_bytes());
-        for chunk in tail.chunks_exact(64) {
+        for chunk in tail.as_chunks::<64>().0 {
             self.compress(chunk);
         }
         let mut digest = [0u8; 32];
@@ -170,10 +173,13 @@ impl Sha256Stream {
         hex(&digest)
     }
 
+    /// 压一个 64 字节块。传 `&[u8]` 而不是 `&[u8; 64]`：调用点既有定长数组也有切片，
+    /// 统一用切片避免每处都做转换；`as_chunks` 的余数必然为空，所以不会丢数据。
     fn compress(&mut self, chunk: &[u8]) {
+        debug_assert_eq!(chunk.len() % 64, 0, "compress 只接受 64 字节的整数倍");
         let mut w = [0u32; 64];
-        for (index, word) in chunk.chunks_exact(4).enumerate() {
-            w[index] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        for (index, word) in chunk.as_chunks::<4>().0.iter().enumerate() {
+            w[index] = u32::from_be_bytes(*word);
         }
         for index in 16..64 {
             let s0 = w[index - 15].rotate_right(7)

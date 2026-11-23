@@ -82,7 +82,7 @@ fn resize_cost_breakdown() {
     // 校准：纯遍历写一遍，看这台机器的基础速度
     bench("基准·逐像素写(2.37M)", 20, || {
         let mut out = vec![0u8; tw as usize * th as usize * 3];
-        for (index, slot) in out.chunks_exact_mut(3).enumerate() {
+        for (index, slot) in out.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let value = (index % 256) as u8;
             slot.copy_from_slice(&[value, value, value]);
         }

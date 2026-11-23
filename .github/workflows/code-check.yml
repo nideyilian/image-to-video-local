@@ -90,9 +90,19 @@ jobs:
       - name: 检出源码
         uses: actions/checkout@v4
 
-      - name: 安装 Rust（含 rustfmt 与 clippy）
-        uses: dtolnay/rust-toolchain@stable
+      - name: 安装 Rust（版本须与 rust-toolchain.toml 一致）
+        # ⚠️ 不要改回 `@stable`。浮动 stable 每次 Rust 发版都会带来新 clippy lint，
+        # 而下面跑的是 `-D warnings` —— 结果是「代码一行没动，CI 突然变红」。
+        # 2026-11-23 就这么栽过：本地 1.95.0 零告警，CI 的 1.100.0 新增
+        # `chunks_exact_to_as_chunks`，直接判失败，排查时还以为是代码问题。
+        #
+        # 版本同时写在 `desktop/src-tauri/rust-toolchain.toml` 里。两处必须一起改：
+        # 那边是本地 cargo/rustc 的实际来源，这里是 CI 装哪个 toolchain。
+        # 升级流程：改两处 → 本地跑 `cargo clippy --all-targets -- -D warnings`
+        # 修掉新 lint → 与改动一并提交。
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.95.0"
           components: rustfmt, clippy
 
       - name: 缓存 Rust 构建产物
