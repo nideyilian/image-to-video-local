@@ -154,10 +154,35 @@ fn resize_cost_breakdown() {
     });
 }
 
+/// 高频细节测试图目录。
+///
+/// 优先读环境变量 `ITV_SMOKE_DIR`（本机放在临时目录，CI 没有），
+/// 其次找项目内的 `itv-smoke/detail`。两处都没有时**跳过测试**而不是失败 ——
+/// 这两个测试的价值是「缩放画质没退化」，属于开发者本机验证；
+/// 缺素材时无从判断，报错只会让人以为代码坏了（2026-11-23 CI 就这么红过）。
+fn detail_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("ITV_SMOKE_DIR") {
+        let path = std::path::PathBuf::from(dir).join("detail");
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    // 项目根：从 src-tauri 往上两级
+    let local = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../itv-smoke/detail");
+    if local.is_dir() {
+        return Some(local);
+    }
+    None
+}
+
 /// 用真实图片（而非纯色合成图）验证新旧缩放的画质差。
 #[test]
 fn real_image_quality() {
-    let dir = std::path::Path::new("C:/Users/tt/AppData/Local/Temp/itv-smoke/detail");
+    let Some(dir) = detail_dir() else {
+        eprintln!("跳过：缺少高频细节测试图（设 ITV_SMOKE_DIR 或放 itv-smoke/detail）");
+        return;
+    };
+    let dir = dir.as_path();
     let mut checked = 0;
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
@@ -221,21 +246,39 @@ fn real_image_quality() {
 /// 把新旧缩放结果各存一张 PNG，供肉眼比对。
 #[test]
 fn dump_resize_comparison() {
-    let source = super::pixels::read_image_bgr(std::path::Path::new(
-        "C:/Users/tt/AppData/Local/Temp/itv-smoke/detail/mandel.png",
-    ))
-    .expect("找不到测试图");
+    let Some(dir) = detail_dir() else {
+        eprintln!("跳过：缺少高频细节测试图");
+        return;
+    };
+    // 优先用高频细节图；没有就取目录里第一张能读的图
+    let preferred = dir.join("mandel.png");
+    let source = if preferred.is_file() {
+        super::pixels::read_image_bgr(&preferred)
+    } else {
+        std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .find_map(|path| super::pixels::read_image_bgr(&path))
+    };
+    let Some(source) = source else {
+        eprintln!("跳过：目录里没有可读的图片");
+        return;
+    };
 
+    // 输出到系统临时目录（跟随平台，不再写死 C:/Users/tt）
+    let out_dir = std::env::temp_dir();
     for (tw, th, tag) in [(1280u32, 720u32, "half"), (640, 360, "third")] {
         let old = super::pixels::resize_old_for_compare(&source, tw, th);
         let new =
             super::resize_fast::resize_bgr(&source, tw, th, super::resize_fast::Kernel::Bicubic);
         old.to_rgb()
-            .save(format!("C:/Users/tt/AppData/Local/Temp/cmp_old_{tag}.png"))
+            .save(out_dir.join(format!("cmp_old_{tag}.png")))
             .unwrap();
         new.to_rgb()
-            .save(format!("C:/Users/tt/AppData/Local/Temp/cmp_new_{tag}.png"))
+            .save(out_dir.join(format!("cmp_new_{tag}.png")))
             .unwrap();
-        println!("已保存 {tag}: old / new");
+        println!("已保存 {tag}: old / new → {}", out_dir.display());
     }
 }
