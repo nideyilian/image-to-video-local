@@ -163,10 +163,22 @@ mod tests {
     #[test]
     fn identity_check_covers_every_field() {
         let cases = [
-            ColorGrade { brightness: 1.0, ..Default::default() },
-            ColorGrade { contrast: 1.0, ..Default::default() },
-            ColorGrade { saturation: 1.0, ..Default::default() },
-            ColorGrade { temperature: 1.0, ..Default::default() },
+            ColorGrade {
+                brightness: 1.0,
+                ..Default::default()
+            },
+            ColorGrade {
+                contrast: 1.0,
+                ..Default::default()
+            },
+            ColorGrade {
+                saturation: 1.0,
+                ..Default::default()
+            },
+            ColorGrade {
+                temperature: 1.0,
+                ..Default::default()
+            },
         ];
         for grade in cases {
             assert!(!grade.is_identity(), "漏判了某个参数：{grade:?}");
@@ -178,7 +190,10 @@ mod tests {
     #[test]
     fn brightness_is_uniform_shift() {
         let frame = solid([100, 100, 100]);
-        let grade = ColorGrade { brightness: 50.0, ..Default::default() };
+        let grade = ColorGrade {
+            brightness: 50.0,
+            ..Default::default()
+        };
         let out = apply(&frame, &grade).expect("应该处理");
         let pixel = out.pixel(0, 0).unwrap();
         // 50% → +32 色阶
@@ -194,11 +209,17 @@ mod tests {
     #[test]
     fn full_desaturation_makes_gray() {
         let frame = solid([200, 100, 50]);
-        let grade = ColorGrade { saturation: -100.0, ..Default::default() };
+        let grade = ColorGrade {
+            saturation: -100.0,
+            ..Default::default()
+        };
         let out = apply(&frame, &grade).expect("应该处理");
         let [b, g, r] = out.pixel(0, 0).unwrap();
         let spread = (r as i32 - g as i32).abs().max((g as i32 - b as i32).abs());
-        assert!(spread <= 1, "灰度图三通道应基本相等，实际 r={r} g={g} b={b}");
+        assert!(
+            spread <= 1,
+            "灰度图三通道应基本相等，实际 r={r} g={g} b={b}"
+        );
     }
 
     /// 饱和度 +100 应该让颜色更鲜艳：通道间差异变大。
@@ -206,11 +227,16 @@ mod tests {
     fn oversaturation_spreads_channels() {
         let frame = solid([150, 100, 50]);
         let before = frame.pixel(0, 0).unwrap();
-        let grade = ColorGrade { saturation: 100.0, ..Default::default() };
+        let grade = ColorGrade {
+            saturation: 100.0,
+            ..Default::default()
+        };
         let out = apply(&frame, &grade).expect("应该处理");
         let after = out.pixel(0, 0).unwrap();
         let spread = |p: [u8; 3]| {
-            (p[2] as i32 - p[1] as i32).abs().max((p[1] as i32 - p[0] as i32).abs())
+            (p[2] as i32 - p[1] as i32)
+                .abs()
+                .max((p[1] as i32 - p[0] as i32).abs())
         };
         assert!(
             spread(after) > spread(before),
@@ -223,7 +249,10 @@ mod tests {
     fn contrast_pushes_extremes() {
         let light = solid([180, 180, 180]);
         let dark = solid([80, 80, 80]);
-        let grade = ColorGrade { contrast: 100.0, ..Default::default() };
+        let grade = ColorGrade {
+            contrast: 100.0,
+            ..Default::default()
+        };
         let light_out = apply(&light, &grade).unwrap().pixel(0, 0).unwrap()[0];
         let dark_out = apply(&dark, &grade).unwrap().pixel(0, 0).unwrap()[0];
         assert!(light_out > 180, "亮部应更亮，实际 {light_out}");
@@ -234,7 +263,10 @@ mod tests {
     #[test]
     fn negative_contrast_flattens() {
         let frame = solid([250, 250, 250]);
-        let grade = ColorGrade { contrast: -100.0, ..Default::default() };
+        let grade = ColorGrade {
+            contrast: -100.0,
+            ..Default::default()
+        };
         let out = apply(&frame, &grade).unwrap().pixel(0, 0).unwrap()[0];
         assert!((out as i32 - 128).abs() <= 2, "应压到中灰，实际 {out}");
     }
@@ -243,7 +275,10 @@ mod tests {
     #[test]
     fn warm_temperature_raises_red_lowers_blue() {
         let frame = solid([128, 128, 128]);
-        let grade = ColorGrade { temperature: 100.0, ..Default::default() };
+        let grade = ColorGrade {
+            temperature: 100.0,
+            ..Default::default()
+        };
         let [b, _g, r] = apply(&frame, &grade).unwrap().pixel(0, 0).unwrap();
         assert!(r > 128, "暖色应提高红，实际 {r}");
         assert!(b < 128, "暖色应降低蓝，实际 {b}");
@@ -253,7 +288,10 @@ mod tests {
     #[test]
     fn cool_temperature_is_opposite() {
         let frame = solid([128, 128, 128]);
-        let grade = ColorGrade { temperature: -100.0, ..Default::default() };
+        let grade = ColorGrade {
+            temperature: -100.0,
+            ..Default::default()
+        };
         let [b, _g, r] = apply(&frame, &grade).unwrap().pixel(0, 0).unwrap();
         assert!(r < 128, "冷色应降低红，实际 {r}");
         assert!(b > 128, "冷色应提高蓝，实际 {b}");
@@ -278,7 +316,10 @@ mod tests {
     #[test]
     fn keeps_frame_size() {
         let frame = BgrFrame::new(37, 23);
-        let grade = ColorGrade { brightness: 20.0, ..Default::default() };
+        let grade = ColorGrade {
+            brightness: 20.0,
+            ..Default::default()
+        };
         let out = apply(&frame, &grade).unwrap();
         assert_eq!((out.width, out.height), (37, 23));
     }

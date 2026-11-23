@@ -207,7 +207,10 @@ mod tests {
         let scan = scan_subfolders(&tree.root.to_string_lossy());
 
         assert_eq!(
-            scan.groups.iter().map(|group| group.name.as_str()).collect::<Vec<_>>(),
+            scan.groups
+                .iter()
+                .map(|group| group.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["2", "10"]
         );
         assert_eq!(scan.groups[0].images.len(), 1);

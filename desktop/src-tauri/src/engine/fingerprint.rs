@@ -65,7 +65,10 @@ pub fn compute(ffmpeg: Option<&Path>, path: &Path) -> Option<Fingerprint> {
     if signature.is_empty() {
         return None;
     }
-    Some(Fingerprint { duration: signature.len() as f64, signature })
+    Some(Fingerprint {
+        duration: signature.len() as f64,
+        signature,
+    })
 }
 
 /// 把 16 位小端 PCM 切成每秒一块，返回每秒 RMS（0..1）。

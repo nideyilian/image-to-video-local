@@ -57,8 +57,6 @@ fn library_base(kind: &str, params: &Map<String, Value>) -> PathBuf {
     snapshot::resolve_dir(params, key, &fallback)
 }
 
-/// 与 `_make_dup_group()` 等价：代表项取「名称小写 + 路径」排序后的第一个。
-
 /// dHash 汉明距离阈值（与 `DUP_PHASH_THRESHOLD` 一致：最多 2000 张、阈值 8）。
 const DUP_PHASH_THRESHOLD: usize = 8;
 const DUP_SCAN_MAX_IMAGES: usize = 2000;
@@ -133,6 +131,7 @@ fn cluster_image_similar(items: &[Value]) -> Vec<Value> {
     groups
 }
 
+/// 与 `_make_dup_group()` 等价：代表项取「名称小写 + 路径」排序后的第一个。
 fn make_dup_group(members: &[Value]) -> Value {
     let mut sorted: Vec<Value> = members.to_vec();
     sorted.sort_by(|a, b| {
@@ -249,21 +248,19 @@ pub fn find_duplicates(params: &Map<String, Value>) -> Result<Value, String> {
     groups.sort_by(|a, b| {
         let saved_a = a.get("saved_bytes").and_then(Value::as_i64).unwrap_or(0);
         let saved_b = b.get("saved_bytes").and_then(Value::as_i64).unwrap_or(0);
-        saved_b
-            .cmp(&saved_a)
-            .then_with(|| {
-                let name_a = a
-                    .get("representative")
-                    .map(name_of)
-                    .unwrap_or_default()
-                    .to_lowercase();
-                let name_b = b
-                    .get("representative")
-                    .map(name_of)
-                    .unwrap_or_default()
-                    .to_lowercase();
-                name_a.cmp(&name_b)
-            })
+        saved_b.cmp(&saved_a).then_with(|| {
+            let name_a = a
+                .get("representative")
+                .map(name_of)
+                .unwrap_or_default()
+                .to_lowercase();
+            let name_b = b
+                .get("representative")
+                .map(name_of)
+                .unwrap_or_default()
+                .to_lowercase();
+            name_a.cmp(&name_b)
+        })
     });
 
     Ok(json!({ "groups": groups, "scanned": items.len() }))

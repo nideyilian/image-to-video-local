@@ -33,14 +33,11 @@ fn safe_float(value: Option<&Value>) -> f64 {
 
 fn safe_int(value: Option<&Value>) -> i64 {
     match value {
-        Some(Value::Number(number)) => number.as_i64().or_else(|| {
-            number.as_f64().map(|v| v as i64)
-        }).unwrap_or(0),
-        Some(Value::String(text)) => text
-            .trim()
-            .parse::<f64>()
-            .map(|v| v as i64)
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|v| v as i64))
             .unwrap_or(0),
+        Some(Value::String(text)) => text.trim().parse::<f64>().map(|v| v as i64).unwrap_or(0),
         _ => 0,
     }
 }
@@ -99,7 +96,11 @@ pub fn probe_video_meta(video_path: &str, ffprobe: Option<&Path>) -> Option<Vide
         fps = parse_fps(stream.get("r_frame_rate"));
     }
     let mut frames = safe_int(stream.get("nb_frames"));
-    let mut duration = safe_float(payload.get("format").and_then(|value| value.get("duration")));
+    let mut duration = safe_float(
+        payload
+            .get("format")
+            .and_then(|value| value.get("duration")),
+    );
 
     if duration <= 0.0 && fps > 0.0 && frames > 0 {
         duration = frames as f64 / fps;
@@ -138,7 +139,10 @@ pub fn run_with_retry(
     let attempts = retries.max(1);
     let mut last: Option<CommandOutcome> = None;
     for attempt in 0..attempts {
-        log(&format!("[{stage}] 执行命令（尝试 {}/{attempts}）", attempt + 1));
+        log(&format!(
+            "[{stage}] 执行命令（尝试 {}/{attempts}）",
+            attempt + 1
+        ));
         match run_once(program, args, timeout_secs) {
             Ok(outcome) => {
                 if outcome.code == Some(0) {
@@ -257,7 +261,10 @@ mod tests {
         let src = dir.join("a.txt");
         let dst = dir.join("b.txt");
         std::fs::write(&src, b"hello").unwrap();
-        assert!(safe_replace_file(&src.to_string_lossy(), &dst.to_string_lossy()));
+        assert!(safe_replace_file(
+            &src.to_string_lossy(),
+            &dst.to_string_lossy()
+        ));
         assert!(!src.exists());
         assert_eq!(std::fs::read(&dst).unwrap(), b"hello");
         let _ = std::fs::remove_dir_all(&dir);
@@ -294,7 +301,7 @@ fn probe_via_ffmpeg(video_path: &str) -> Option<VideoMeta> {
         }
         if trimmed.contains("Video:") && width == 0 {
             // 形如 `320x240` 的尺寸
-            for token in trimmed.split(|c: char| c == ',' || c == ' ') {
+            for token in trimmed.split([',', ' ']) {
                 let token = token.trim();
                 if let Some((left, right)) = token.split_once('x') {
                     if let (Ok(w), Ok(h)) = (left.parse::<i64>(), right.parse::<i64>()) {

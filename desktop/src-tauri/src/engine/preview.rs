@@ -76,9 +76,7 @@ impl ThumbnailParams {
             .trim()
             .to_string();
         let clamp = |value: Option<&Value>, default: u32, low: u32, high: u32| -> u32 {
-            let raw = value
-                .and_then(Value::as_i64)
-                .unwrap_or(default as i64);
+            let raw = value.and_then(Value::as_i64).unwrap_or(default as i64);
             raw.clamp(low as i64, high as i64) as u32
         };
         ThumbnailParams {
@@ -206,8 +204,8 @@ pub fn preview_thumbnail(
         }
     } else {
         // 图片：等比缩到 max 之内（对应 PIL 的 thumbnail + LANCZOS）
-        let frame = pixels::read_image_bgr(&source_path)
-            .ok_or_else(|| "没有可预览的素材".to_string())?;
+        let frame =
+            pixels::read_image_bgr(&source_path).ok_or_else(|| "没有可预览的素材".to_string())?;
         let scale = f64::min(
             params.max_width as f64 / frame.width as f64,
             params.max_height as f64 / frame.height as f64,
@@ -223,12 +221,7 @@ pub fn preview_thumbnail(
         width = target_w;
         height = target_h;
         if !preview_path.exists() {
-            let resized = pixels::resize(
-                &frame,
-                target_w,
-                target_h,
-                pixels::ResizeFilter::Area,
-            );
+            let resized = pixels::resize(&frame, target_w, target_h, pixels::ResizeFilter::Area);
             let image = resized.to_rgb();
             // JPEG 质量 88（与 Python 的 quality=88 一致）
             let mut buffer: Vec<u8> = Vec::new();
@@ -360,9 +353,7 @@ pub fn preview_bgm(
         }
         let mut files: Vec<String> = audio::get_audio_files(&bgm_dir)
             .into_iter()
-            .map(|path| {
-                crate::engine::paths::display(&crate::engine::paths::absolute(&path))
-            })
+            .map(|path| crate::engine::paths::display(&crate::engine::paths::absolute(&path)))
             .collect();
         // ⚠️ 必须用自然排序（数字段按数值比），与 `scan_audio_files` 一致。
         // 用字典序会让 10-xxx 排到 2-xxx 前面，选出的曲子与旧引擎不同。
@@ -376,9 +367,7 @@ pub fn preview_bgm(
     // 选曲：序号优先，其次随机（随机种子与 Python 一致，用 sha1 前 4 字节）
     let mut source = candidates[0].clone();
     if sequence > 0 {
-        if let Some(chosen) =
-            super::preview_random::preview_choice(&candidates, sequence, "bgm")
-        {
+        if let Some(chosen) = super::preview_random::preview_choice(&candidates, sequence, "bgm") {
             source = chosen;
         }
     } else if config.bool_of("random_bgm", false) && candidates.len() > 1 {
@@ -416,7 +405,9 @@ pub fn audio_cover(path: &str, ffmpeg: Option<&Path>) -> Result<Value, String> {
     let Some(ffmpeg) = ffmpeg else {
         return Ok(json!({ "cover_path": null }));
     };
-    let size = std::fs::metadata(&source).map(|meta| meta.len()).unwrap_or(0);
+    let size = std::fs::metadata(&source)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
     let cache_key = format!(
         "cover:{}:{}:{size}",
         crate::engine::paths::display(&crate::engine::paths::absolute(&source)),
@@ -429,7 +420,9 @@ pub fn audio_cover(path: &str, ffmpeg: Option<&Path>) -> Result<Value, String> {
         .map(|meta| meta.len() > 0)
         .unwrap_or(false);
     if cached {
-        return Ok(json!({ "cover_path": crate::engine::paths::display(&crate::engine::paths::absolute(&cover_path)) }));
+        return Ok(
+            json!({ "cover_path": crate::engine::paths::display(&crate::engine::paths::absolute(&cover_path)) }),
+        );
     }
 
     // ⚠️ 必须 `-map 0:v:0 -frames:v 1 -c:v copy`：Python 是原样拷贝封面字节
@@ -471,7 +464,9 @@ pub fn audio_cover(path: &str, ffmpeg: Option<&Path>) -> Result<Value, String> {
         let _ = std::fs::remove_file(&cover_path);
         return Ok(json!({ "cover_path": null }));
     }
-    Ok(json!({ "cover_path": crate::engine::paths::display(&crate::engine::paths::absolute(&cover_path)) }))
+    Ok(
+        json!({ "cover_path": crate::engine::paths::display(&crate::engine::paths::absolute(&cover_path)) }),
+    )
 }
 
 /// `library_preview_video`：把素材库视频准备为 WebView 可播放的预览。
@@ -480,12 +475,18 @@ pub fn audio_cover(path: &str, ffmpeg: Option<&Path>) -> Result<Value, String> {
 /// - 缓存键 `video-preview-v1:{abs}:{mtime_ns}:{size}`，目录 `video-previews`
 /// - 可播放判定见 `webview_playable_plan`，可播放的**直接拷贝**（保留 mtime）
 /// - 返回字段名是 `preview_path`（前端只读这个，写成 `path` 会拿到 undefined）
-pub fn preview_video(path: &str, ffmpeg: Option<&Path>, ffprobe: Option<&Path>) -> Result<Value, String> {
+pub fn preview_video(
+    path: &str,
+    ffmpeg: Option<&Path>,
+    ffprobe: Option<&Path>,
+) -> Result<Value, String> {
     let source = PathBuf::from(path);
     if !source.is_file() {
         return Err("视频文件不存在".to_string());
     }
-    let size = std::fs::metadata(&source).map(|meta| meta.len()).unwrap_or(0);
+    let size = std::fs::metadata(&source)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
     let cache_key = format!(
         "video-preview-v1:{}:{}:{size}",
         crate::engine::paths::display(&crate::engine::paths::absolute(&source)),
@@ -584,12 +585,15 @@ fn webview_playable_plan(path: &Path, ffprobe: Option<&Path>) -> (bool, &'static
     }
     let codec = probe_video_codec(path, ffprobe);
     if codec.is_empty() || matches!(codec.as_str(), "h264" | "vp8" | "vp9" | "hevc") {
-        return (true, match suffix.as_str() {
-            "mp4" => ".mp4",
-            "mov" => ".mov",
-            "m4v" => ".m4v",
-            _ => ".mkv",
-        });
+        return (
+            true,
+            match suffix.as_str() {
+                "mp4" => ".mp4",
+                "mov" => ".mov",
+                "m4v" => ".m4v",
+                _ => ".mkv",
+            },
+        );
     }
     (false, ".mp4")
 }
@@ -621,7 +625,9 @@ fn probe_video_codec(path: &Path, ffprobe: Option<&Path>) -> String {
     let Ok(output) = command.output() else {
         return String::new();
     };
-    String::from_utf8_lossy(&output.stdout).trim().to_lowercase()
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .to_lowercase()
 }
 
 /// 浏览器可直接播放的音频封装（与 `_AUDIO_PLAYABLE_EXTENSIONS` 一致）。
@@ -639,7 +645,9 @@ pub fn preview_audio(path: &str, ffmpeg: Option<&Path>) -> Result<Value, String>
     if !source.is_file() {
         return Err("音频文件不存在".to_string());
     }
-    let size = std::fs::metadata(&source).map(|meta| meta.len()).unwrap_or(0);
+    let size = std::fs::metadata(&source)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
     let suffix = source
         .extension()
         .map(|value| format!(".{}", value.to_string_lossy().to_lowercase()))
@@ -657,14 +665,21 @@ pub fn preview_audio(path: &str, ffmpeg: Option<&Path>) -> Result<Value, String>
     let preview_path = preview_dir.join(format!("{}{output_ext}", sha1_hex(&cache_key)));
 
     let missing = !preview_path.exists()
-        || std::fs::metadata(&preview_path).map(|meta| meta.len()).unwrap_or(0) == 0;
+        || std::fs::metadata(&preview_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0)
+            == 0;
     if missing {
         if playable {
             // 直接拷贝：Python 用 shutil.copy2（保留 mtime），这里同样保留
             std::fs::copy(&source, &preview_path).map_err(|error| error.to_string())?;
         } else {
-            let transcoded =
-                audio_preview_cache(&source.to_string_lossy(), ffmpeg, "audio-previews", "audio-v2")?;
+            let transcoded = audio_preview_cache(
+                &source.to_string_lossy(),
+                ffmpeg,
+                "audio-previews",
+                "audio-v2",
+            )?;
             if transcoded != preview_path {
                 std::fs::copy(&transcoded, &preview_path).map_err(|error| error.to_string())?;
             }
@@ -712,14 +727,8 @@ mod tests {
     #[test]
     fn sha1_matches_known_vector() {
         // "abc" 的 sha1
-        assert_eq!(
-            sha1_hex("abc"),
-            "a9993e364706816aba3e25717850c26c9cd0d89d"
-        );
-        assert_eq!(
-            sha1_hex(""),
-            "da39a3ee5e6b4b0d3255bfef95601890afd80709"
-        );
+        assert_eq!(sha1_hex("abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(sha1_hex(""), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
     }
 
     #[test]
@@ -762,8 +771,10 @@ mod tests {
     #[test]
     fn cache_dirs_follow_python_layout() {
         let dir = cache_dir("previews");
-        assert!(dir.ends_with("image-to-video-engine/previews")
-            || dir.to_string_lossy().contains("image-to-video-engine"));
+        assert!(
+            dir.ends_with("image-to-video-engine/previews")
+                || dir.to_string_lossy().contains("image-to-video-engine")
+        );
     }
 
     #[test]

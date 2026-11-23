@@ -122,7 +122,7 @@ pub fn build_script(options: &ScriptOptions) -> FrameScript {
     let mut steps = Vec::new();
     let mut image_frame_counts = vec![0i64; options.total_images];
 
-    for image_index in 0..options.total_images {
+    for (image_index, count) in image_frame_counts.iter_mut().enumerate() {
         if options.total_images == 0 {
             break;
         }
@@ -132,14 +132,13 @@ pub fn build_script(options: &ScriptOptions) -> FrameScript {
         } else {
             options.display_frames_per_img
         };
-        image_frame_counts[image_index] = static_frames;
+        *count = static_frames;
 
         if static_frames > 0 {
             if options.effect_enabled {
                 // 逐帧算特效：时间点从 0 开始，每帧推进 1/fps
                 let effect_frames = static_frames.max(1);
-                let duration_sec =
-                    (effect_frames as f64 / options.fps.max(1) as f64).max(0.001);
+                let duration_sec = (effect_frames as f64 / options.fps.max(1) as f64).max(0.001);
                 for frame_in_image in 0..effect_frames {
                     let index = steps.len() as i64;
                     steps.push(FrameStep {
@@ -305,7 +304,10 @@ mod tests {
         assert!(times.len() >= 3);
         let expected = [0.0, 1.0 / 30.0, 2.0 / 30.0];
         for (actual, want) in times.iter().zip(expected.iter()) {
-            assert!((actual - want).abs() < 1e-9, "时间点不对：{actual} vs {want}");
+            assert!(
+                (actual - want).abs() < 1e-9,
+                "时间点不对：{actual} vs {want}"
+            );
         }
     }
 

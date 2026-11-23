@@ -167,7 +167,11 @@ pub fn collect_fixed_layers(
             files.sort();
             if files.is_empty() {
                 None
-            } else if object.get("folder_random_single").map(truthy).unwrap_or(false) {
+            } else if object
+                .get("folder_random_single")
+                .map(truthy)
+                .unwrap_or(false)
+            {
                 let index = pick(files.len()).min(files.len() - 1);
                 Some(files[index].clone())
             } else {
@@ -194,19 +198,13 @@ pub fn collect_fixed_layers(
                 .and_then(Value::as_str)
                 .unwrap_or("自适应覆盖")
                 .to_string(),
-            scale: object
-                .get("scale")
-                .and_then(Value::as_f64)
-                .unwrap_or(20.0),
+            scale: object.get("scale").and_then(Value::as_f64).unwrap_or(20.0),
             blend_mode: object
                 .get("blend_mode")
                 .and_then(Value::as_str)
                 .unwrap_or("正常")
                 .to_string(),
-            opacity: object
-                .get("opacity")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.5),
+            opacity: object.get("opacity").and_then(Value::as_f64).unwrap_or(0.5),
         });
     }
     specs
@@ -306,10 +304,13 @@ mod tests {
     #[test]
     fn all_four_corners_and_center() {
         let args = (1920, 1080, 400, 200, "自适应覆盖", 20.0);
-        let right_bottom = calc_overlay_geometry(args.0, args.1, args.2, args.3, args.4, args.5, "右下");
+        let right_bottom =
+            calc_overlay_geometry(args.0, args.1, args.2, args.3, args.4, args.5, "右下");
         let center = calc_overlay_geometry(args.0, args.1, args.2, args.3, args.4, args.5, "中心");
-        let right_top = calc_overlay_geometry(args.0, args.1, args.2, args.3, args.4, args.5, "右上");
-        let left_bottom = calc_overlay_geometry(args.0, args.1, args.2, args.3, args.4, args.5, "左下");
+        let right_top =
+            calc_overlay_geometry(args.0, args.1, args.2, args.3, args.4, args.5, "右上");
+        let left_bottom =
+            calc_overlay_geometry(args.0, args.1, args.2, args.3, args.4, args.5, "左下");
         assert_eq!(center.x, (1920 - right_bottom.target_w) / 2);
         assert_eq!(right_top.y, 0);
         assert_eq!(left_bottom.x, 0);
@@ -407,7 +408,11 @@ mod tests {
         );
         let specs = collect_fixed_layers(&MapConfig(map), |_| 0);
         assert_eq!(specs.len(), 1);
-        assert!(specs[0].path.ends_with("a.png"), "排序后取第一个：{}", specs[0].path);
+        assert!(
+            specs[0].path.ends_with("a.png"),
+            "排序后取第一个：{}",
+            specs[0].path
+        );
 
         let mut map = serde_json::Map::new();
         map.insert(
@@ -417,7 +422,108 @@ mod tests {
         );
         // pick 返回 1 → 排序后的第二个
         let specs = collect_fixed_layers(&MapConfig(map), |_| 1);
-        assert!(specs[0].path.ends_with("b.png"), "随机取第二个：{}", specs[0].path);
+        assert!(
+            specs[0].path.ends_with("b.png"),
+            "随机取第二个：{}",
+            specs[0].path
+        );
+    }
+
+    /// **「跟随水印」与「固定图层」必须严格互补，一个图层只能进其中一边。**
+    ///
+    /// 两边都进 → 视频里贴两遍；两边都不进 → 静默丢水印（2026-11-20 就是后者：
+    /// `batch.rs` 把合成器的 decorate 写死 `None`，跟随水印整类图层不生效）。
+    #[test]
+    fn follow_layers_are_separated_from_fixed() {
+        // 必须用真实文件：两条收集路径都会检查 path 是否存在，
+        // 用假路径会得到「两边都空」的假阳性，什么也证明不了。
+        let dir = std::env::temp_dir().join(format!("itv-split-wm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("a.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([255, 0, 0, 255]))
+            .save(&png)
+            .unwrap();
+        let real = png.to_string_lossy().into_owned();
+
+        let layers = json!([
+            {"type": "图片", "fixed": true,  "path": real, "enabled": true},
+            {"type": "图片", "fixed": false, "path": real, "enabled": true},
+            {"type": "图片",                     "path": real, "enabled": true},
+            {"type": "图片", "fixed": true,  "path": real, "enabled": false},
+            {"type": "视频", "fixed": false, "path": real, "enabled": true},
+        ]);
+        let items = layers.as_array().unwrap().to_vec();
+
+        let fixed = collect_fixed_layers(&MapConfig(serde_json::Map::new()), |_| 0);
+        assert!(fixed.is_empty(), "空配置不该有固定图层");
+
+        let mut map = serde_json::Map::new();
+        map.insert("_watermark_layers".to_string(), layers.clone());
+        let fixed = collect_fixed_layers(&MapConfig(map.clone()), |_| 0);
+        assert_eq!(
+            fixed.len(),
+            1,
+            "只有「显式 fixed:true 且 enabled 的图片」才算固定图层，实际 {}",
+            fixed.len()
+        );
+
+        let follow = follow_image_layers(&items, &mut |_| 0);
+        assert_eq!(
+            follow.len(),
+            2,
+            "fixed:false 与未写 fixed 的图片都算跟随水印（视频图层不算），实际 {}",
+            follow.len()
+        );
+
+        // 互补性：两条路径加起来正好覆盖 3 个有效图片图层（第 4 个被 enabled 过滤，
+        // 第 5 个是视频）。任何一边多算或漏算，这里的等式就崩。
+        assert_eq!(fixed.len() + follow.len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 跟随水印每贴一层都必须真的改变像素 —— 否则等于没接上。
+    #[test]
+    fn follow_layer_application_changes_pixels() {
+        let dir = std::env::temp_dir().join(format!("itv-follow-wm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wm_path = dir.join("wm.png");
+        let mut wm = image::RgbaImage::new(40, 30);
+        for pixel in wm.pixels_mut() {
+            *pixel = image::Rgba([255, 0, 0, 255]);
+        }
+        wm.save(&wm_path).unwrap();
+
+        let layers = json!([{
+            "type": "图片", "fixed": false, "enabled": true,
+            "path": wm_path.to_string_lossy(),
+            "position": "左上", "size_mode": "固定比例", "scale": 20.0,
+            "blend_mode": "正常", "opacity": 1.0,
+        }]);
+        let items = layers.as_array().unwrap().to_vec();
+        let follow = follow_image_layers(&items, &mut |_| 0);
+        assert_eq!(follow.len(), 1);
+
+        // 全绿底图
+        let mut frame = BgrFrame::new(160, 120);
+        for y in 0..120 {
+            for x in 0..160 {
+                frame.set_pixel(x, y, [0, 200, 0]);
+            }
+        }
+        let out = apply_image_layer(&frame, &follow[0], &mut |_| 0);
+        assert_eq!(out.width, frame.width);
+        assert_eq!(out.height, frame.height);
+        assert_ne!(out.data, frame.data, "贴了水印却没变像素 = 没接上");
+
+        // 左上角应出现红色（BGR 里红色在通道 2）。
+        // 「固定比例」模式下留 10px 边距，所以取 (12,12) 而不是 (2,2)。
+        let corner = out.pixel(12, 12).expect("(12,12) 在画面内");
+        assert!(
+            corner[2] > 150 && corner[0] < 100,
+            "左上角应该是红色水印，实际 {:?}",
+            corner
+        );
     }
 }
 // ---------- 水印像素合成（对应 `apply_blend_mode` / `apply_image_watermark_layer`） ----------
@@ -438,9 +544,7 @@ impl WatermarkImage {
         }
         let index = ((y * self.width + x) as usize) * self.channels;
         let mut out = [255u8; 4];
-        for channel in 0..self.channels {
-            out[channel] = self.data[index + channel];
-        }
+        out[..self.channels].copy_from_slice(&self.data[index..(self.channels + index)]);
         Some(out)
     }
 }
@@ -481,12 +585,7 @@ pub fn from_bgr(frame: &BgrFrame) -> WatermarkImage {
 /// 除「正常」外，所有模式都是先算混合公式 `mixed`，再
 /// `result = bg*(1-alpha) + mixed*alpha`；`bg`/`fg` 都先归一化到 0..1。
 /// 漏掉这一步会把「滤色」做成一团白。
-pub fn apply_blend_mode(
-    background: &[u8],
-    foreground: &[u8],
-    mode: &str,
-    alpha: f64,
-) -> Vec<u8> {
+pub fn apply_blend_mode(background: &[u8], foreground: &[u8], mode: &str, alpha: f64) -> Vec<u8> {
     let mut out = vec![0u8; background.len()];
     for index in 0..background.len() {
         let bg = background[index] as f64 / 255.0;
@@ -527,7 +626,10 @@ pub struct ImageLayer {
 ///
 /// `pick` 用于「目录多图」时挑一张：传入一个 `[0,1)` 的随机数即可，
 /// 这样调用方（导出用固定序列、预览用随机）都能控制可复现性。
-pub fn prepare_image_layers(layers: &[Value], pick: &mut dyn FnMut(usize) -> usize) -> Vec<ImageLayer> {
+pub fn prepare_image_layers(
+    layers: &[Value],
+    pick: &mut dyn FnMut(usize) -> usize,
+) -> Vec<ImageLayer> {
     let mut prepared = Vec::new();
     for layer in layers {
         let Some(object) = layer.as_object() else {
@@ -536,12 +638,7 @@ pub fn prepare_image_layers(layers: &[Value], pick: &mut dyn FnMut(usize) -> usi
         if !object.get("enabled").map(truthy).unwrap_or(true) {
             continue;
         }
-        if object
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("图片")
-            != "图片"
-        {
+        if object.get("type").and_then(Value::as_str).unwrap_or("图片") != "图片" {
             continue;
         }
         let path = object.get("path").and_then(Value::as_str).unwrap_or("");
@@ -550,7 +647,12 @@ pub fn prepare_image_layers(layers: &[Value], pick: &mut dyn FnMut(usize) -> usi
         }
         let mut files: Vec<String> = if Path::new(path).is_dir() {
             let mut found = image_files_in_dir(path);
-            if !found.is_empty() && object.get("folder_random_single").map(truthy).unwrap_or(false) {
+            if !found.is_empty()
+                && object
+                    .get("folder_random_single")
+                    .map(truthy)
+                    .unwrap_or(false)
+            {
                 let index = pick(found.len());
                 found = vec![found[index.min(found.len() - 1)].clone()];
             }
@@ -588,6 +690,36 @@ pub fn prepare_image_layers(layers: &[Value], pick: &mut dyn FnMut(usize) -> usi
         });
     }
     prepared
+}
+
+/// 只保留**跟随水印**（未勾「固定图层」）的图层。
+///
+/// 两类图层的处理阶段完全不同，这是与 Python `compositor.py:119` 一致的分工：
+/// - **固定图层**（`fixed: true`）：合成完成后由后处理用 ffmpeg overlay 一次贴上，
+///   整段视频位置不变 → [`collect_fixed_layers`]
+/// - **跟随水印**（`fixed: false`）：必须在**每张图缩放之后、转场之前**逐帧贴，
+///   这样水印会跟着图片一起缩放、跟着转场一起淡入淡出 → 本函数
+///
+/// ⚠️ 2026-11-20 发现 `batch.rs` 把合成器的 `decorate` 参数写死成 `None`，
+/// 于是「跟随水印」在导出里**完全不存在**，且没有任何报错（日志只显示
+/// 「固定图层:0」，看起来像「用户没设水印」）。这类静默丢失最难发现，
+/// 所以这个函数独立出来，并有 `follow_layers_are_separated_from_fixed` 守着。
+pub fn follow_image_layers(
+    layers: &[Value],
+    pick: &mut dyn FnMut(usize) -> usize,
+) -> Vec<ImageLayer> {
+    let follow: Vec<Value> = layers
+        .iter()
+        .filter(|layer| {
+            let Some(object) = layer.as_object() else {
+                return false;
+            };
+            // 与 `collect_fixed_layers` 的判据正好互补：没勾 fixed 就是跟随水印
+            !object.get("fixed").map(truthy).unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    prepare_image_layers(&follow, pick)
 }
 
 /// `apply_image_watermark_layer`：把一层水印贴到主画面上。
@@ -634,7 +766,11 @@ pub fn apply_image_layer(
     // 缩放水印（带 alpha 一起缩）
     let resized = resize_watermark(chosen, target_w as u32, target_h as u32);
 
-    let margin = if layer.size_mode == "固定比例" { 10.0 } else { 0.0 };
+    let margin = if layer.size_mode == "固定比例" {
+        10.0
+    } else {
+        0.0
+    };
     let (x_pos, y_pos) = match layer.position.as_str() {
         "左上" => (margin, margin),
         "右上" => (main_w - target_w as f64 - margin, margin),
@@ -695,8 +831,8 @@ pub fn apply_image_layer(
         // 有 alpha：先用不透明混合算出"完全覆盖"的结果，再按 alpha 蒙版合成
         let full = apply_blend_mode(&roi, &foreground, &layer.blend_mode, 1.0);
         let mut out = vec![0u8; full.len()];
-        for pixel in 0..alpha_mask.len() {
-            let alpha = alpha_mask[pixel];
+        for (pixel, alpha) in alpha_mask.iter().enumerate() {
+            let alpha = *alpha;
             for channel in 0..3 {
                 let index = pixel * 3 + channel;
                 out[index] = (roi[index] as f64 * (1.0 - alpha) + full[index] as f64 * alpha)
@@ -920,9 +1056,8 @@ pub fn read_video_watermark_frame(
         match match_method {
             "循环" => target_time %= source_duration,
             "拉伸" => {
-                target_time = source_duration.min(
-                    target_time / 0.001f64.max(output_duration) * source_duration,
-                )
+                target_time = source_duration
+                    .min(target_time / 0.001f64.max(output_duration) * source_duration)
             }
             _ => {
                 if target_time >= source_duration {

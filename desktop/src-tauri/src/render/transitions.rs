@@ -429,7 +429,6 @@ fn pixelate(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame> 
         .collect()
 }
 
-
 // ---------- 第二批：24 种转场 ----------
 
 /// 复制一块矩形区域（目标坐标可能越界，自动裁剪）。
@@ -790,7 +789,9 @@ fn zoom_in_impact(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrF
                         for x in 0..new_w {
                             let dy = (y_offset + y) as u32;
                             let dx = (x_offset + x) as u32;
-                            if let (Some(base), Some(top)) = (frame.pixel(dx, dy), scaled.pixel(x as u32, y as u32)) {
+                            if let (Some(base), Some(top)) =
+                                (frame.pixel(dx, dy), scaled.pixel(x as u32, y as u32))
+                            {
                                 let mut mixed = [0u8; 3];
                                 for channel in 0..3 {
                                     mixed[channel] = (base[channel] as f64 * (1.0 - alpha)
@@ -850,13 +851,16 @@ fn zoom_out_explode(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<Bg
                 for x in 0..(x2 - x1).max(0) {
                     let dst = ((y1 + y) as u32, (x1 + x) as u32);
                     let src = ((src_x1 + x) as u32, (src_y1 + y) as u32);
-                    if let (Some(base), Some(top)) = (frame.pixel(dst.0, dst.1), scaled.pixel(src.0, src.1)) {
+                    if let (Some(base), Some(top)) =
+                        (frame.pixel(dst.0, dst.1), scaled.pixel(src.0, src.1))
+                    {
                         let mut mixed = [0u8; 3];
                         for channel in 0..3 {
                             mixed[channel] = (base[channel] as f64 * (1.0 - alpha)
                                 + top[channel] as f64 * alpha)
                                 .round()
-                                .clamp(0.0, 255.0) as u8;
+                                .clamp(0.0, 255.0)
+                                as u8;
                         }
                         frame.set_pixel(dst.0, dst.1, mixed);
                     }
@@ -877,7 +881,8 @@ fn rotate_zoom(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFram
             let angle = progress * 360.0;
             let scale = 0.3 + progress * 0.7;
             let matrix = super::effects::rotation_matrix(center_x, center_y, angle, scale);
-            let warped = super::effects::warp_affine(second, matrix, super::effects::BorderMode::Constant);
+            let warped =
+                super::effects::warp_affine(second, matrix, super::effects::BorderMode::Constant);
             super::pixels::blend_weighted(first, &warped, progress)
         })
         .collect()
@@ -917,13 +922,16 @@ fn elastic_zoom(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFra
                     for x in 0..new_w {
                         let dy = (y_offset + y) as u32;
                         let dx = (x_offset + x) as u32;
-                        if let (Some(base), Some(top)) = (frame.pixel(dx, dy), scaled.pixel(x as u32, y as u32)) {
+                        if let (Some(base), Some(top)) =
+                            (frame.pixel(dx, dy), scaled.pixel(x as u32, y as u32))
+                        {
                             let mut mixed = [0u8; 3];
                             for channel in 0..3 {
                                 mixed[channel] = (base[channel] as f64 * (1.0 - alpha)
                                     + top[channel] as f64 * alpha)
                                     .round()
-                                    .clamp(0.0, 255.0) as u8;
+                                    .clamp(0.0, 255.0)
+                                    as u8;
                             }
                             frame.set_pixel(dx, dy, mixed);
                         }
@@ -933,13 +941,8 @@ fn elastic_zoom(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFra
             } else {
                 let crop_y = (new_h - first.height as i64) / 2;
                 let crop_x = (new_w - first.width as i64) / 2;
-                let cropped = super::pixels::crop(
-                    &scaled,
-                    crop_x,
-                    crop_y,
-                    first.width,
-                    first.height,
-                );
+                let cropped =
+                    super::pixels::crop(&scaled, crop_x, crop_y, first.width, first.height);
                 super::pixels::blend_weighted(first, &cropped, alpha)
             }
         })
@@ -1114,7 +1117,8 @@ fn shatter(
                     let y2 = (y1 + shard).min(first.height as i64);
                     let x1 = col * shard;
                     let x2 = (x1 + shard).min(first.width as i64);
-                    let shard = super::pixels::crop(first, x1, y1, (x2 - x1) as u32, (y2 - y1) as u32);
+                    let shard =
+                        super::pixels::crop(first, x1, y1, (x2 - x1) as u32, (y2 - y1) as u32);
                     let (vel_x, vel_y, rotation) = velocities[index];
                     let alpha = (1.0 - progress * 1.2).max(0.0);
                     if alpha > 0.01 && progress < 0.9 && shard.width > 0 && shard.height > 0 {
@@ -1197,7 +1201,8 @@ fn glow_spread(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFram
                         for channel in 0..3 {
                             mixed[channel] = (base[channel] as f64 * (1.0 - weight)
                                 + top[channel] as f64 * weight)
-                                .clamp(0.0, 255.0) as u8;
+                                .clamp(0.0, 255.0)
+                                as u8;
                         }
                         frame.set_pixel(x, y, mixed);
                     }
@@ -1282,7 +1287,9 @@ fn radial_sweep(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFra
     let mut angles = vec![0.0f64; (first.width * first.height) as usize];
     for y in 0..first.height {
         for x in 0..first.width {
-            let angle = (y as f64 - center_y).atan2(x as f64 - center_x).to_degrees();
+            let angle = (y as f64 - center_y)
+                .atan2(x as f64 - center_x)
+                .to_degrees();
             angles[(y * first.width + x) as usize] = (angle + 360.0) % 360.0;
         }
     }
@@ -1403,7 +1410,11 @@ fn focus_blur(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame
         .map(|progress| {
             let blur_strength = (1.0 + (1.0 - (progress - 0.5).abs() * 2.0) * 16.0) as i64;
             let strength = blur_strength.max(1);
-            let k = if strength % 2 == 1 { strength } else { strength + 1 };
+            let k = if strength % 2 == 1 {
+                strength
+            } else {
+                strength + 1
+            };
             let b1 = super::effects::gaussian_blur_ksize_pub(first, k as u32);
             let b2 = super::effects::gaussian_blur_ksize_pub(second, k as u32);
             super::pixels::blend_weighted(&b1, &b2, progress)
@@ -1495,11 +1506,10 @@ fn light_streak(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFra
                             if let Some(base) = frame.pixel(x as u32, y) {
                                 let mut mixed = [0u8; 3];
                                 for channel in 0..3 {
-                                    mixed[channel] =
-                                        (base[channel] as f64 * 0.45 + 255.0 * 0.55)
-                                            .round()
-                                            .clamp(0.0, 255.0)
-                                            as u8;
+                                    mixed[channel] = (base[channel] as f64 * 0.45 + 255.0 * 0.55)
+                                        .round()
+                                        .clamp(0.0, 255.0)
+                                        as u8;
                                 }
                                 frame.set_pixel(x as u32, y, mixed);
                             }
@@ -1520,7 +1530,9 @@ fn clock_wipe(first: &BgrFrame, second: &BgrFrame, count: usize) -> Vec<BgrFrame
     for y in 0..first.height {
         for x in 0..first.width {
             // 注意：与「径向旋切」的 atan2 参数顺序相反（这里是 (x-cx, cy-y)）
-            let angle = (x as f64 - center_x).atan2(center_y - y as f64).to_degrees();
+            let angle = (x as f64 - center_x)
+                .atan2(center_y - y as f64)
+                .to_degrees();
             angles[(y * first.width + x) as usize] = (angle + 360.0) % 360.0;
         }
     }
@@ -1630,9 +1642,17 @@ mod tests {
         let frames = generate_raw(&a, &b, Transition::SlideLeft, 3, &Default::default());
         // 切分点 [0, 5, 10]
         assert_eq!(frames[0].pixel(0, 0), Some([10, 10, 10]), "切分 0：全是 a");
-        assert_eq!(frames[1].pixel(4, 0), Some([200, 200, 200]), "切分 5：左侧 b");
+        assert_eq!(
+            frames[1].pixel(4, 0),
+            Some([200, 200, 200]),
+            "切分 5：左侧 b"
+        );
         assert_eq!(frames[1].pixel(5, 0), Some([10, 10, 10]), "切分 5：右侧 a");
-        assert_eq!(frames[2].pixel(9, 0), Some([200, 200, 200]), "切分 10：全是 b");
+        assert_eq!(
+            frames[2].pixel(9, 0),
+            Some([200, 200, 200]),
+            "切分 10：全是 b"
+        );
     }
 
     #[test]
@@ -1651,7 +1671,11 @@ mod tests {
         let frames = generate_raw(&a, &b, Transition::CircleExpand, 3, &Default::default());
         // radius 0 → 中心像素满足 dx²+dy² <= 0，应为 b
         assert_eq!(frames[0].pixel(20, 20), Some([255, 255, 255]));
-        assert_eq!(frames[0].pixel(0, 0), Some([0, 0, 0]), "半径 0 时角落仍是 a");
+        assert_eq!(
+            frames[0].pixel(0, 0),
+            Some([0, 0, 0]),
+            "半径 0 时角落仍是 a"
+        );
         // max_radius = int(sqrt(20²+20²)) = int(28.28) = 28，角落距离 28.28 > 28，
         // 所以四角永远覆盖不到（Python 原行为，照抄不修）
         assert_eq!(frames[2].pixel(0, 0), Some([0, 0, 0]), "四角覆盖不到");

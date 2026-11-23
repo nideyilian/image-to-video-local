@@ -41,8 +41,10 @@ pub(crate) fn safe_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|character| {
-            if matches!(character, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
-                || (character as u32) < 32
+            if matches!(
+                character,
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+            ) || (character as u32) < 32
             {
                 '_'
             } else {
@@ -65,7 +67,9 @@ fn collect_videos(raw_paths: &[String], folder: &str) -> Vec<PathBuf> {
     let mut collected: Vec<PathBuf> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
-    let push = |path: PathBuf, collected: &mut Vec<PathBuf>, seen: &mut std::collections::BTreeSet<String>| {
+    let push = |path: PathBuf,
+                collected: &mut Vec<PathBuf>,
+                seen: &mut std::collections::BTreeSet<String>| {
         if !path.is_file() {
             return;
         }

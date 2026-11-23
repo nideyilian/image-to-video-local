@@ -12,7 +12,11 @@ fn frame(width: u32, height: u32) -> BgrFrame {
     let mut frame = BgrFrame::new(width, height);
     for y in 0..height {
         for x in 0..width {
-            frame.set_pixel(x, y, [(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8]);
+            frame.set_pixel(
+                x,
+                y,
+                [(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8],
+            );
         }
     }
     frame
@@ -46,13 +50,28 @@ fn resize_cost_breakdown() {
 
     let rgb = source.to_rgb();
     bench("imageops::resize Triangle", 20, || {
-        std::hint::black_box(image::imageops::resize(&rgb, tw, th, image::imageops::FilterType::Triangle));
+        std::hint::black_box(image::imageops::resize(
+            &rgb,
+            tw,
+            th,
+            image::imageops::FilterType::Triangle,
+        ));
     });
     bench("imageops::resize CatmullRom", 20, || {
-        std::hint::black_box(image::imageops::resize(&rgb, tw, th, image::imageops::FilterType::CatmullRom));
+        std::hint::black_box(image::imageops::resize(
+            &rgb,
+            tw,
+            th,
+            image::imageops::FilterType::CatmullRom,
+        ));
     });
     bench("imageops::resize Nearest", 20, || {
-        std::hint::black_box(image::imageops::resize(&rgb, tw, th, image::imageops::FilterType::Nearest));
+        std::hint::black_box(image::imageops::resize(
+            &rgb,
+            tw,
+            th,
+            image::imageops::FilterType::Nearest,
+        ));
     });
 
     let resized = image::imageops::resize(&rgb, tw, th, image::imageops::FilterType::Triangle);
@@ -75,14 +94,29 @@ fn resize_cost_breakdown() {
         dst.copy_from_slice(&src);
         std::hint::black_box(dst);
     });
-    println!("可用线程数: {}", std::thread::available_parallelism().map(|v| v.get()).unwrap_or(0));
+    println!(
+        "可用线程数: {}",
+        std::thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(0)
+    );
 
     // 新实现
     bench("新·resize_bgr Bilinear", 20, || {
-        std::hint::black_box(super::resize_fast::resize_bgr(&source, tw, th, super::resize_fast::Kernel::Bilinear));
+        std::hint::black_box(super::resize_fast::resize_bgr(
+            &source,
+            tw,
+            th,
+            super::resize_fast::Kernel::Bilinear,
+        ));
     });
     bench("新·resize_bgr Nearest", 20, || {
-        std::hint::black_box(super::resize_fast::resize_bgr(&source, tw, th, super::resize_fast::Kernel::Nearest));
+        std::hint::black_box(super::resize_fast::resize_bgr(
+            &source,
+            tw,
+            th,
+            super::resize_fast::Kernel::Nearest,
+        ));
     });
 
     // 画质对比：新旧实现逐像素最大差值
@@ -95,7 +129,9 @@ fn resize_cost_breakdown() {
         let d = (*a as i32 - *b as i32).abs();
         max_diff = max_diff.max(d);
         sum_diff += d as i64;
-        if d > 8 { over += 1; }
+        if d > 8 {
+            over += 1;
+        }
     }
     let total = old.data.len();
     println!(
@@ -109,7 +145,12 @@ fn resize_cost_breakdown() {
         std::hint::black_box(super::pixels::resize(&source, tw, th, ResizeFilter::Area));
     });
     bench("resize(Bilinear=Triangle)", 10, || {
-        std::hint::black_box(super::pixels::resize(&source, tw, th, ResizeFilter::Bilinear));
+        std::hint::black_box(super::pixels::resize(
+            &source,
+            tw,
+            th,
+            ResizeFilter::Bilinear,
+        ));
     });
 }
 
@@ -120,12 +161,21 @@ fn real_image_quality() {
     let mut checked = 0;
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
-        if !path.is_file() { continue; }
-        let Some(source) = super::pixels::read_image_bgr(&path) else { continue; };
+        if !path.is_file() {
+            continue;
+        }
+        let Some(source) = super::pixels::read_image_bgr(&path) else {
+            continue;
+        };
 
         for (tw, th) in [(960u32, 540u32), (640, 360), (480, 270), (1280, 720)] {
             let old = super::pixels::resize_old_for_compare(&source, tw, th);
-            let new = super::resize_fast::resize_bgr(&source, tw, th, super::resize_fast::Kernel::Bilinear);
+            let new = super::resize_fast::resize_bgr(
+                &source,
+                tw,
+                th,
+                super::resize_fast::Kernel::Bilinear,
+            );
             let mut max_diff = 0i32;
             let mut sum = 0i64;
             let mut over12 = 0usize;
@@ -133,13 +183,17 @@ fn real_image_quality() {
                 let d = (*a as i32 - *b as i32).abs();
                 max_diff = max_diff.max(d);
                 sum += d as i64;
-                if d > 12 { over12 += 1; }
+                if d > 12 {
+                    over12 += 1;
+                }
             }
             let total = old.data.len();
             println!(
                 "{:24?} {:>5}x{:<5} max={:<3} 平均={:.3} 超12占比={:.4}%",
                 path.file_name().unwrap_or_default(),
-                tw, th, max_diff,
+                tw,
+                th,
+                max_diff,
                 sum as f64 / total as f64,
                 over12 as f64 * 100.0 / total as f64
             );
@@ -164,7 +218,6 @@ fn real_image_quality() {
     assert!(checked > 0, "没找到测试图片");
 }
 
-
 /// 把新旧缩放结果各存一张 PNG，供肉眼比对。
 #[test]
 fn dump_resize_comparison() {
@@ -175,9 +228,14 @@ fn dump_resize_comparison() {
 
     for (tw, th, tag) in [(1280u32, 720u32, "half"), (640, 360, "third")] {
         let old = super::pixels::resize_old_for_compare(&source, tw, th);
-        let new = super::resize_fast::resize_bgr(&source, tw, th, super::resize_fast::Kernel::Bicubic);
-        old.to_rgb().save(format!("C:/Users/tt/AppData/Local/Temp/cmp_old_{tag}.png")).unwrap();
-        new.to_rgb().save(format!("C:/Users/tt/AppData/Local/Temp/cmp_new_{tag}.png")).unwrap();
+        let new =
+            super::resize_fast::resize_bgr(&source, tw, th, super::resize_fast::Kernel::Bicubic);
+        old.to_rgb()
+            .save(format!("C:/Users/tt/AppData/Local/Temp/cmp_old_{tag}.png"))
+            .unwrap();
+        new.to_rgb()
+            .save(format!("C:/Users/tt/AppData/Local/Temp/cmp_new_{tag}.png"))
+            .unwrap();
         println!("已保存 {tag}: old / new");
     }
 }

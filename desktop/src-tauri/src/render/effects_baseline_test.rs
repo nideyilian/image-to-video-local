@@ -62,10 +62,7 @@ fn collect_hashes() -> Vec<(String, String)> {
         for step in 0..5 {
             let params = EffectParams::new(effect, step as f64 * 0.13, 3.0, 100.0, 1.0);
             let output = apply_single_image_effect(&frame, &params);
-            rows.push((
-                format!("{effect}@{step}"),
-                hex(&sha256(&output.data)),
-            ));
+            rows.push((format!("{effect}@{step}"), hex(&sha256(&output.data))));
         }
     }
     rows
@@ -135,7 +132,11 @@ fn resize_effects_stay_visually_equal() {
             let output = apply_single_image_effect(&frame, &params);
             // 至少保证输出尺寸正确、不是全黑
             assert_eq!((output.width, output.height), (frame.width, frame.height));
-            let non_black = output.data.chunks_exact(3).filter(|p| p.iter().any(|v| *v > 4)).count();
+            let non_black = output
+                .data
+                .chunks_exact(3)
+                .filter(|p| p.iter().any(|v| *v > 4))
+                .count();
             assert!(
                 non_black * 10 > output.data.len() / 3,
                 "「{effect}@{step}」输出大面积变黑（{non_black} 个非黑像素）"

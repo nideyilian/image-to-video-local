@@ -312,7 +312,10 @@ pub fn build_command(
         }
         args.extend(["-i".into(), plan.path.clone()]);
         let label = "bgm_a".to_string();
-        filters.push(format!("[{input_idx}:a]volume={}[{label}]", fixed2(plan.volume)));
+        filters.push(format!(
+            "[{input_idx}:a]volume={}[{label}]",
+            fixed2(plan.volume)
+        ));
         audio_label = Some(label);
         input_idx += 1;
     }
@@ -368,10 +371,7 @@ pub fn build_command(
     }
     args.push(temp_output.clone());
 
-    PostprocessCommand {
-        args,
-        temp_output,
-    }
+    PostprocessCommand { args, temp_output }
 }
 
 /// 按输出路径算后处理临时文件名（与 `build_command` 内部一致）。
@@ -454,8 +454,7 @@ pub fn run_unified_postprocess(
 
     // 高级混合模式只要 ffmpeg 支持就走快速路径；不支持则回退（返回 false）
     if let Some(plan) = watermark_plan.as_ref() {
-        if plan.blend_mode != "正常" && watermark::ffmpeg_blend_mode(&plan.blend_mode).is_none()
-        {
+        if plan.blend_mode != "正常" && watermark::ffmpeg_blend_mode(&plan.blend_mode).is_none() {
             log(&format!(
                 "[PIPELINE][POST-SKIP] 视频水印混合模式={} 暂不支持FFmpeg快速路径，回退OpenCV",
                 plan.blend_mode
@@ -523,7 +522,9 @@ pub fn run_unified_postprocess(
         log("[PIPELINE][POST-FAIL] 文件替换失败");
         return false;
     }
-    log(&format!("[PIPELINE][POST-OK] 输出={output_path}, 编码器={strict_codec}"));
+    log(&format!(
+        "[PIPELINE][POST-OK] 输出={output_path}, 编码器={strict_codec}"
+    ));
     true
 }
 
@@ -639,8 +640,9 @@ mod tests {
         // ROI 裁剪 + gbrp + blend + 贴回
         assert!(joined.contains("[0:v]crop=384:192:1526:878,format=gbrp[roi_base_1]"));
         assert!(joined.contains("[wmv_1]format=gbrp[wm_src_1]"));
-        assert!(joined
-            .contains("[roi_base_1][wm_src_1]blend=all_mode=screen:all_opacity=1.000:shortest=1[roi_blend_1]"));
+        assert!(joined.contains(
+            "[roi_base_1][wm_src_1]blend=all_mode=screen:all_opacity=1.000:shortest=1[roi_blend_1]"
+        ));
         assert!(joined.contains("[0:v][roi_blend_1]overlay=x=1526:y=878:shortest=1[v_wm_1]"));
         // 混合模式路径不能加水印自己的 alpha 滤镜
         assert!(!joined.contains("colorchannelmixer=aa=1.000["));
@@ -718,11 +720,9 @@ mod tests {
         let joined = command.args.join(" ");
         assert!(joined.contains("-loop 1 -i C:/wm/a.png"));
         assert!(joined.contains("-loop 1 -i C:/wm/b.png"));
-        assert!(joined
-            .contains("[1:v]format=rgba,colorchannelmixer=aa=0.800,scale=200:100[fix_0]"));
+        assert!(joined.contains("[1:v]format=rgba,colorchannelmixer=aa=0.800,scale=200:100[fix_0]"));
         assert!(joined.contains("[0:v][fix_0]overlay=x=10:y=10:shortest=1[v_fix_0]"));
-        assert!(joined
-            .contains("[2:v]format=rgba,colorchannelmixer=aa=0.300,scale=300:150[fix_1]"));
+        assert!(joined.contains("[2:v]format=rgba,colorchannelmixer=aa=0.300,scale=300:150[fix_1]"));
         assert!(joined.contains("[v_fix_0][fix_1]overlay=x=500:y=600:shortest=1[v_fix_1]"));
         assert!(joined.contains("-map [v_fix_1]"));
     }
@@ -801,7 +801,14 @@ mod tests {
 
     #[test]
     fn unknown_container_has_no_muxer_flag() {
-        let command = build_command("C:/out/v.webm", (1920, 1080, 5.0), None, &[], None, "libx264");
+        let command = build_command(
+            "C:/out/v.webm",
+            (1920, 1080, 5.0),
+            None,
+            &[],
+            None,
+            "libx264",
+        );
         let joined = command.args.join(" ");
         assert!(!joined.contains("-f mp4"));
         assert!(!joined.contains("-f matroska"));
@@ -809,7 +816,14 @@ mod tests {
 
     #[test]
     fn no_filters_still_maps_video_and_copies_audio() {
-        let command = build_command("C:/out/v.mp4", (1920, 1080, 5.0), None, &[], None, "libx264");
+        let command = build_command(
+            "C:/out/v.mp4",
+            (1920, 1080, 5.0),
+            None,
+            &[],
+            None,
+            "libx264",
+        );
         let joined = command.args.join(" ");
         assert!(!joined.contains("-filter_complex"));
         assert!(joined.contains("-map 0:v"));
@@ -828,14 +842,20 @@ mod tests {
         map.insert("_current_video_index".into(), json!(1));
         let config = MapConfig(map);
         let picked = select_video_watermark_file(&config, &dir.to_string_lossy()).unwrap();
-        assert!(picked.ends_with("b.mp4"), "第二个视频应拿第二个水印: {picked}");
+        assert!(
+            picked.ends_with("b.mp4"),
+            "第二个视频应拿第二个水印: {picked}"
+        );
 
         let mut map = Map::new();
         map.insert("watermark_mode".into(), json!("文件夹"));
         map.insert("_current_video_index".into(), json!(4));
         let config = MapConfig(map);
         let picked = select_video_watermark_file(&config, &dir.to_string_lossy()).unwrap();
-        assert!(picked.ends_with("a.mov"), "序号 4 % 2 == 0 应回到第一个: {picked}");
+        assert!(
+            picked.ends_with("a.mov"),
+            "序号 4 % 2 == 0 应回到第一个: {picked}"
+        );
     }
 
     #[test]

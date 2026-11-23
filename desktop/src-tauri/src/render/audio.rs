@@ -102,7 +102,11 @@ pub fn resolve_bgm_candidates(config: &dyn RenderConfig) -> Vec<PathBuf> {
     }
     let Some(directory) = config.get("bgm_dir").and_then(|value| {
         value.as_str().map(str::to_string).or_else(|| {
-            if value.is_null() { None } else { Some(value.to_string()) }
+            if value.is_null() {
+                None
+            } else {
+                Some(value.to_string())
+            }
         })
     }) else {
         return Vec::new();
@@ -408,7 +412,8 @@ mod tests {
 
     #[test]
     fn empty_candidates_returns_none_even_when_enabled() {
-        let dir = std::env::temp_dir().join(format!("itv-render-audio-empty-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("itv-render-audio-empty-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = config(vec![
             ("bgm_dir", json!(dir.to_string_lossy())),

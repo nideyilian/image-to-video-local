@@ -62,6 +62,17 @@ export const EFFECT_PRESETS: Record<string, PreviewEffect> = {
   透视俯仰: { motion: "perspective" },
   滚动快门: { motion: "perspective" },
   灵魂出窍: { motion: "soul" },
+  // 下面三个是 2026-11-20 新增的逐像素特效。它们原先不在表里，会落到
+  // `?? { motion: "breathe" }` 这个兜底 —— 演示模式下的假动画跟特效本身
+  // 对不上。补齐只为不撒谎：真正出图由后端预览负责。
+  色差分离: { motion: "shake", overlay: "glitch" },
+  色调分离: { motion: "breathe" },
+  半调网点: { motion: "breathe" },
+  // 这四个是最早「内核实现了、界面选不到」的一批，补进下拉时这里也漏了。
+  缓慢推近: { motion: "breathe" },
+  缓慢拉远: { motion: "breathe" },
+  右下平移: { motion: "pan-x" },
+  左上平移: { motion: "pan-x" },
 };
 
 export type PreviewEffectStyle = CSSProperties & {

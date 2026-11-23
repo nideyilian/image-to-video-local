@@ -146,7 +146,10 @@ mod tests {
 
     #[test]
     fn temp_path_keeps_target_extension() {
-        assert_eq!(temp_output_path("C:/out/v.mp4", "_tmp"), "C:/out/v._tmp.mp4");
+        assert_eq!(
+            temp_output_path("C:/out/v.mp4", "_tmp"),
+            "C:/out/v._tmp.mp4"
+        );
         assert_eq!(temp_output_path("v.mkv", "temp"), "v.temp.mkv");
         assert_eq!(temp_output_path("no_ext", "_x"), "no_ext._x.mp4");
     }

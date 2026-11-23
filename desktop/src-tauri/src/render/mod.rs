@@ -13,10 +13,10 @@
 
 pub mod audio;
 pub mod batch;
-pub mod codec;
-pub mod compositor;
 pub mod catalog;
+pub mod codec;
 pub mod color;
+pub mod compositor;
 pub mod effect_params;
 pub mod effects;
 pub mod frame_script;
@@ -31,23 +31,23 @@ mod compare_tool;
 #[cfg(test)]
 mod effect_properties_test;
 #[cfg(test)]
-mod transitions_baseline_test;
-#[cfg(test)]
 mod effects_baseline_test;
-#[cfg(test)]
-mod resize_bench_test;
-#[cfg(test)]
-mod soul_bench_test;
-#[cfg(test)]
-mod zoom_equiv_test;
 pub mod encoder;
 pub mod imageinfo;
 pub mod pixels;
 pub mod plan;
 pub mod postprocess;
 pub mod process;
+#[cfg(test)]
+mod resize_bench_test;
+#[cfg(test)]
+mod soul_bench_test;
 pub mod transitions;
+#[cfg(test)]
+mod transitions_baseline_test;
 pub mod watermark;
+#[cfg(test)]
+mod zoom_equiv_test;
 
 #[cfg(test)]
 mod parity {
@@ -75,10 +75,7 @@ mod parity {
                 format!("muxer|{path}"),
                 json!(codec::muxer_for_output(path)),
             );
-            out.insert(
-                format!("acod|{path}"),
-                json!(codec::container_acodec(path)),
-            );
+            out.insert(format!("acod|{path}"), json!(codec::container_acodec(path)));
             for selected in ["XVID", "H264", "MJPG", "mp4v", "不存在的编码器"] {
                 out.insert(
                     format!("vcodec|{path}|{selected}"),
@@ -129,10 +126,9 @@ mod parity_audio {
                 .unwrap_or("?")
                 .to_string();
             let mut config = audio::JsonConfig::new(case.get("config").unwrap_or(&Value::Null));
-            config.0.insert(
-                "bgm_dir".to_string(),
-                json!(format!("{dir}/BGM")),
-            );
+            config
+                .0
+                .insert("bgm_dir".to_string(), json!(format!("{dir}/BGM")));
             if let Some(index) = case.get("video_index").and_then(Value::as_u64) {
                 config
                     .0
@@ -152,10 +148,7 @@ mod parity_audio {
                     .map(|value| value.to_string_lossy().into_owned())
                     .unwrap_or_default()
             });
-            out.insert(
-                id,
-                json!({ "candidates": candidates, "picked": picked }),
-            );
+            out.insert(id, json!({ "candidates": candidates, "picked": picked }));
         }
         println!("AUDIO_PARITY={}", Value::Object(out));
     }
@@ -215,7 +208,12 @@ mod parity_plan {
             return;
         }
         let mut out = Map::new();
-        let transitions = [(0i64, "无转场"), (8, "无转场"), (8, "淡入淡出"), (999, "淡入淡出")];
+        let transitions = [
+            (0i64, "无转场"),
+            (8, "无转场"),
+            (8, "淡入淡出"),
+            (999, "淡入淡出"),
+        ];
         for images in [1i64, 2, 3, 5, 7, 20] {
             for duration in [0.01, 0.1, 0.2, 0.5, 1.0, 1.7, 2.5, 3.3333, 10.0] {
                 for fps in [1i64, 24, 25, 30, 60] {
@@ -256,8 +254,7 @@ mod parity_encode {
             .ok()
             .and_then(|text| text.parse().ok())
             .unwrap_or(30);
-        let codec_name =
-            std::env::var("ITV_ENCODE_CODEC").unwrap_or_else(|_| "H264".to_string());
+        let codec_name = std::env::var("ITV_ENCODE_CODEC").unwrap_or_else(|_| "H264".to_string());
         let size = std::env::var("ITV_ENCODE_SIZE").unwrap_or_else(|_| "320x240".to_string());
         let fps: i64 = std::env::var("ITV_ENCODE_FPS")
             .ok()
@@ -316,8 +313,20 @@ mod parity_watermark {
             return;
         }
         let mut out = Map::new();
-        let mains = [(1920i64, 1080i64), (1080, 1920), (1000, 1000), (1, 1), (999, 333)];
-        let watermarks = [(400i64, 100i64), (100, 400), (500, 500), (1, 1000), (3000, 200)];
+        let mains = [
+            (1920i64, 1080i64),
+            (1080, 1920),
+            (1000, 1000),
+            (1, 1),
+            (999, 333),
+        ];
+        let watermarks = [
+            (400i64, 100i64),
+            (100, 400),
+            (500, 500),
+            (1, 1000),
+            (3000, 200),
+        ];
         let modes = ["自适应覆盖", "完全覆盖", "固定比例"];
         let positions = ["左上", "右上", "左下", "右下", "中心", "未知位置"];
         let scales = [0.0f64, 5.0, 20.0, 33.3, 100.0, 250.0];
@@ -433,10 +442,7 @@ mod parity_postprocess {
                         target_h: value.get("target_h").and_then(Value::as_i64).unwrap_or(192),
                         x: value.get("x").and_then(Value::as_i64).unwrap_or(1526),
                         y: value.get("y").and_then(Value::as_i64).unwrap_or(878),
-                        looped: value
-                            .get("looped")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(true),
+                        looped: value.get("looped").and_then(Value::as_bool).unwrap_or(true),
                         stretch_ratio: value.get("stretch_ratio").and_then(Value::as_f64),
                     })
                 }
@@ -467,10 +473,7 @@ mod parity_postprocess {
                     Some(postprocess::BgmPlan {
                         path: value.get("path")?.as_str()?.to_string(),
                         volume: value.get("volume").and_then(Value::as_f64).unwrap_or(0.5),
-                        looped: value
-                            .get("looped")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(true),
+                        looped: value.get("looped").and_then(Value::as_bool).unwrap_or(true),
                     })
                 }
             });
@@ -524,7 +527,11 @@ mod parity_post_run {
         let mut results = Vec::new();
 
         for case in cases {
-            let id = case.get("id").and_then(Value::as_str).unwrap_or("?").to_string();
+            let id = case
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string();
             let source = case.get("source").and_then(Value::as_str).unwrap_or("");
             let output = case.get("output").and_then(Value::as_str).unwrap_or("");
             let args: Vec<String> = case
@@ -540,14 +547,10 @@ mod parity_post_run {
 
             std::fs::copy(source, output).expect("复制源视频");
             let mut log_lines: Vec<String> = Vec::new();
-            let outcome = process::run_with_retry(
-                &ffmpeg.to_string_lossy(),
-                &args,
-                "POST",
-                900,
-                1,
-                |line| log_lines.push(line.to_string()),
-            );
+            let outcome =
+                process::run_with_retry(&ffmpeg.to_string_lossy(), &args, "POST", 900, 1, |line| {
+                    log_lines.push(line.to_string())
+                });
             let temp = postprocess::build_temp_output_path_from(output);
             let size = std::fs::metadata(&temp).map(|m| m.len()).unwrap_or(0);
             if size > 1000 {
@@ -572,9 +575,10 @@ mod parity_pixels {
     /// 对每张图做三种缩放，各写一张结果 + 打印差异统计。
     #[test]
     fn parity_dump_resize() {
-        let (Ok(dir), Ok(out_dir)) =
-            (std::env::var("ITV_PIXEL_DIR"), std::env::var("ITV_PIXEL_OUT"))
-        else {
+        let (Ok(dir), Ok(out_dir)) = (
+            std::env::var("ITV_PIXEL_DIR"),
+            std::env::var("ITV_PIXEL_OUT"),
+        ) else {
             return;
         };
         let mut files: Vec<_> = std::fs::read_dir(&dir)
@@ -608,7 +612,10 @@ mod parity_pixels {
                     pixels::resize_with_aspect_ratio(&frame, target.0, target.1)
                 };
                 let file_name = format!("{name}__{label}.png");
-                result.to_rgb().save(std::path::Path::new(&out_dir).join(&file_name)).ok();
+                result
+                    .to_rgb()
+                    .save(std::path::Path::new(&out_dir).join(&file_name))
+                    .ok();
                 report.push(json!({
                     "file": file_name,
                     "source": [source.0, source.1],
@@ -624,7 +631,9 @@ mod parity_pixels {
         // 简单校验和，只用来快速确认「是不是同一张图」，不用于像素比对
         let mut sum: u64 = 0;
         for (index, byte) in data.iter().enumerate() {
-            sum = sum.wrapping_mul(31).wrapping_add((*byte as u64) + index as u64);
+            sum = sum
+                .wrapping_mul(31)
+                .wrapping_add((*byte as u64) + index as u64);
         }
         sum
     }
@@ -638,9 +647,10 @@ mod parity_filter_probe {
     /// 输出到 `ITV_FILTER_OUT`，供外部与 OpenCV 比对选最优。
     #[test]
     fn probe_filter_variants() {
-        let (Ok(dir), Ok(out_dir)) =
-            (std::env::var("ITV_PIXEL_DIR"), std::env::var("ITV_FILTER_OUT"))
-        else {
+        let (Ok(dir), Ok(out_dir)) = (
+            std::env::var("ITV_PIXEL_DIR"),
+            std::env::var("ITV_FILTER_OUT"),
+        ) else {
             return;
         };
         std::fs::create_dir_all(&out_dir).ok();
@@ -683,19 +693,22 @@ mod parity_transitions {
     /// `ITV_TRANS_OUT` 输出目录。每种转场各存全部帧。
     #[test]
     fn parity_dump_transitions() {
-        let (Ok(dir), Ok(out_dir)) =
-            (std::env::var("ITV_TRANS_DIR"), std::env::var("ITV_TRANS_OUT"))
-        else {
+        let (Ok(dir), Ok(out_dir)) = (
+            std::env::var("ITV_TRANS_DIR"),
+            std::env::var("ITV_TRANS_OUT"),
+        ) else {
             return;
         };
-        let first = match pixels::read_image_bgr(std::path::Path::new(&dir).join("a.png").as_path()) {
+        let first = match pixels::read_image_bgr(std::path::Path::new(&dir).join("a.png").as_path())
+        {
             Some(frame) => frame,
             None => return,
         };
-        let second = match pixels::read_image_bgr(std::path::Path::new(&dir).join("b.png").as_path()) {
-            Some(frame) => frame,
-            None => return,
-        };
+        let second =
+            match pixels::read_image_bgr(std::path::Path::new(&dir).join("b.png").as_path()) {
+                Some(frame) => frame,
+                None => return,
+            };
         std::fs::create_dir_all(&out_dir).ok();
 
         let cases: Vec<(&str, transitions::Transition)> = vec![
@@ -716,7 +729,13 @@ mod parity_transitions {
 
         let mut report = Vec::new();
         for (index, (name, kind)) in cases.iter().enumerate() {
-            let frames = transitions::generate_frames(&first, &second, *kind, num_frames, &Default::default());
+            let frames = transitions::generate_frames(
+                &first,
+                &second,
+                *kind,
+                num_frames,
+                &Default::default(),
+            );
             for (frame_index, frame) in frames.iter().enumerate() {
                 let file = format!("{index:02}__{frame_index:02}.png");
                 frame
@@ -742,9 +761,10 @@ mod parity_effects {
     /// 特效对照：`ITV_EFFECT_DIR` 输入图目录，`ITV_EFFECT_OUT` 输出目录。
     #[test]
     fn parity_dump_effects() {
-        let (Ok(dir), Ok(out_dir)) =
-            (std::env::var("ITV_EFFECT_DIR"), std::env::var("ITV_EFFECT_OUT"))
-        else {
+        let (Ok(dir), Ok(out_dir)) = (
+            std::env::var("ITV_EFFECT_DIR"),
+            std::env::var("ITV_EFFECT_OUT"),
+        ) else {
             return;
         };
         std::fs::create_dir_all(&out_dir).ok();
@@ -792,9 +812,10 @@ mod parity_compose {
     /// 端到端导出对照：`ITV_COMPOSE_DIR` 图片目录，`ITV_COMPOSE_OUT` 输出文件。
     #[test]
     fn parity_run_compose() {
-        let (Ok(dir), Ok(out)) =
-            (std::env::var("ITV_COMPOSE_DIR"), std::env::var("ITV_COMPOSE_OUT"))
-        else {
+        let (Ok(dir), Ok(out)) = (
+            std::env::var("ITV_COMPOSE_DIR"),
+            std::env::var("ITV_COMPOSE_OUT"),
+        ) else {
             return;
         };
         let entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
@@ -916,7 +937,8 @@ mod parity_effects_all {
                 .to_rgb()
                 .save(std::path::Path::new(&out_dir).join(&file))
                 .ok();
-            report.push(json!({ "index": index, "effect": effect, "time": time_sec, "file": file }));
+            report
+                .push(json!({ "index": index, "effect": effect, "time": time_sec, "file": file }));
         }
         println!("EFFECTS_ALL={}", Value::Array(report));
     }
@@ -937,22 +959,52 @@ mod parity_transitions_all {
         ) else {
             return;
         };
-        let Some(first) = pixels::read_image_bgr(std::path::Path::new(&dir).join("a.png").as_path())
+        let Some(first) =
+            pixels::read_image_bgr(std::path::Path::new(&dir).join("a.png").as_path())
         else {
             return;
         };
-        let Some(second) = pixels::read_image_bgr(std::path::Path::new(&dir).join("b.png").as_path())
+        let Some(second) =
+            pixels::read_image_bgr(std::path::Path::new(&dir).join("b.png").as_path())
         else {
             return;
         };
         std::fs::create_dir_all(&out_dir).ok();
 
         let names = [
-            "淡入淡出", "左右滑动", "上下滑动", "交叉溶解", "缩放过渡", "圆形扩展", "百叶窗",
-            "棋盘格", "像素化", "旋转变换", "波浪", "颜色混合", "方块过渡", "放大冲击",
-            "缩小爆炸", "旋转放大", "弹性缩放", "3D翻转", "推入效果", "对角擦除", "门式打开",
-            "闪光过渡", "碎片飞散", "光晕扩散", "径向旋切", "漩涡扭曲", "菱形开幕", "镜头虚焦",
-            "纵向拉幕", "横向拉幕", "液态融合", "流光擦拭", "时钟扫描",
+            "淡入淡出",
+            "左右滑动",
+            "上下滑动",
+            "交叉溶解",
+            "缩放过渡",
+            "圆形扩展",
+            "百叶窗",
+            "棋盘格",
+            "像素化",
+            "旋转变换",
+            "波浪",
+            "颜色混合",
+            "方块过渡",
+            "放大冲击",
+            "缩小爆炸",
+            "旋转放大",
+            "弹性缩放",
+            "3D翻转",
+            "推入效果",
+            "对角擦除",
+            "门式打开",
+            "闪光过渡",
+            "碎片飞散",
+            "光晕扩散",
+            "径向旋切",
+            "漩涡扭曲",
+            "菱形开幕",
+            "镜头虚焦",
+            "纵向拉幕",
+            "横向拉幕",
+            "液态融合",
+            "流光擦拭",
+            "时钟扫描",
         ];
         let num_frames = std::env::var("ITV_TRANS_ALL_FRAMES")
             .ok()
@@ -962,11 +1014,20 @@ mod parity_transitions_all {
         let mut report = Vec::new();
         for (index, name) in names.iter().enumerate() {
             let kind = transitions::parse(name);
-            let frames = transitions::generate_frames(&first, &second, kind, num_frames, &Default::default());
+            let frames = transitions::generate_frames(
+                &first,
+                &second,
+                kind,
+                num_frames,
+                &Default::default(),
+            );
             for (frame_index, frame) in frames.iter().enumerate() {
                 frame
                     .to_rgb()
-                    .save(std::path::Path::new(&out_dir).join(format!("{index:02}__{frame_index:02}.png")))
+                    .save(
+                        std::path::Path::new(&out_dir)
+                            .join(format!("{index:02}__{frame_index:02}.png")),
+                    )
                     .ok();
             }
             report.push(json!({ "index": index, "name": name, "count": frames.len() }));
@@ -1007,7 +1068,7 @@ mod parity_watermark_blend {
             if !layer_value.is_null() {
                 layers.push(layer_value);
             }
-            let mut pick = |count: usize| 0usize.min(count.saturating_sub(1));
+            let mut pick = |_count: usize| 0usize;
             let prepared = watermark::prepare_image_layers(&layers, &mut pick);
             let mut result = frame.clone();
             for layer in &prepared {
@@ -1032,9 +1093,10 @@ mod parity_batch {
     /// 批量导出对照：`ITV_BATCH_CONFIG` 指向完整配置 JSON，`ITV_BATCH_OUT` 输出目录。
     #[test]
     fn parity_run_batch() {
-        let (Ok(config_path), Ok(out_dir)) =
-            (std::env::var("ITV_BATCH_CONFIG"), std::env::var("ITV_BATCH_OUT"))
-        else {
+        let (Ok(config_path), Ok(out_dir)) = (
+            std::env::var("ITV_BATCH_CONFIG"),
+            std::env::var("ITV_BATCH_OUT"),
+        ) else {
             return;
         };
         let Ok(raw) = std::fs::read_to_string(config_path) else {

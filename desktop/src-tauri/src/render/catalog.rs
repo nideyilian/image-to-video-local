@@ -55,11 +55,7 @@ pub struct ParamSpec {
 }
 
 impl ParamSpec {
-    pub const fn percent(
-        key: &'static str,
-        label: &'static str,
-        default: f64,
-    ) -> Self {
+    pub const fn percent(key: &'static str, label: &'static str, default: f64) -> Self {
         ParamSpec {
             key,
             label,
@@ -128,13 +124,7 @@ pub struct ItemSpec {
 /// 早期按运动方式分（基础缩放/平移漂移/旋转摆动…），那是开发者的视角 ——
 /// 用户想的是「我想要什么感觉」，不是「这个特效在做什么数学运算」。
 /// 参考项目 Concat 的 `category` 也是意图维度（Cinematic / Shake / Retro）。
-pub const EFFECT_GROUPS: &[&str] = &[
-    "平稳推进",
-    "手持感",
-    "强节奏",
-    "迷幻扭曲",
-    "复古故障",
-];
+pub const EFFECT_GROUPS: &[&str] = &["平稳推进", "手持感", "强节奏", "迷幻扭曲", "复古故障"];
 
 /// 全部特效声明，顺序即界面下拉的顺序。
 ///
@@ -504,7 +494,14 @@ pub const EFFECTS: &[ItemSpec] = &[
 // ---------------------------------------------------------------------------
 
 /// 转场分组显示顺序。
-pub const TRANSITION_GROUPS: &[&str] = &["基础", "滑动推移", "几何展开", "缩放冲击", "擦除", "视觉特效"];
+pub const TRANSITION_GROUPS: &[&str] = &[
+    "基础",
+    "滑动推移",
+    "几何展开",
+    "缩放冲击",
+    "擦除",
+    "视觉特效",
+];
 
 /// 全部转场声明，顺序即界面下拉顺序。
 pub const TRANSITIONS: &[ItemSpec] = &[
@@ -803,16 +800,16 @@ pub const TRANSITIONS: &[ItemSpec] = &[
 
 /// 按 ID 或别名查特效声明。
 pub fn find_effect(name: &str) -> Option<&'static ItemSpec> {
-    EFFECTS.iter().find(|item| {
-        item.id == name || item.aliases.contains(&name)
-    })
+    EFFECTS
+        .iter()
+        .find(|item| item.id == name || item.aliases.contains(&name))
 }
 
 /// 按 ID 或别名查转场声明。
 pub fn find_transition(name: &str) -> Option<&'static ItemSpec> {
-    TRANSITIONS.iter().find(|item| {
-        item.id == name || item.aliases.contains(&name)
-    })
+    TRANSITIONS
+        .iter()
+        .find(|item| item.id == name || item.aliases.contains(&name))
 }
 
 /// 特效的规范 ID（别名会被纠正回主名）。查不到时原样返回。
@@ -838,10 +835,8 @@ fn group_by(
     groups: &'static [&'static str],
     items: &'static [ItemSpec],
 ) -> Vec<(&'static str, Vec<&'static ItemSpec>)> {
-    let mut result: Vec<(&'static str, Vec<&'static ItemSpec>)> = groups
-        .iter()
-        .map(|group| (*group, Vec::new()))
-        .collect();
+    let mut result: Vec<(&'static str, Vec<&'static ItemSpec>)> =
+        groups.iter().map(|group| (*group, Vec::new())).collect();
     for item in items {
         match result.iter_mut().find(|(group, _)| *group == item.group) {
             Some((_, bucket)) => bucket.push(item),
@@ -873,8 +868,11 @@ mod tests {
     /// 别名不能撞上别人的主名，否则查找会走错分支。
     #[test]
     fn aliases_do_not_collide_with_ids() {
-        let ids: std::collections::HashSet<&str> =
-            EFFECTS.iter().chain(TRANSITIONS.iter()).map(|i| i.id).collect();
+        let ids: std::collections::HashSet<&str> = EFFECTS
+            .iter()
+            .chain(TRANSITIONS.iter())
+            .map(|i| i.id)
+            .collect();
         for item in EFFECTS.iter().chain(TRANSITIONS.iter()) {
             for alias in item.aliases {
                 assert!(

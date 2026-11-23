@@ -146,7 +146,10 @@ mod tests {
     /// 那种情况编译能过，运行时才发现所有导出失败。
     #[test]
     fn embedded_binary_looks_like_an_exe() {
-        assert!(EMBEDDED_FFMPEG.len() > 10 * 1024 * 1024, "内嵌的 ffmpeg 太小，可能不是真文件");
+        assert!(
+            EMBEDDED_FFMPEG.len() > 10 * 1024 * 1024,
+            "内嵌的 ffmpeg 太小，可能不是真文件"
+        );
         assert_eq!(&EMBEDDED_FFMPEG[..2], b"MZ", "不是 PE 可执行文件");
     }
 

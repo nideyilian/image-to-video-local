@@ -79,7 +79,10 @@ pub enum EncodeError {
 impl std::fmt::Display for EncodeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EncodeError::IncompatibleCodec { selected, extension } => write!(
+            EncodeError::IncompatibleCodec {
+                selected,
+                extension,
+            } => write!(
                 formatter,
                 "编码器与容器不兼容: codec={selected}, ext={extension}"
             ),
@@ -106,10 +109,7 @@ pub struct EncodeSession {
 
 impl EncodeSession {
     /// 打开管道。编码器与容器不兼容时立即报错（与 Python 一致，不静默回退）。
-    pub fn open(
-        options: &EncodeOptions,
-        ffmpeg: &str,
-    ) -> Result<EncodeSession, EncodeError> {
+    pub fn open(options: &EncodeOptions, ffmpeg: &str) -> Result<EncodeSession, EncodeError> {
         let strict_codec = codec::strict_vcodec(&options.output_path, &options.selected_codec)
             .ok_or_else(|| EncodeError::IncompatibleCodec {
                 selected: options.selected_codec.clone(),
@@ -157,7 +157,10 @@ impl EncodeSession {
         if !output.status.success() {
             return Err(EncodeError::Failed {
                 code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).chars().take(300).collect(),
+                stderr: String::from_utf8_lossy(&output.stderr)
+                    .chars()
+                    .take(300)
+                    .collect(),
             });
         }
         Ok(self.frames_written)
@@ -197,10 +200,35 @@ mod tests {
     fn args_match_the_python_pipeline_verbatim() {
         let args = build_encode_args(&options("C:/out/v.mp4", "H264"), "libx264");
         let expected = vec![
-            "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", "1920x1080", "-r", "30",
-            "-i", "-", "-an", "-c:v", "libx264", "-b:v", "5000k", "-maxrate", "5500k",
-            "-bufsize", "7500k", "-pix_fmt", "yuv420p", "-r", "30", "-preset", "medium",
-            "-f", "mp4", "C:/out/v.mp4",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "bgr24",
+            "-s",
+            "1920x1080",
+            "-r",
+            "30",
+            "-i",
+            "-",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-b:v",
+            "5000k",
+            "-maxrate",
+            "5500k",
+            "-bufsize",
+            "7500k",
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            "30",
+            "-preset",
+            "medium",
+            "-f",
+            "mp4",
+            "C:/out/v.mp4",
         ];
         assert_eq!(args, expected);
     }
@@ -236,11 +264,17 @@ mod tests {
     fn incompatible_codec_is_rejected_before_spawning() {
         let opts = options("C:/out/v.mp4", "XVID");
         match EncodeSession::open(&opts, "ffmpeg") {
-            Err(EncodeError::IncompatibleCodec { selected, extension }) => {
+            Err(EncodeError::IncompatibleCodec {
+                selected,
+                extension,
+            }) => {
                 assert_eq!(selected, "XVID");
                 assert_eq!(extension, ".mp4");
             }
-            other => panic!("应报编码器不兼容，实际 {:?}", other.err().map(|e| e.to_string())),
+            other => panic!(
+                "应报编码器不兼容，实际 {:?}",
+                other.err().map(|e| e.to_string())
+            ),
         }
     }
 

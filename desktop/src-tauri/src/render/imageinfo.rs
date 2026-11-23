@@ -7,8 +7,8 @@
 //! 覆盖格式：PNG / JPEG / GIF / BMP / WEBP（含 VP8 / VP8L / VP8X）。
 
 use std::fs::File;
-use std::io::{Read, Seek};
 use std::io::SeekFrom;
+use std::io::{Read, Seek};
 use std::path::Path;
 
 /// 图片尺寸。
@@ -194,7 +194,8 @@ mod tests {
 
     fn write_png(path: &Path, width: u32, height: u32) {
         let mut file = File::create(path).unwrap();
-        file.write_all(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        file.write_all(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+            .unwrap();
         file.write_all(&13u32.to_be_bytes()).unwrap();
         file.write_all(b"IHDR").unwrap();
         file.write_all(&width.to_be_bytes()).unwrap();
@@ -243,28 +244,52 @@ mod tests {
     fn png_size_from_ihdr() {
         let path = temp_path("a.png");
         write_png(&path, 1920, 1080);
-        assert_eq!(image_size(&path), Some(ImageSize { width: 1920, height: 1080 }));
+        assert_eq!(
+            image_size(&path),
+            Some(ImageSize {
+                width: 1920,
+                height: 1080
+            })
+        );
     }
 
     #[test]
     fn bmp_size_handles_top_down_negative_height() {
         let path = temp_path("a.bmp");
         write_bmp(&path, 640, -480);
-        assert_eq!(image_size(&path), Some(ImageSize { width: 640, height: 480 }));
+        assert_eq!(
+            image_size(&path),
+            Some(ImageSize {
+                width: 640,
+                height: 480
+            })
+        );
     }
 
     #[test]
     fn gif_size() {
         let path = temp_path("a.gif");
         write_gif(&path, 320, 200);
-        assert_eq!(image_size(&path), Some(ImageSize { width: 320, height: 200 }));
+        assert_eq!(
+            image_size(&path),
+            Some(ImageSize {
+                width: 320,
+                height: 200
+            })
+        );
     }
 
     #[test]
     fn jpeg_size_skips_app_segments() {
         let path = temp_path("a.jpg");
         write_jpeg(&path, 800, 600);
-        assert_eq!(image_size(&path), Some(ImageSize { width: 800, height: 600 }));
+        assert_eq!(
+            image_size(&path),
+            Some(ImageSize {
+                width: 800,
+                height: 600
+            })
+        );
     }
 
     #[test]
@@ -304,7 +329,10 @@ mod tests {
         if status.map(|s| s.success()).unwrap_or(false) {
             assert_eq!(
                 image_size(&fixture),
-                Some(ImageSize { width: 333, height: 177 })
+                Some(ImageSize {
+                    width: 333,
+                    height: 177
+                })
             );
         }
     }

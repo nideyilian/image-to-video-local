@@ -25,7 +25,7 @@
 //! 输出粘到 `transitions_baseline.txt` 即可（与特效基线同一套做法）。
 
 use super::pixels::BgrFrame;
-use super::transitions::{self, Transition};
+use super::transitions::{self};
 
 /// 参与基线的转场。与 `catalog::TRANSITIONS` 必须一一对应 ——
 /// 有 `baseline_covers_every_declared_transition` 守着。
@@ -118,7 +118,8 @@ fn transitions_baseline_is_stable() {
     for name in PROBE_TRANSITIONS {
         let parsed = transitions::parse(name);
         for count in iterations() {
-            let frames = transitions::generate_frames(&first, &second, parsed, count, &Default::default());
+            let frames =
+                transitions::generate_frames(&first, &second, parsed, count, &Default::default());
             assert_eq!(
                 frames.len(),
                 count,
@@ -206,10 +207,7 @@ fn every_transition_moves_from_first_to_second() {
 
         // 前 3 帧平均离第二张多远 vs 后 3 帧
         let early: f64 = (0..3).map(|i| mean_diff(&frames[i], &second)).sum::<f64>() / 3.0;
-        let late: f64 = (7..10)
-            .map(|i| mean_diff(&frames[i], &second))
-            .sum::<f64>()
-            / 3.0;
+        let late: f64 = (7..10).map(|i| mean_diff(&frames[i], &second)).sum::<f64>() / 3.0;
 
         assert!(
             late <= early,

@@ -9,6 +9,7 @@
 //!   `INTER_LINEAR` 实现取整（内部有定点化）；Rust 用 `image::imageops::resize`
 //!   的 `FilterType::Triangle`（同为双线性，但边界规则不同）。
 //! - Python 用 `INTER_AREA` 的场景（缩小）在 OpenCV 里有专门的面积平均实现。
+//!
 //! 差异集中在边缘与渐变区域，不会出现结构性错误（不会错位、不会变色）。
 
 use std::path::Path;
@@ -60,7 +61,11 @@ impl BgrFrame {
         let mut image = RgbImage::new(self.width, self.height);
         for (index, pixel) in image.pixels_mut().enumerate() {
             let offset = index * 3;
-            *pixel = image::Rgb([self.data[offset + 2], self.data[offset + 1], self.data[offset]]);
+            *pixel = image::Rgb([
+                self.data[offset + 2],
+                self.data[offset + 1],
+                self.data[offset],
+            ]);
         }
         image
     }
@@ -133,6 +138,7 @@ impl ResizeFilter {
 /// - 缩小倍数大（1280x720→640x360、640x480→640x360）时，CatmullRom 明显好于 Triangle：
 ///   `testsrc2` 84→47、`mandelbrot` 50→47、`box` 32→16，本质差像素占比也减半。
 /// - 缩放倍数接近 1 时两者几乎相同（gradient 都是 max=1）。
+///
 /// OpenCV 自己在缩小时推荐的正是 INTER_AREA，这里对齐同一策略。
 pub fn auto_filter(source_w: u32, source_h: u32, target_w: u32, target_h: u32) -> ResizeFilter {
     if target_w < source_w || target_h < source_h {
@@ -235,12 +241,7 @@ pub fn resize_with_aspect_ratio(
 }
 
 /// 通用缩放（对应 `resize_image()`）：适应 / 拉伸 / 填充。
-pub fn resize_image(
-    frame: &BgrFrame,
-    target_w: u32,
-    target_h: u32,
-    mode: &str,
-) -> BgrFrame {
+pub fn resize_image(frame: &BgrFrame, target_w: u32, target_h: u32, mode: &str) -> BgrFrame {
     if frame.is_empty() {
         return BgrFrame::new(target_w, target_h);
     }
@@ -319,7 +320,7 @@ pub fn crop(frame: &BgrFrame, x: i64, y: i64, width: u32, height: u32) -> BgrFra
 
 /// 确保宽高为偶数（对应 `ensure_even_frame()`）：右侧/下侧补黑边。
 pub fn ensure_even_frame(frame: &BgrFrame) -> BgrFrame {
-    if frame.width % 2 == 0 && frame.height % 2 == 0 {
+    if frame.width.is_multiple_of(2) && frame.height.is_multiple_of(2) {
         return frame.clone();
     }
     let width = frame.width + (frame.width % 2);
@@ -343,8 +344,10 @@ pub fn blend_weighted(first: &BgrFrame, second: &BgrFrame, alpha: f64) -> BgrFra
     // 尺寸一致时走快路径：按字节线性扫 + 按行并行。
     // 逐像素版本每像素两次边界检查、两次下标计算，1080p 实测 18.8ms；
     // 纯拷贝只要 1ms —— 开销全在这些重复计算上。
-    if first.width == width && first.height == height
-        && second.width == width && second.height == height
+    if first.width == width
+        && first.height == height
+        && second.width == width
+        && second.height == height
     {
         let row_bytes = width as usize * 3;
         let data_a = &first.data;

@@ -27,13 +27,15 @@ pub const AUDIO_EXTENSIONS: [&str; 8] = [
 ];
 pub const IMAGE_EXTENSIONS: [&str; 7] = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff"];
 pub const VIDEO_EXTENSIONS: [&str; 14] = [
-    ".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm", ".m4v", ".ts", ".mpg", ".mpeg", ".3gp",
-    ".rmvb", ".f4v",
+    ".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm", ".m4v", ".ts", ".mpg", ".mpeg",
+    ".3gp", ".rmvb", ".f4v",
 ];
 
 pub(crate) fn ffmpeg_path() -> Option<&'static Path> {
     static CACHE: OnceLock<Option<PathBuf>> = OnceLock::new();
-    CACHE.get_or_init(|| system::resolve_ffmpeg(None)).as_deref()
+    CACHE
+        .get_or_init(|| system::resolve_ffmpeg(None))
+        .as_deref()
 }
 
 fn cached_ffprobe() -> Option<&'static Path> {
@@ -142,10 +144,7 @@ pub(crate) fn load_index(directory: &Path) -> Index {
     Index {
         // Python: int(data.get("version", 1) or 1) —— 0 也当 1
         version: if version == 0 { 1 } else { version },
-        kind: data
-            .get("kind")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        kind: data.get("kind").and_then(Value::as_str).map(str::to_string),
         entries: data
             .get("entries")
             .and_then(Value::as_object)
@@ -162,7 +161,10 @@ pub(crate) fn save_index(directory: &Path, index: &Index) -> std::io::Result<()>
         "kind": index.kind,
         "entries": index.entries,
     });
-    fs::write(&temporary, format!("{}\n", serde_json::to_string_pretty(&payload)?))?;
+    fs::write(
+        &temporary,
+        format!("{}\n", serde_json::to_string_pretty(&payload)?),
+    )?;
     // Windows 上 rename 不能覆盖已存在文件；失败时先删再写（索引可重建，非致命）。
     if fs::rename(&temporary, &target).is_err() {
         let _ = fs::remove_file(&target);
@@ -272,7 +274,11 @@ fn walk(state: &mut ScanState, directory: &Path) {
         };
 
         *state.direct_counts.entry(folder.clone()).or_insert(0) += 1;
-        let default_type = if state.kind == "bgm" { "audio" } else { "image" };
+        let default_type = if state.kind == "bgm" {
+            "audio"
+        } else {
+            "image"
+        };
         state.items.push(json!({
             "name": name,
             "path": paths::to_string(&paths::absolute(&path)),
@@ -342,8 +348,13 @@ pub(crate) fn resolve_dir(params: &Map<String, Value>, key: &str, fallback: &Pat
     match params.get(key).and_then(Value::as_str).map(str::trim) {
         Some(value) if !value.is_empty() => {
             // Python 会先 expanduser；这里只处理 "~" 开头的常见写法
-            if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
-                if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+            if let Some(rest) = value
+                .strip_prefix("~/")
+                .or_else(|| value.strip_prefix("~\\"))
+            {
+                if let Some(home) =
+                    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
+                {
                     return PathBuf::from(home).join(rest);
                 }
             }
@@ -426,10 +437,15 @@ mod tests {
         library.write("水印/图层/a.png", b"png");
         library.write("水印/图层/b.mov", b"mov");
 
-        let result = snapshot(&json!({
-            "bgm_dir": library.root.join("BGM").to_string_lossy(),
-            "watermark_dir": library.root.join("水印").to_string_lossy(),
-        }).as_object().expect("params").clone());
+        let result = snapshot(
+            &json!({
+                "bgm_dir": library.root.join("BGM").to_string_lossy(),
+                "watermark_dir": library.root.join("水印").to_string_lossy(),
+            })
+            .as_object()
+            .expect("params")
+            .clone(),
+        );
 
         let bgm = result["bgm"].as_array().expect("bgm");
         assert_eq!(bgm.len(), 2, "隐藏文件与非音频应被忽略：{bgm:?}");
@@ -441,8 +457,13 @@ mod tests {
         assert!(bgm[0]["duration"].is_null());
 
         // BGM 下没有子目录；「图层」在水印库里
-        assert!(result["bgm_folders"].as_array().expect("bgm_folders").is_empty());
-        let folders = result["watermark_folders"].as_array().expect("watermark_folders");
+        assert!(result["bgm_folders"]
+            .as_array()
+            .expect("bgm_folders")
+            .is_empty());
+        let folders = result["watermark_folders"]
+            .as_array()
+            .expect("watermark_folders");
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0]["relative"], "图层");
         assert_eq!(folders[0]["count"], 2);
@@ -469,12 +490,18 @@ mod tests {
         .clone();
 
         let first = snapshot(&params);
-        let added_first = first["bgm"][0]["added_at"].as_str().unwrap_or("").to_string();
+        let added_first = first["bgm"][0]["added_at"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         assert!(!added_first.is_empty());
 
         assert!(library.root.join("BGM").join(INDEX_FILE_NAME).is_file());
         let second = snapshot(&params);
-        assert_eq!(second["bgm"][0]["duplicate_key"], first["bgm"][0]["duplicate_key"]);
+        assert_eq!(
+            second["bgm"][0]["duplicate_key"],
+            first["bgm"][0]["duplicate_key"]
+        );
         // 索引命中时复用 added_at，不会刷新时间
         assert_eq!(second["bgm"][0]["added_at"], first["bgm"][0]["added_at"]);
     }

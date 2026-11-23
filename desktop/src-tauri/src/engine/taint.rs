@@ -95,11 +95,17 @@ fn is_truthy(value: &Value) -> bool {
 }
 
 fn codec_type(stream: &Value) -> &str {
-    stream.get("codec_type").and_then(Value::as_str).unwrap_or("")
+    stream
+        .get("codec_type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
 }
 
 fn codec_name(stream: &Value) -> &str {
-    stream.get("codec_name").and_then(Value::as_str).unwrap_or("")
+    stream
+        .get("codec_name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
 }
 
 /// Python 里 `duration` 只在是数字时才格式化，ffprobe 的 JSON 给的是字符串，
@@ -124,7 +130,10 @@ pub(crate) fn taint_reason(streams: &[Value], kind: &str) -> Option<String> {
             let shown_name = if name.is_empty() { kind_type } else { name };
             return Some(format!("含异常数据轨（{shown_name}，{text}）"));
         }
-        if kind == "bgm" && kind_type == "video" && !is_truthy(stream.get("attached_pic").unwrap_or(&Value::Null)) {
+        if kind == "bgm"
+            && kind_type == "video"
+            && !is_truthy(stream.get("attached_pic").unwrap_or(&Value::Null))
+        {
             return Some(format!("音频文件含视频轨（{name}，{text}）"));
         }
     }
@@ -138,14 +147,13 @@ fn tainted_indexes(streams: &[Value], kind: &str) -> BTreeSet<i64> {
         let kind_type = codec_type(stream);
         let name = codec_name(stream);
         let index = stream.get("index").and_then(Value::as_i64).unwrap_or(0);
-        if kind_type == "subtitle" {
-            indexes.insert(index);
-        } else if kind_type == "data" || name == "bin_data" || name == "text" {
-            indexes.insert(index);
-        } else if kind == "bgm"
+        // 三类都算异常流，动作也完全一样（记下序号），所以合成一个条件：
+        // 字幕 / 数据流（bin_data、text）/ BGM 模式下未挂封面的视频流。
+        let is_data_stream = kind_type == "data" || name == "bin_data" || name == "text";
+        let is_bgm_video = kind == "bgm"
             && kind_type == "video"
-            && !is_truthy(stream.get("attached_pic").unwrap_or(&Value::Null))
-        {
+            && !is_truthy(stream.get("attached_pic").unwrap_or(&Value::Null));
+        if kind_type == "subtitle" || is_data_stream || is_bgm_video {
             indexes.insert(index);
         }
     }
@@ -216,10 +224,12 @@ fn handler_of_trak(data: &[u8], trak_start: usize, trak_end: usize) -> Option<St
 
 /// 读取 trak 内 mdhd 的时长（秒）；失败返回 0。
 fn trak_seconds(data: &[u8], trak_start: usize, trak_end: usize) -> f64 {
-    let Some((mdia_start, mdia_end)) = find_box(data, trak_start + BOX_HEADER, trak_end, b"mdia") else {
+    let Some((mdia_start, mdia_end)) = find_box(data, trak_start + BOX_HEADER, trak_end, b"mdia")
+    else {
         return 0.0;
     };
-    let Some((mdhd_start, mdhd_end)) = find_box(data, mdia_start + BOX_HEADER, mdia_end, b"mdhd") else {
+    let Some((mdhd_start, mdhd_end)) = find_box(data, mdia_start + BOX_HEADER, mdia_end, b"mdhd")
+    else {
         return 0.0;
     };
     if mdhd_end - mdhd_start < 32 {
@@ -266,7 +276,8 @@ fn patch_mvhd_duration(moov: &[u8], seconds: f64) -> Vec<u8> {
     let new_duration = (seconds * timescale as f64).round().max(0.0) as u64;
     if version == 1 {
         if duration_offset + 8 <= result.len() {
-            result[duration_offset..duration_offset + 8].copy_from_slice(&new_duration.to_be_bytes());
+            result[duration_offset..duration_offset + 8]
+                .copy_from_slice(&new_duration.to_be_bytes());
         }
     } else {
         let capped = new_duration.min(u32::MAX as u64) as u32;
@@ -282,7 +293,11 @@ pub(crate) fn has_moov_container(suffix: &str) -> bool {
 }
 
 /// 与 `strip_tainted_tracks()` 一致：删除指定 acc 轨与章节引用，写入 target。
-fn strip_tainted_tracks(source: &Path, tainted: &BTreeSet<i64>, target: &Path) -> Result<String, String> {
+fn strip_tainted_tracks(
+    source: &Path,
+    tainted: &BTreeSet<i64>,
+    target: &Path,
+) -> Result<String, String> {
     let data = fs::read(source).map_err(|error| format!("读取失败: {error}"))?;
     if data.is_empty() {
         return Err("文件为空".to_string());
@@ -354,12 +369,16 @@ fn strip_tainted_tracks(source: &Path, tainted: &BTreeSet<i64>, target: &Path) -
     new_moov.extend_from_slice(&rebuilt);
     let new_moov_len = new_moov.len() as u32;
     new_moov[..4].copy_from_slice(&new_moov_len.to_be_bytes());
-    if let Some(max_seconds) = kept_seconds.iter().copied().fold(None::<f64>, |acc, value| {
-        Some(match acc {
-            Some(current) => current.max(value),
-            None => value,
+    if let Some(max_seconds) = kept_seconds
+        .iter()
+        .copied()
+        .fold(None::<f64>, |acc, value| {
+            Some(match acc {
+                Some(current) => current.max(value),
+                None => value,
+            })
         })
-    }) {
+    {
         if max_seconds > 0.0 {
             new_moov = patch_mvhd_duration(&new_moov, max_seconds);
         }
@@ -374,9 +393,9 @@ fn strip_tainted_tracks(source: &Path, tainted: &BTreeSet<i64>, target: &Path) -
     if padding > 8 {
         new_moov.extend_from_slice(&(padding as u32).to_be_bytes());
         new_moov.extend_from_slice(b"free");
-        new_moov.extend(std::iter::repeat(0u8).take(padding - 8));
+        new_moov.extend(std::iter::repeat_n(0u8, padding - 8));
     } else if padding > 0 {
-        new_moov.extend(std::iter::repeat(0u8).take(padding));
+        new_moov.extend(std::iter::repeat_n(0u8, padding));
     }
 
     let mut output: Vec<u8> = Vec::with_capacity(data.len());
@@ -384,7 +403,10 @@ fn strip_tainted_tracks(source: &Path, tainted: &BTreeSet<i64>, target: &Path) -
     output.extend_from_slice(&new_moov);
     output.extend_from_slice(&data[moov_end..]);
     fs::write(target, &output).map_err(|error| format!("写入失败: {error}"))?;
-    Ok(format!("已删除 {} 条异常轨并移除章节引用", drop_indexes.len()))
+    Ok(format!(
+        "已删除 {} 条异常轨并移除章节引用",
+        drop_indexes.len()
+    ))
 }
 
 // ---------- 清洗单个文件 ----------
@@ -442,10 +464,8 @@ fn clean_file(ffmpeg: Option<&Path>, ffprobe: Option<&Path>, path: &Path) -> Val
         .file_stem()
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let temporary: PathBuf = path.with_file_name(format!(
-        ".{stem}.clean-{}.tmp{suffix}",
-        std::process::id()
-    ));
+    let temporary: PathBuf =
+        path.with_file_name(format!(".{stem}.clean-{}.tmp{suffix}", std::process::id()));
 
     let cleanup = |temporary: &Path| {
         let _ = fs::remove_file(temporary);
@@ -515,7 +535,11 @@ fn clean_file(ffmpeg: Option<&Path>, ffprobe: Option<&Path>, path: &Path) -> Val
 
 pub fn scan_tainted(params: &serde_json::Map<String, Value>) -> Result<Value, String> {
     let kind = text(params, "kind");
-    let kind = if kind.is_empty() { "bgm".to_string() } else { kind };
+    let kind = if kind.is_empty() {
+        "bgm".to_string()
+    } else {
+        kind
+    };
     if kind != "bgm" && kind != "watermark" {
         return Err("kind 必须是 bgm 或 watermark".to_string());
     }
@@ -595,7 +619,10 @@ pub fn clean_tainted(params: &serde_json::Map<String, Value>) -> Result<Value, S
             cleaned += 1;
         }
         let mut object = serde_json::Map::new();
-        object.insert("path".to_string(), json!(paths::display(&paths::absolute(&path))));
+        object.insert(
+            "path".to_string(),
+            json!(paths::display(&paths::absolute(&path))),
+        );
         if let Value::Object(inner) = outcome {
             for (key, value) in inner {
                 object.insert(key, value);
@@ -646,7 +673,10 @@ mod tests {
 
     #[test]
     fn subtitle_stream_is_tainted() {
-        let streams = vec![stream("audio", "aac", 0, false), stream("subtitle", "mov_text", 1, false)];
+        let streams = vec![
+            stream("audio", "aac", 0, false),
+            stream("subtitle", "mov_text", 1, false),
+        ];
         let reason = taint_reason(&streams, "bgm").expect("应判为异常");
         assert_eq!(reason, "含字幕轨（mov_text，未知时长）");
         assert_eq!(tainted_indexes(&streams, "bgm"), BTreeSet::from([1]));
@@ -654,7 +684,10 @@ mod tests {
 
     #[test]
     fn embedded_cover_is_not_tainted() {
-        let streams = vec![stream("audio", "mp3", 0, false), stream("video", "mjpeg", 1, true)];
+        let streams = vec![
+            stream("audio", "mp3", 0, false),
+            stream("video", "mjpeg", 1, true),
+        ];
         assert!(taint_reason(&streams, "bgm").is_none());
         assert!(tainted_indexes(&streams, "bgm").is_empty());
     }
@@ -669,7 +702,9 @@ mod tests {
     #[test]
     fn data_stream_and_chapter_text_are_tainted() {
         let streams = vec![stream("data", "bin_data", 2, false)];
-        assert!(taint_reason(&streams, "watermark").expect("data 轨异常").contains("异常数据轨"));
+        assert!(taint_reason(&streams, "watermark")
+            .expect("data 轨异常")
+            .contains("异常数据轨"));
         let text_track = vec![stream("audio", "text", 1, false)];
         assert!(taint_reason(&text_track, "watermark").is_some());
     }

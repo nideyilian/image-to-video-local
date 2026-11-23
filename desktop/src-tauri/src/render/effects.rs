@@ -22,8 +22,8 @@ use super::pixels::BgrFrame;
 /// ⚠️ 这些数字必须与 `src/core/video_effect_engine.py` 逐位一致。
 /// 我第一版是"按感觉"编的（1.0→1.15），实际曲线是 1.63→3.45，差了一个数量级。
 const SOUL_OUT_SCALE_CURVE: [f64; 16] = [
-    1.6268295, 1.7598855, 1.899264, 2.0450655, 2.1973845, 2.3563155, 2.521950, 2.694381,
-    2.8736985, 3.0599925, 3.2533515, 3.453861, 3.453861, 3.453861, 3.453861, 3.453861,
+    1.6268295, 1.7598855, 1.899264, 2.0450655, 2.1973845, 2.3563155, 2.521950, 2.694381, 2.8736985,
+    3.0599925, 3.2533515, 3.453861, 3.453861, 3.453861, 3.453861, 3.453861,
 ];
 /// 同位混合曲线（`SOUL_OUT_MIX_CURVE`）。
 const SOUL_OUT_MIX_CURVE: [f64; 16] = [
@@ -187,6 +187,7 @@ fn fetch(source: &BgrFrame, x: i64, y: i64, border: BorderMode) -> [u8; 3] {
 ///   所以 `-1 → 0`、`8 → 7`。
 /// - `BORDER_REFLECT_101`（`BORDER_DEFAULT`）：`gfedcb|abcdefgh|gfedcba`，边缘不重复，
 ///   `-1 → 1`、`8 → 6`。
+///
 /// 我第一版把注释和测试按 101 写了，但代码用的是 REFLECT —— 二者差一个像素，
 /// 旋转时整个边缘会差一圈，所以这里必须认准。
 pub fn reflect_index(value: i64, size: i64) -> i64 {
@@ -444,8 +445,12 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
         "呼吸变焦扫光" => {
             let scale = 1.02 + 0.08 * intensity_scale * (0.5 - 0.5 * p1.cos());
             let warped = affine(scale, 0.0, 0.0, 0.0);
-            sweep_light(&warped, 0.5 + 0.5 * p2.sin(), 0.08 + 0.04 * intensity_scale,
-                        0.15 + 0.22 * intensity_scale)
+            sweep_light(
+                &warped,
+                0.5 + 0.5 * p2.sin(),
+                0.08 + 0.04 * intensity_scale,
+                0.15 + 0.22 * intensity_scale,
+            )
         }
 
         "旋摆模糊脉冲" => {
@@ -680,9 +685,9 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
             // 缺省值时与改造前完全一致（100% / 3.0 Hz），所以旧配置画面不变。
             let shift_scale = params.param("shift", 100.0) / 100.0;
             let glitch_freq = params.param("freq", 3.0).clamp(0.1, 20.0);
-            let shift = ((3.0 + 7.0 * intensity_scale) * shift_scale
-                * (2.0 * PI * glitch_freq * speed * time_sec).sin())
-                as i64;
+            let shift = ((3.0 + 7.0 * intensity_scale)
+                * shift_scale
+                * (2.0 * PI * glitch_freq * speed * time_sec).sin()) as i64;
             let mut glitch = frame.clone();
             // B/R 通道反向水平平移（对应 np.roll(r, shift) / np.roll(b, -shift)）
             for y in 0..frame.height {
@@ -703,9 +708,8 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
             let band_height = 2i64.max((height * 0.06) as i64);
             let band_y = ((0.5 - 0.5 * (2.0 * PI * 1.7 * speed * time_sec).cos())
                 * (1.0f64).max(height - band_height as f64)) as i64;
-            let band_offset =
-                ((10.0 + 20.0 * intensity_scale) * (2.0 * PI * 6.0 * speed * time_sec).sin())
-                    as i64;
+            let band_offset = ((10.0 + 20.0 * intensity_scale)
+                * (2.0 * PI * 6.0 * speed * time_sec).sin()) as i64;
             if band_height > 0 && band_y >= 0 && band_y < frame.height as i64 {
                 let end = (band_y + band_height).min(frame.height as i64);
                 let original = glitch.clone();
@@ -724,11 +728,11 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
         // ---------- 以下三个参考 Concat 的包名，用 CPU 重写 ----------
         // Concat 的实现是 WGSL 着色器（AGPL-3.0），这里没有照抄代码，
         // 只借了「做什么」的想法，实现是重新写的 CPU 版本。
-
         "色差分离" => {
             // 红/蓝通道向外扩散，模拟镜头色散。强度越大分离越明显。
             let spread = ((2.0 + 10.0 * intensity_scale)
-                * (0.6 + 0.4 * (2.0 * PI * 1.2 * speed * time_sec).sin())) as i64;
+                * (0.6 + 0.4 * (2.0 * PI * 1.2 * speed * time_sec).sin()))
+                as i64;
             let mut out = frame.clone();
             for y in 0..frame.height {
                 for x in 0..frame.width {
@@ -763,7 +767,8 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
             for pixel in out.data.chunks_exact_mut(3) {
                 for channel in pixel.iter_mut() {
                     let original = *channel as f64;
-                    let quantized = (original / 255.0 * (steps - 1.0)).round() / (steps - 1.0) * 255.0;
+                    let quantized =
+                        (original / 255.0 * (steps - 1.0)).round() / (steps - 1.0) * 255.0;
                     let mixed = original + (quantized - original) * blend;
                     *channel = mixed.clamp(0.0, 255.0).round() as u8;
                 }
@@ -804,7 +809,12 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
 
         "镜像扫光" => {
             // 与「呼吸变焦扫光」共用扫光逻辑，只是不带缩放、位置按 progress 推进
-            sweep_light(frame, progress, 0.08 + 0.04 * intensity_scale, 0.22 + 0.18 * intensity_scale)
+            sweep_light(
+                frame,
+                progress,
+                0.08 + 0.04 * intensity_scale,
+                0.22 + 0.18 * intensity_scale,
+            )
         }
 
         "呼吸模糊" => {
@@ -852,8 +862,8 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
             let mut out = frame.clone();
             // ⚠️ `blurred` 是「每像素 1 字节」，`out.data` 是「每像素 3 字节」——
             // 用字节下标去取灰度高会越界（第一版就这样崩了）。
-            for pixel in 0..blurred.len() {
-                let glow = blurred[pixel] as f64;
+            for (pixel, glow) in blurred.iter().enumerate() {
+                let glow = *glow as f64;
                 for channel in 0..3 {
                     let index = pixel * 3 + channel;
                     out.data[index] =
@@ -889,17 +899,12 @@ pub fn apply_single_image_effect(frame: &BgrFrame, params: &EffectParams) -> Bgr
         "灵魂出窍" => {
             let intensity_clamped = (params.intensity / 100.0).clamp(0.0, 2.0);
             let speed_clamped = speed.max(0.1);
-            let index = ((time_sec * speed_clamped * SOUL_OUT_CURVE_FPS).floor() as i64).rem_euclid(16)
-                as usize;
+            let index = ((time_sec * speed_clamped * SOUL_OUT_CURVE_FPS).floor() as i64)
+                .rem_euclid(16) as usize;
             let scale = 1.0 + (SOUL_OUT_SCALE_CURVE[index] - 1.0) * intensity_clamped;
             let mixture = (SOUL_OUT_MIX_CURVE[index] * intensity_clamped).clamp(0.0, 1.0);
             // 注意中心点是 ((w-1)*0.5, (h-1)*0.5)，且边界是 REPLICATE（与其它特效不同）
-            let matrix = rotation_matrix(
-                (width - 1.0) * 0.5,
-                (height - 1.0) * 0.5,
-                0.0,
-                scale,
-            );
+            let matrix = rotation_matrix((width - 1.0) * 0.5, (height - 1.0) * 0.5, 0.0, scale);
             let zoomed = warp_affine(frame, matrix, BorderMode::Replicate);
             super::pixels::blend_weighted(frame, &zoomed, mixture)
         }
@@ -949,7 +954,11 @@ fn gaussian_blur(frame: &BgrFrame, ksize: u32) -> BgrFrame {
     if ksize <= 1 {
         return frame.clone();
     }
-    let ksize = if ksize % 2 == 0 { ksize + 1 } else { ksize };
+    let ksize = if ksize.is_multiple_of(2) {
+        ksize + 1
+    } else {
+        ksize
+    };
     let sigma = 0.3 * (((ksize - 1) as f64) * 0.5 - 1.0) + 0.8;
     let radius = (ksize / 2) as i64;
     let mut kernel: Vec<f64> = Vec::with_capacity(ksize as usize);
@@ -1061,11 +1070,13 @@ fn gaussian_blur_gray(source: &[u8], width: u32, height: u32, ksize: u32) -> Vec
 /// BGR → 灰度（`cv2.cvtColor(..., COLOR_BGR2GRAY)` 的整数权重）。
 fn to_gray(frame: &BgrFrame) -> Vec<u8> {
     let mut out = vec![0u8; (frame.width * frame.height) as usize];
-    for index in 0..out.len() {
+    for (index, slot) in out.iter_mut().enumerate() {
         let b = frame.data[index * 3] as f64;
         let g = frame.data[index * 3 + 1] as f64;
         let r = frame.data[index * 3 + 2] as f64;
-        out[index] = (0.114 * b + 0.587 * g + 0.299 * r).round().clamp(0.0, 255.0) as u8;
+        *slot = (0.114 * b + 0.587 * g + 0.299 * r)
+            .round()
+            .clamp(0.0, 255.0) as u8;
     }
     out
 }
@@ -1101,7 +1112,7 @@ fn canny(gray: &[u8], width: u32, height: u32, low: f64, high: f64) -> Vec<u8> {
             magnitude[index] = (gx * gx + gy * gy).sqrt();
             // 方向量化到 0/45/90/135 度四档
             let angle = gy.atan2(gx).to_degrees().rem_euclid(180.0);
-            direction[index] = if angle < 22.5 || angle >= 157.5 {
+            direction[index] = if !(22.5..157.5).contains(&angle) {
                 0
             } else if angle < 67.5 {
                 1
@@ -1125,10 +1136,10 @@ fn canny(gray: &[u8], width: u32, height: u32, low: f64, high: f64) -> Vec<u8> {
                 _ => (-1, 1),
             };
             let current = magnitude[index];
-            let prev = magnitude
-                [((y + dy).clamp(0, h - 1) * w + (x + dx).clamp(0, w - 1)) as usize];
-            let next = magnitude
-                [((y - dy).clamp(0, h - 1) * w + (x - dx).clamp(0, w - 1)) as usize];
+            let prev =
+                magnitude[((y + dy).clamp(0, h - 1) * w + (x + dx).clamp(0, w - 1)) as usize];
+            let next =
+                magnitude[((y - dy).clamp(0, h - 1) * w + (x - dx).clamp(0, w - 1)) as usize];
             if current >= prev && current >= next {
                 thin[index] = current;
             }
@@ -1178,12 +1189,7 @@ fn canny(gray: &[u8], width: u32, height: u32, low: f64, high: f64) -> Vec<u8> {
 }
 
 /// 逐点重映射（`cv2.remap` + 双线性 + BORDER_REFLECT）。
-fn remap(
-    source: &BgrFrame,
-    map_x: &[f32],
-    map_y: &[f32],
-    border: BorderMode,
-) -> BgrFrame {
+fn remap(source: &BgrFrame, map_x: &[f32], map_y: &[f32], border: BorderMode) -> BgrFrame {
     let mut out = source.clone();
     for y in 0..source.height {
         for x in 0..source.width {
@@ -1203,7 +1209,8 @@ fn sweep_light(frame: &BgrFrame, center_ratio: f64, width_ratio: f64, strength: 
     let mut out = frame.clone();
     for y in 0..frame.height {
         for x in 0..width {
-            let alpha = (1.0 - (x as f64 - band_center).abs() / band_width).clamp(0.0, 1.0) * strength;
+            let alpha =
+                (1.0 - (x as f64 - band_center).abs() / band_width).clamp(0.0, 1.0) * strength;
             if alpha <= 0.0 {
                 continue;
             }
@@ -1240,7 +1247,12 @@ fn multiply_and_clip(frame: &BgrFrame, factor: f64) -> BgrFrame {
 fn perspective_tilt(frame: &BgrFrame, dx: f64) -> BgrFrame {
     let w = frame.width as f64;
     let h = frame.height as f64;
-    let src = [(0.0, 0.0), (w - 1.0, 0.0), (0.0, h - 1.0), (w - 1.0, h - 1.0)];
+    let src = [
+        (0.0, 0.0),
+        (w - 1.0, 0.0),
+        (0.0, h - 1.0),
+        (w - 1.0, h - 1.0),
+    ];
     let dst = [
         (dx, 0.0),
         (w - 1.0 - dx, 0.0),
@@ -1256,10 +1268,7 @@ fn perspective_tilt(frame: &BgrFrame, dx: f64) -> BgrFrame {
 /// 解 `cv2.getPerspectiveTransform`：求 3x3 矩阵 `M` 使 `dst = M · src`（齐次坐标）。
 ///
 /// 8 个未知数（第 9 个固定为 1），每对点给 2 个方程，用高斯消元解线性系统。
-fn perspective_transform(
-    src: &[(f64, f64); 4],
-    dst: &[(f64, f64); 4],
-) -> Option<[[f64; 3]; 3]> {
+fn perspective_transform(src: &[(f64, f64); 4], dst: &[(f64, f64); 4]) -> Option<[[f64; 3]; 3]> {
     let mut a = [[0.0f64; 9]; 8];
     for index in 0..4 {
         let (x, y) = src[index];
@@ -1281,8 +1290,8 @@ fn perspective_transform(
         }
         a.swap(column, pivot);
         let divisor = a[column][column];
-        for cell in column..9 {
-            a[column][cell] /= divisor;
+        for value in a[column][column..9].iter_mut() {
+            *value /= divisor;
         }
         for row in 0..8 {
             if row == column {
@@ -1292,8 +1301,11 @@ fn perspective_transform(
             if factor == 0.0 {
                 continue;
             }
-            for cell in column..9 {
-                a[row][cell] -= factor * a[column][cell];
+            // 复制主元行再按列相减：`a[row]` 与 `a[column]` 是同一数组的两行，
+            // 直接双下标会让借用检查器拒绝，而这里只是 9 个 f64。
+            let pivot_row = a[column];
+            for (cell, value) in a[row].iter_mut().enumerate().skip(column) {
+                *value -= factor * pivot_row[cell];
             }
         }
     }
@@ -1381,181 +1393,6 @@ pub fn normalize_effect(name: &str) -> String {
     };
     alias.to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn solid(width: u32, height: u32, value: [u8; 3]) -> BgrFrame {
-        let mut frame = BgrFrame::new(width, height);
-        frame.data.chunks_mut(3).for_each(|chunk| {
-            chunk.copy_from_slice(&value);
-        });
-        frame
-    }
-
-    fn params(effect: &str, time_sec: f64) -> EffectParams {
-        EffectParams::new(effect, time_sec, 3.0, 100.0, 1.0)
-    }
-
-    #[test]
-    fn rotation_matrix_matches_opencv_formula() {
-        // angle=0, scale=1 → 恒等矩阵
-        let identity = rotation_matrix(50.0, 40.0, 0.0, 1.0);
-        assert!((identity.m00 - 1.0).abs() < 1e-12);
-        assert!(identity.m01.abs() < 1e-12);
-        assert!(identity.m02.abs() < 1e-12);
-        assert!((identity.m11 - 1.0).abs() < 1e-12);
-        assert!(identity.m12.abs() < 1e-12);
-
-        // angle=90, scale=1：cos=0, sin=1 → α=0, β=1
-        let rotated = rotation_matrix(10.0, 10.0, 90.0, 1.0);
-        assert!(rotated.m00.abs() < 1e-12);
-        assert!((rotated.m01 - 1.0).abs() < 1e-12);
-        // m02 = (1-0)*10 - 1*10 = 0
-        assert!(rotated.m02.abs() < 1e-12);
-        assert!((rotated.m10 + 1.0).abs() < 1e-12);
-        // m12 = 1*10 + (1-0)*10 = 20
-        assert!((rotated.m12 - 20.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn reflect_index_matches_opencv_border_reflect() {
-        // size=8，BORDER_REFLECT：fedcba | abcdefgh | hgfedcb
-        assert_eq!(reflect_index(0, 8), 0);
-        assert_eq!(reflect_index(7, 8), 7);
-        // 左侧：-1 与 -2 都重复边缘像素 a(0)，-3 → b(1)
-        assert_eq!(reflect_index(-1, 8), 0, "BORDER_REFLECT 的 -1 映射到 0（不是 1）");
-        assert_eq!(reflect_index(-2, 8), 1);
-        assert_eq!(reflect_index(-3, 8), 2);
-        // 右侧：8 重复 h(7)，9 → g(6)
-        assert_eq!(reflect_index(8, 8), 7, "8 映射到 7");
-        assert_eq!(reflect_index(9, 8), 6);
-        // 一个完整周期后回到原点
-        assert_eq!(reflect_index(16, 8), 0);
-        assert_eq!(reflect_index(-16, 8), 0);
-        // size=1 是特例
-        assert_eq!(reflect_index(5, 1), 0);
-    }
-
-    #[test]
-    fn identity_warp_returns_same_pixels() {
-        let mut frame = BgrFrame::new(6, 5);
-        for y in 0..5u32 {
-            for x in 0..6u32 {
-                frame.set_pixel(x, y, [(x * 30) as u8, (y * 40) as u8, 100]);
-            }
-        }
-        let result = warp_affine(&frame, rotation_matrix(3.0, 2.5, 0.0, 1.0), BorderMode::Reflect);
-        // 恒等变换下每个像素都应精确还原（双线性在整数坐标上权重为 1）
-        for y in 0..5u32 {
-            for x in 0..6u32 {
-                assert_eq!(result.pixel(x, y), frame.pixel(x, y), "({x},{y})");
-            }
-        }
-    }
-
-    #[test]
-    fn constant_border_fills_black() {
-        let frame = solid(4, 4, [200, 200, 200]);
-        // 平移 -100 像素，整张图移出画面
-        let matrix = Affine { m00: 1.0, m01: 0.0, m02: -100.0, m10: 0.0, m11: 1.0, m12: 0.0 };
-        let result = warp_affine(&frame, matrix, BorderMode::Constant);
-        assert_eq!(result.pixel(0, 0), Some([0, 0, 0]));
-    }
-
-    #[test]
-    fn replicate_border_repeats_edge() {
-        let frame = solid(4, 4, [123, 45, 67]);
-        let matrix = Affine { m00: 1.0, m01: 0.0, m02: -100.0, m10: 0.0, m11: 1.0, m12: 0.0 };
-        let result = warp_affine(&frame, matrix, BorderMode::Replicate);
-        assert_eq!(result.pixel(0, 0), Some([123, 45, 67]));
-    }
-
-    #[test]
-    fn reflect_border_mirrors_edge() {
-        // 单列渐变，平移后应镜像而不是填黑
-        let mut frame = BgrFrame::new(4, 1);
-        for x in 0..4u32 {
-            frame.set_pixel(x, 0, [(x * 10) as u8, 0, 0]);
-        }
-        let matrix = Affine { m00: 1.0, m01: 0.0, m02: 1.0, m10: 0.0, m11: 1.0, m12: 0.0 };
-        let result = warp_affine(&frame, matrix, BorderMode::Reflect);
-        // 右移 1 像素：目标 0 取源 -1 → BORDER_REFLECT 映射到 0 → 值 0
-        assert_eq!(result.pixel(0, 0), Some([0, 0, 0]));
-        // 目标 1 取源 0 → 0；目标 2 取源 1 → 10
-        assert_eq!(result.pixel(2, 0), Some([10, 0, 0]));
-    }
-
-    #[test]
-    fn no_effect_returns_unchanged() {
-        let frame = solid(10, 8, [1, 2, 3]);
-        let result = apply_single_image_effect(&frame, &params("无特效", 1.0));
-        assert_eq!(result.data, frame.data);
-    }
-
-    #[test]
-    fn legacy_aliases_are_normalized() {
-        assert_eq!(normalize_effect("心跳跃动"), "心跳跳动");
-        assert_eq!(normalize_effect("缓慢推近"), "摇摆推拉");
-        assert_eq!(normalize_effect("左右平移"), "左右晃动");
-        assert_eq!(normalize_effect("旋转呼吸"), "旋转呼吸");
-    }
-
-    #[test]
-    fn effect_output_keeps_frame_size() {
-        let frame = solid(40, 30, [80, 90, 100]);
-        for effect in [
-            "旋转呼吸",
-            "摇摆推拉",
-            "圆周漂移",
-            "螺旋摆动",
-            "心跳摇摆",
-            "波浪平移",
-            "双轴呼吸",
-            "左右晃动",
-            "上下浮动",
-            "缓慢推近",
-            "缓慢拉远",
-        ] {
-            let result = apply_single_image_effect(&frame, &params(effect, 0.7));
-            assert_eq!(
-                (result.width, result.height),
-                (frame.width, frame.height),
-                "{effect} 改变了尺寸"
-            );
-        }
-    }
-
-    #[test]
-    fn solid_color_survives_affine_effects() {
-        // 纯色图经过仿射变换后应仍是同一颜色（不被边界模式污染成黑）
-        let frame = solid(40, 30, [200, 100, 50]);
-        for effect in ["旋转呼吸", "圆周漂移", "左右晃动"] {
-            let result = apply_single_image_effect(&frame, &params(effect, 0.8));
-            for (index, chunk) in result.data.chunks(3).enumerate() {
-                assert_eq!(
-                    chunk, [200, 100, 50],
-                    "{effect} 第 {index} 个像素被污染"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn unknown_effect_is_passthrough() {
-        let frame = solid(6, 6, [7, 8, 9]);
-        let result = apply_single_image_effect(&frame, &params("完全不存在的特效", 1.0));
-        assert_eq!(result.data, frame.data);
-    }
-
-    #[test]
-    fn center_crop_upscales_when_source_is_smaller() {
-        let frame = solid(10, 10, [5, 5, 5]);
-        let result = center_crop(&frame, 20, 20);
-        assert_eq!((result.width, result.height), (20, 20));
-    }
-}
 /// 供转场模块复用：双线性 + BORDER_REFLECT 采样（`cv2.remap` 的默认边界）。
 pub(crate) fn sample_bilinear_reflect(source: &BgrFrame, x: f64, y: f64) -> [u8; 3] {
     sample_bilinear(source, x, y, BorderMode::Reflect)
@@ -1566,7 +1403,11 @@ pub(crate) fn gaussian_blur_sigma_pub(frame: &BgrFrame, ksize: u32, sigma: f64) 
     if ksize <= 1 {
         return frame.clone();
     }
-    let ksize = if ksize % 2 == 0 { ksize + 1 } else { ksize };
+    let ksize = if ksize.is_multiple_of(2) {
+        ksize + 1
+    } else {
+        ksize
+    };
     let radius = (ksize / 2) as i64;
     let mut kernel: Vec<f64> = Vec::with_capacity(ksize as usize);
     let mut total = 0.0;
@@ -1625,4 +1466,205 @@ pub(crate) fn gaussian_blur_sigma_pub(frame: &BgrFrame, ksize: u32, sigma: f64) 
         }
     }
     vertical
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn solid(width: u32, height: u32, value: [u8; 3]) -> BgrFrame {
+        let mut frame = BgrFrame::new(width, height);
+        frame.data.chunks_mut(3).for_each(|chunk| {
+            chunk.copy_from_slice(&value);
+        });
+        frame
+    }
+
+    fn params(effect: &str, time_sec: f64) -> EffectParams {
+        EffectParams::new(effect, time_sec, 3.0, 100.0, 1.0)
+    }
+
+    #[test]
+    fn rotation_matrix_matches_opencv_formula() {
+        // angle=0, scale=1 → 恒等矩阵
+        let identity = rotation_matrix(50.0, 40.0, 0.0, 1.0);
+        assert!((identity.m00 - 1.0).abs() < 1e-12);
+        assert!(identity.m01.abs() < 1e-12);
+        assert!(identity.m02.abs() < 1e-12);
+        assert!((identity.m11 - 1.0).abs() < 1e-12);
+        assert!(identity.m12.abs() < 1e-12);
+
+        // angle=90, scale=1：cos=0, sin=1 → α=0, β=1
+        let rotated = rotation_matrix(10.0, 10.0, 90.0, 1.0);
+        assert!(rotated.m00.abs() < 1e-12);
+        assert!((rotated.m01 - 1.0).abs() < 1e-12);
+        // m02 = (1-0)*10 - 1*10 = 0
+        assert!(rotated.m02.abs() < 1e-12);
+        assert!((rotated.m10 + 1.0).abs() < 1e-12);
+        // m12 = 1*10 + (1-0)*10 = 20
+        assert!((rotated.m12 - 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reflect_index_matches_opencv_border_reflect() {
+        // size=8，BORDER_REFLECT：fedcba | abcdefgh | hgfedcb
+        assert_eq!(reflect_index(0, 8), 0);
+        assert_eq!(reflect_index(7, 8), 7);
+        // 左侧：-1 与 -2 都重复边缘像素 a(0)，-3 → b(1)
+        assert_eq!(
+            reflect_index(-1, 8),
+            0,
+            "BORDER_REFLECT 的 -1 映射到 0（不是 1）"
+        );
+        assert_eq!(reflect_index(-2, 8), 1);
+        assert_eq!(reflect_index(-3, 8), 2);
+        // 右侧：8 重复 h(7)，9 → g(6)
+        assert_eq!(reflect_index(8, 8), 7, "8 映射到 7");
+        assert_eq!(reflect_index(9, 8), 6);
+        // 一个完整周期后回到原点
+        assert_eq!(reflect_index(16, 8), 0);
+        assert_eq!(reflect_index(-16, 8), 0);
+        // size=1 是特例
+        assert_eq!(reflect_index(5, 1), 0);
+    }
+
+    #[test]
+    fn identity_warp_returns_same_pixels() {
+        let mut frame = BgrFrame::new(6, 5);
+        for y in 0..5u32 {
+            for x in 0..6u32 {
+                frame.set_pixel(x, y, [(x * 30) as u8, (y * 40) as u8, 100]);
+            }
+        }
+        let result = warp_affine(
+            &frame,
+            rotation_matrix(3.0, 2.5, 0.0, 1.0),
+            BorderMode::Reflect,
+        );
+        // 恒等变换下每个像素都应精确还原（双线性在整数坐标上权重为 1）
+        for y in 0..5u32 {
+            for x in 0..6u32 {
+                assert_eq!(result.pixel(x, y), frame.pixel(x, y), "({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn constant_border_fills_black() {
+        let frame = solid(4, 4, [200, 200, 200]);
+        // 平移 -100 像素，整张图移出画面
+        let matrix = Affine {
+            m00: 1.0,
+            m01: 0.0,
+            m02: -100.0,
+            m10: 0.0,
+            m11: 1.0,
+            m12: 0.0,
+        };
+        let result = warp_affine(&frame, matrix, BorderMode::Constant);
+        assert_eq!(result.pixel(0, 0), Some([0, 0, 0]));
+    }
+
+    #[test]
+    fn replicate_border_repeats_edge() {
+        let frame = solid(4, 4, [123, 45, 67]);
+        let matrix = Affine {
+            m00: 1.0,
+            m01: 0.0,
+            m02: -100.0,
+            m10: 0.0,
+            m11: 1.0,
+            m12: 0.0,
+        };
+        let result = warp_affine(&frame, matrix, BorderMode::Replicate);
+        assert_eq!(result.pixel(0, 0), Some([123, 45, 67]));
+    }
+
+    #[test]
+    fn reflect_border_mirrors_edge() {
+        // 单列渐变，平移后应镜像而不是填黑
+        let mut frame = BgrFrame::new(4, 1);
+        for x in 0..4u32 {
+            frame.set_pixel(x, 0, [(x * 10) as u8, 0, 0]);
+        }
+        let matrix = Affine {
+            m00: 1.0,
+            m01: 0.0,
+            m02: 1.0,
+            m10: 0.0,
+            m11: 1.0,
+            m12: 0.0,
+        };
+        let result = warp_affine(&frame, matrix, BorderMode::Reflect);
+        // 右移 1 像素：目标 0 取源 -1 → BORDER_REFLECT 映射到 0 → 值 0
+        assert_eq!(result.pixel(0, 0), Some([0, 0, 0]));
+        // 目标 1 取源 0 → 0；目标 2 取源 1 → 10
+        assert_eq!(result.pixel(2, 0), Some([10, 0, 0]));
+    }
+
+    #[test]
+    fn no_effect_returns_unchanged() {
+        let frame = solid(10, 8, [1, 2, 3]);
+        let result = apply_single_image_effect(&frame, &params("无特效", 1.0));
+        assert_eq!(result.data, frame.data);
+    }
+
+    #[test]
+    fn legacy_aliases_are_normalized() {
+        assert_eq!(normalize_effect("心跳跃动"), "心跳跳动");
+        assert_eq!(normalize_effect("缓慢推近"), "摇摆推拉");
+        assert_eq!(normalize_effect("左右平移"), "左右晃动");
+        assert_eq!(normalize_effect("旋转呼吸"), "旋转呼吸");
+    }
+
+    #[test]
+    fn effect_output_keeps_frame_size() {
+        let frame = solid(40, 30, [80, 90, 100]);
+        for effect in [
+            "旋转呼吸",
+            "摇摆推拉",
+            "圆周漂移",
+            "螺旋摆动",
+            "心跳摇摆",
+            "波浪平移",
+            "双轴呼吸",
+            "左右晃动",
+            "上下浮动",
+            "缓慢推近",
+            "缓慢拉远",
+        ] {
+            let result = apply_single_image_effect(&frame, &params(effect, 0.7));
+            assert_eq!(
+                (result.width, result.height),
+                (frame.width, frame.height),
+                "{effect} 改变了尺寸"
+            );
+        }
+    }
+
+    #[test]
+    fn solid_color_survives_affine_effects() {
+        // 纯色图经过仿射变换后应仍是同一颜色（不被边界模式污染成黑）
+        let frame = solid(40, 30, [200, 100, 50]);
+        for effect in ["旋转呼吸", "圆周漂移", "左右晃动"] {
+            let result = apply_single_image_effect(&frame, &params(effect, 0.8));
+            for (index, chunk) in result.data.chunks(3).enumerate() {
+                assert_eq!(chunk, [200, 100, 50], "{effect} 第 {index} 个像素被污染");
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_effect_is_passthrough() {
+        let frame = solid(6, 6, [7, 8, 9]);
+        let result = apply_single_image_effect(&frame, &params("完全不存在的特效", 1.0));
+        assert_eq!(result.data, frame.data);
+    }
+
+    #[test]
+    fn center_crop_upscales_when_source_is_smaller() {
+        let frame = solid(10, 10, [5, 5, 5]);
+        let result = center_crop(&frame, 20, 20);
+        assert_eq!((result.width, result.height), (20, 20));
+    }
 }

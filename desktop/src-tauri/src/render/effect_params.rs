@@ -33,10 +33,7 @@ pub const CONFIG_KEY: &str = "effect_params";
 
 /// 取某个特效/转场在配置里的参数表。
 fn params_map<'a>(config: &'a Value, item_id: &str) -> Option<&'a Map<String, Value>> {
-    config
-        .get(CONFIG_KEY)?
-        .get(item_id)?
-        .as_object()
+    config.get(CONFIG_KEY)?.get(item_id)?.as_object()
 }
 
 /// 解析单个参数的当前值：用户设过的取用户值，否则取声明默认值。
@@ -82,7 +79,11 @@ pub fn resolve_value(config: &Value, item_id: &str, spec: &ParamSpec) -> Value {
                 })
                 .unwrap_or(spec.default);
             // 非有限值（NaN/Inf）一律退回默认，否则会污染整帧像素
-            let safe = if number.is_finite() { number } else { spec.default };
+            let safe = if number.is_finite() {
+                number
+            } else {
+                spec.default
+            };
             json!(safe.clamp(spec.min, spec.max))
         }
     }
@@ -92,8 +93,7 @@ pub fn resolve_value(config: &Value, item_id: &str, spec: &ParamSpec) -> Value {
 ///
 /// 实现代码用这个结果，而不是自己去 `config` 里翻 —— 这样夹取和默认值只有一处。
 pub fn resolve(config: &Value, item_id: &str) -> Map<String, Value> {
-    let Some(item) = catalog::find_effect(item_id)
-        .or_else(|| catalog::find_transition(item_id))
+    let Some(item) = catalog::find_effect(item_id).or_else(|| catalog::find_transition(item_id))
     else {
         return Map::new();
     };
@@ -108,8 +108,7 @@ pub fn resolve(config: &Value, item_id: &str) -> Map<String, Value> {
 ///
 /// 返回的是纯 JSON，前端不需要知道 Rust 的类型。
 pub fn params_for(config: &Value, item_id: &str) -> Value {
-    let Some(item) = catalog::find_effect(item_id)
-        .or_else(|| catalog::find_transition(item_id))
+    let Some(item) = catalog::find_effect(item_id).or_else(|| catalog::find_transition(item_id))
     else {
         return json!([]);
     };
@@ -275,7 +274,11 @@ mod tests {
         let map = all.as_object().expect("应该是对象");
         for item in catalog::EFFECTS {
             if item.params.is_empty() {
-                assert!(!map.contains_key(item.id), "「{}」没参数却出现在定义里", item.id);
+                assert!(
+                    !map.contains_key(item.id),
+                    "「{}」没参数却出现在定义里",
+                    item.id
+                );
             }
         }
     }

@@ -75,8 +75,11 @@ mod win {
             total_bytes: *mut u64,
             total_free_bytes: *mut u64,
         ) -> i32;
-        pub fn GetSystemTimes(idle: *mut FileTime, kernel: *mut FileTime, user: *mut FileTime)
-            -> i32;
+        pub fn GetSystemTimes(
+            idle: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
         pub fn GetCurrentProcess() -> isize;
         pub fn K32GetProcessMemoryInfo(
             process: isize,
@@ -89,8 +92,10 @@ mod win {
 /// 取内存占用百分比与可用 GB。
 #[cfg(windows)]
 fn memory_info() -> (f64, f64) {
-    let mut status = win::MemoryStatusEx::default();
-    status.length = std::mem::size_of::<win::MemoryStatusEx>() as u32;
+    let mut status = win::MemoryStatusEx {
+        length: std::mem::size_of::<win::MemoryStatusEx>() as u32,
+        ..Default::default()
+    };
     let ok = unsafe { win::GlobalMemoryStatusEx(&mut status) };
     if ok == 0 {
         return (0.0, 0.0);
@@ -117,12 +122,7 @@ fn disk_free_gb(path: &str) -> f64 {
     let mut total: u64 = 0;
     let mut total_free: u64 = 0;
     let ok = unsafe {
-        win::GetDiskFreeSpaceExW(
-            wide.as_ptr(),
-            &mut available,
-            &mut total,
-            &mut total_free,
-        )
+        win::GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, &mut total, &mut total_free)
     };
     if ok == 0 {
         return 0.0;
@@ -138,14 +138,12 @@ fn disk_free_gb(_path: &str) -> f64 {
 /// 当前进程的常驻内存 MB。
 #[cfg(windows)]
 fn process_memory_mb() -> f64 {
-    let mut counters = win::ProcessMemoryCounters::default();
-    counters.cb = std::mem::size_of::<win::ProcessMemoryCounters>() as u32;
+    let mut counters = win::ProcessMemoryCounters {
+        cb: std::mem::size_of::<win::ProcessMemoryCounters>() as u32,
+        ..Default::default()
+    };
     let ok = unsafe {
-        win::K32GetProcessMemoryInfo(
-            win::GetCurrentProcess(),
-            &mut counters,
-            counters.cb,
-        )
+        win::K32GetProcessMemoryInfo(win::GetCurrentProcess(), &mut counters, counters.cb)
     };
     if ok == 0 {
         return 0.0;
@@ -224,11 +222,7 @@ pub fn snapshot(project_root: &str, output_dir: &str) -> SystemSnapshot {
 }
 
 /// 与 `_system_snapshot()` 的返回结构一致。
-pub fn snapshot_payload(
-    project_root: &str,
-    output_dir: &str,
-    ffmpeg: Option<&Path>,
-) -> Value {
+pub fn snapshot_payload(project_root: &str, output_dir: &str, ffmpeg: Option<&Path>) -> Value {
     let data = snapshot(project_root, output_dir);
     let (available, version) = match ffmpeg {
         Some(path) => (true, ffmpeg_version(path)),

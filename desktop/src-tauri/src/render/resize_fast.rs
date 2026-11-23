@@ -121,7 +121,8 @@ impl AxisTable {
                     } else if total.abs() > 1e-9 {
                         let mut assigned = 0i32;
                         for slot in 0..used.saturating_sub(1) {
-                            row_weight[slot] = (raw[slot] / total * WEIGHT_ONE as f64).round() as i32;
+                            row_weight[slot] =
+                                (raw[slot] / total * WEIGHT_ONE as f64).round() as i32;
                             assigned += row_weight[slot];
                         }
                         // 最后一项补足总量，避免舍入累计成偏色
@@ -139,7 +140,11 @@ impl AxisTable {
         // 实际用到的 tap 数取所有行里的最大值
         let taps = index
             .iter()
-            .map(|row| row.iter().rposition(|value| *value != 0).map_or(1, |pos| pos + 1))
+            .map(|row| {
+                row.iter()
+                    .rposition(|value| *value != 0)
+                    .map_or(1, |pos| pos + 1)
+            })
             .max()
             .unwrap_or(1)
             .min(taps)
@@ -218,8 +223,8 @@ pub fn resize_bgr(source: &BgrFrame, target_w: u32, target_h: u32, kernel: Kerne
             if kernel == Kernel::Nearest {
                 let src_row = ys.index[y][0] * src_row_bytes;
                 let xindex = &xs.index;
-                for x in 0..dst_w {
-                    let src_at = src_row + xindex[x][0] * 3;
+                for (x, entry) in xindex.iter().enumerate().take(dst_w) {
+                    let src_at = src_row + entry[0] * 3;
                     let dst_at = out_at + x * 3;
                     chunk[dst_at..dst_at + 3].copy_from_slice(&src_data[src_at..src_at + 3]);
                 }
@@ -253,7 +258,8 @@ pub fn resize_bgr(source: &BgrFrame, target_w: u32, target_h: u32, kernel: Kerne
                 // 权重总和是 WEIGHT_ONE^2，右移 16 位（8 位×8 位）还原
                 let dst_at = out_at + x * 3;
                 for channel in 0..3 {
-                    let value = (vertical[channel] + (WEIGHT_ONE as i64 * WEIGHT_ONE as i64 / 2)) >> 16;
+                    let value =
+                        (vertical[channel] + (WEIGHT_ONE as i64 * WEIGHT_ONE as i64 / 2)) >> 16;
                     chunk[dst_at + channel] = value.clamp(0, 255) as u8;
                 }
             }
@@ -271,7 +277,11 @@ mod tests {
         let mut frame = BgrFrame::new(width, height);
         for y in 0..height {
             for x in 0..width {
-                frame.set_pixel(x, y, [(x % 256) as u8, (y % 256) as u8, ((x * 2) % 256) as u8]);
+                frame.set_pixel(
+                    x,
+                    y,
+                    [(x % 256) as u8, (y % 256) as u8, ((x * 2) % 256) as u8],
+                );
             }
         }
         frame
@@ -320,7 +330,11 @@ mod tests {
         for y in 0..4u32 {
             for x in 0..4u32 {
                 let (sx, sy) = (expected[x as usize], expected[y as usize]);
-                assert_eq!(out.pixel(x, y), frame.pixel(sx, sy), "({x},{y}) 取样位置不对");
+                assert_eq!(
+                    out.pixel(x, y),
+                    frame.pixel(sx, sy),
+                    "({x},{y}) 取样位置不对"
+                );
             }
         }
     }

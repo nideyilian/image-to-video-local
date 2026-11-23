@@ -15,7 +15,9 @@ use std::path::Path;
 use serde_json::{json, Map, Value};
 
 use super::compositor;
+use super::pixels;
 use super::transitions;
+use super::watermark;
 use crate::engine::config;
 use crate::engine::paths;
 use crate::engine::scan;
@@ -168,11 +170,16 @@ fn today_stamp() -> String {
 }
 
 /// `cycle_images_to_duration`：按总时长把图片循环/截断成整数个时间槽。
-fn cycle_images_to_duration(images: &[String], image_duration: f64, total_duration: f64) -> Vec<String> {
+fn cycle_images_to_duration(
+    images: &[String],
+    image_duration: f64,
+    total_duration: f64,
+) -> Vec<String> {
     if images.is_empty() {
         return Vec::new();
     }
-    let Ok(Some(slots)) = crate::engine::config::timeline_slot_count(image_duration, total_duration)
+    let Ok(Some(slots)) =
+        crate::engine::config::timeline_slot_count(image_duration, total_duration)
     else {
         return images.to_vec();
     };
@@ -385,8 +392,10 @@ pub fn run_batch(
                 values
                     .iter()
                     .filter_map(|value| value.as_str().map(str::to_string))
-                    .filter(|name| transitions::parse(name) != transitions::Transition::Fallback
-                        || matches!(name.as_str(), "淡入淡出" | "交叉溶解"))
+                    .filter(|name| {
+                        transitions::parse(name) != transitions::Transition::Fallback
+                            || matches!(name.as_str(), "淡入淡出" | "交叉溶解")
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -602,10 +611,64 @@ pub fn run_batch(
 
         let start = std::time::Instant::now();
         let mut per_video_config = config.clone();
-        per_video_config.insert(
-            "_current_video_index".to_string(),
-            json!(video_index),
-        );
+        per_video_config.insert("_current_video_index".to_string(), json!(video_index));
+
+        // ---- 跟随水印（图层未勾「固定图层」）----
+        //
+        // 与固定图层是两个不同阶段，抄错就是静默丢水印：
+        // - 固定图层：合成完之后由后处理 overlay 一次，位置固定
+        // - 跟随水印：每张图**缩放到目标尺寸之后、做转场之前**逐帧贴，
+        //   这样水印跟着图片一起缩放、跟着转场一起淡入淡出
+        //
+        // ⚠️ 这里曾经传 `None`（钩子写好了但没人用），结果「跟随水印」在导出里
+        // 完全不存在，日志只显示「固定图层:0」，看着像用户自己没设水印。
+        // 详见 `watermark::follow_image_layers` 的注释。
+        let follow_enabled = flag(&per_video_config, "use_image_watermark", false);
+        let follow_layers = if follow_enabled {
+            let layers = per_video_config
+                .get("watermark_layers")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            // 目录多图时按视频序号轮转，保证批量导出不会每条视频都贴同一张。
+            // 与 BGM 选曲（`select_bgm_file`）、视频水印文件夹模式同一套语义：
+            // **顺序语义下不许写 `files[0]`**。
+            let mut pick = |count: usize| -> usize {
+                if count == 0 {
+                    0
+                } else {
+                    (video_index as usize + count) % count
+                }
+            };
+            watermark::follow_image_layers(&layers, &mut pick)
+        } else {
+            Vec::new()
+        };
+        if !follow_layers.is_empty() {
+            hooks.log(&format!("跟随水印图层: {}", follow_layers.len()));
+        }
+        // 判空要在闭包借用之前：`decorate` 已经 move 了 `follow_layers`。
+        let has_follow_layers = !follow_layers.is_empty();
+        let mut decorate = move |frame: &pixels::BgrFrame, _image_index: usize| {
+            let mut result = frame.clone();
+            let mut pick = |count: usize| -> usize {
+                if count == 0 {
+                    0
+                } else {
+                    (video_index as usize + count) % count
+                }
+            };
+            for layer in &follow_layers {
+                result = watermark::apply_image_layer(&result, layer, &mut pick);
+            }
+            Some(result)
+        };
+        let decorate_arg: compositor::Decorate<'_> = if has_follow_layers {
+            Some(&mut decorate)
+        } else {
+            None
+        };
+
         // 必须走 `create_video_and_postprocess`：它才是「合成 + 后处理」的完整链路。
         // 只调 `create_video` 会跳过整个后处理阶段 —— 固定水印、视频水印、BGM 全部静默丢失，
         // 而且导出「成功」、日志也正常，只有看输出文件才发现没声音、没水印。
@@ -617,7 +680,7 @@ pub fn run_batch(
             None,
             &watermark_position,
             hooks,
-            None,
+            decorate_arg,
         ) {
             Ok(result) => {
                 success += 1;
@@ -693,7 +756,8 @@ mod tests {
     #[test]
     fn ui_watermark_layers_are_aliased_to_kernel_key() {
         let mut config = Map::new();
-        let layers = json!([{ "enabled": true, "type": "图片", "fixed": true, "path": "C:/wm.png" }]);
+        let layers =
+            json!([{ "enabled": true, "type": "图片", "fixed": true, "path": "C:/wm.png" }]);
         config.insert("watermark_layers".into(), layers.clone());
         apply_ui_aliases(&mut config);
         assert_eq!(config["_watermark_layers"], layers);
@@ -731,7 +795,7 @@ mod tests {
         assert_eq!(
             compose_output_filename(true, false, "", "video", 1, "mp4")
                 .split('-')
-                .last()
+                .next_back()
                 .unwrap(),
             "1.mp4"
         );

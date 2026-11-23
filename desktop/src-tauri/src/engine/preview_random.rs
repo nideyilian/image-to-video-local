@@ -203,12 +203,7 @@ pub fn preview_choice(items: &[String], sequence: i64, domain: &str) -> Option<S
 }
 
 /// 与 `preview_sample()` 等价：先洗牌，再从 `offset` 开始循环取 `count` 个。
-pub fn preview_sample(
-    items: &[String],
-    count: i64,
-    sequence: i64,
-    domain: &str,
-) -> Vec<String> {
+pub fn preview_sample(items: &[String], count: i64, sequence: i64, domain: &str) -> Vec<String> {
     let values = shuffled(items, domain);
     if values.is_empty() {
         return Vec::new();

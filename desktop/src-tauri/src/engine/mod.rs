@@ -14,8 +14,8 @@
 pub(crate) mod config;
 mod dedup;
 mod effect_assets;
-pub mod embedded_ffmpeg;
 mod effect_preview;
+pub mod embedded_ffmpeg;
 mod extract;
 mod fingerprint;
 pub(crate) mod hash;
@@ -30,6 +30,7 @@ pub(crate) mod sort;
 mod sysinfo;
 pub(crate) mod system;
 mod taint;
+mod updater;
 mod write_ops;
 
 #[cfg(test)]
@@ -49,16 +50,28 @@ pub struct DispatchResponse {
 
 impl DispatchResponse {
     fn ok(result: Value) -> Self {
-        Self { handled: true, result: Some(result), error: None }
+        Self {
+            handled: true,
+            result: Some(result),
+            error: None,
+        }
     }
 
     fn unhandled() -> Self {
-        Self { handled: false, result: None, error: None }
+        Self {
+            handled: false,
+            result: None,
+            error: None,
+        }
     }
 
     /// 已接管但业务上失败（如「只能删除素材库内的文件」），与 Python 抛错等价。
     fn failed(message: impl Into<String>) -> Self {
-        Self { handled: true, result: None, error: Some(message.into()) }
+        Self {
+            handled: true,
+            result: None,
+            error: Some(message.into()),
+        }
     }
 }
 
@@ -107,8 +120,7 @@ fn job_manager() -> &'static jobs::JobManager {
                     .join("../..")
                     .canonicalize()
                     .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let python =
-                    std::env::var("ITV_PYTHON").unwrap_or_else(|_| "python".to_string());
+                let python = std::env::var("ITV_PYTHON").unwrap_or_else(|_| "python".to_string());
                 jobs::WorkerCommand::PythonModule {
                     python,
                     project_root,
@@ -124,7 +136,7 @@ fn job_manager() -> &'static jobs::JobManager {
 pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
     let object = params
         .and_then(|value| value.as_object().cloned())
-        .unwrap_or_else(Map::new);
+        .unwrap_or_default();
 
     match method {
         "library_dirs" => DispatchResponse::ok(library::dirs()),
@@ -321,6 +333,11 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
                 Err(message) => DispatchResponse::failed(message),
             }
         }
+        // ---------- 应用内更新检查（见 engine/updater.rs 的取舍说明） ----------
+        // 只做「比版本号 + 给下载链接」，下载交给系统浏览器。
+        "updater_check" => {
+            DispatchResponse::ok(updater::check_payload(&text(&object, "current_version")))
+        }
         // ---------- 系统信息 ----------
         "system_snapshot" => {
             let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -346,18 +363,14 @@ pub fn dispatch(method: &str, params: Option<Value>) -> DispatchResponse {
         "effect_param_schema" => {
             DispatchResponse::ok(super::render::effect_params::all_definitions())
         }
-        "normalize_config" => {
-            DispatchResponse::ok(config::normalize_config(object.get("config")))
-        }
+        "normalize_config" => DispatchResponse::ok(config::normalize_config(object.get("config"))),
         "validate_config" => {
             let errors = config::validate_config(object.get("config"), check_files(&object));
             DispatchResponse::ok(json!({ "valid": errors.is_empty(), "errors": errors }))
         }
         "validate_config_detailed" => {
-            let issues = config::validate_config_detailed(
-                object.get("config"),
-                check_files(&object),
-            );
+            let issues =
+                config::validate_config_detailed(object.get("config"), check_files(&object));
             DispatchResponse::ok(json!({ "valid": issues.is_empty(), "issues": issues }))
         }
         _ => DispatchResponse::unhandled(),
@@ -480,12 +493,12 @@ mod tests {
     /// 只会每次都静默回落 Python —— 这个测试就是为此存在的。
     #[test]
     fn every_whitelisted_method_is_handled() {
-        let source = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../src/engine.ts"
-        ))
-        .expect("读不到 desktop/src/engine.ts");
-        let start = source.find("const NATIVE_METHODS").expect("找不到 NATIVE_METHODS");
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/engine.ts"))
+                .expect("读不到 desktop/src/engine.ts");
+        let start = source
+            .find("const NATIVE_METHODS")
+            .expect("找不到 NATIVE_METHODS");
         let end = source[start..]
             .find("]);")
             .map(|index| start + index)
@@ -633,10 +646,7 @@ mod tests {
         let mut object = base.as_object().expect("base").clone();
 
         let mut move_params = object.clone();
-        move_params.insert(
-            "paths".to_string(),
-            json!([format!("{dir}/BGM/a.wav")]),
-        );
+        move_params.insert("paths".to_string(), json!([format!("{dir}/BGM/a.wav")]));
         move_params.insert("folder".to_string(), json!("精选"));
         let moved = write_ops::move_items(&move_params);
 
@@ -945,7 +955,10 @@ mod parity_preview_random {
                         .collect()
                 })
                 .unwrap_or_default();
-            let domain = case.get("domain").and_then(Value::as_str).unwrap_or("images");
+            let domain = case
+                .get("domain")
+                .and_then(Value::as_str)
+                .unwrap_or("images");
             let sequence = case.get("sequence").and_then(Value::as_i64).unwrap_or(1);
             let count = case.get("count").and_then(Value::as_i64).unwrap_or(0);
 
@@ -994,13 +1007,18 @@ mod parity_preview {
                     .to_string(),
                 input_dir: String::new(),
                 max_width: case.get("max_width").and_then(Value::as_i64).unwrap_or(960) as u32,
-                max_height: case.get("max_height").and_then(Value::as_i64).unwrap_or(540) as u32,
+                max_height: case
+                    .get("max_height")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(540) as u32,
             };
             let (ffmpeg, ffprobe) = preview::ffmpeg_pair();
-            out.push(match preview::preview_thumbnail(&params, ffmpeg.as_deref(), ffprobe.as_deref()) {
-                Ok(result) => json!({ "ok": true, "result": result }),
-                Err(message) => json!({ "ok": false, "error": message }),
-            });
+            out.push(
+                match preview::preview_thumbnail(&params, ffmpeg.as_deref(), ffprobe.as_deref()) {
+                    Ok(result) => json!({ "ok": true, "result": result }),
+                    Err(message) => json!({ "ok": false, "error": message }),
+                },
+            );
         }
         println!("THUMB_PARITY={}", Value::Array(out));
     }
@@ -1140,7 +1158,7 @@ mod parity_audio_cover {
                 .get("cover_path")
                 .and_then(Value::as_str)
                 .and_then(|path| std::fs::read(path).ok())
-                .map(|bytes| bytes.iter().take(4).map(|b| *b).collect::<Vec<u8>>())
+                .map(|bytes| bytes.iter().take(4).copied().collect::<Vec<u8>>())
                 .unwrap_or_default();
             out.push(json!({ "result": result, "size": size, "head": head }));
         }
@@ -1307,7 +1325,11 @@ mod parity_effect_preview {
         let cases: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
         let mut out = Vec::new();
         for case in cases {
-            let id = case.get("id").and_then(Value::as_str).unwrap_or("?").to_string();
+            let id = case
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string();
             let params = case
                 .get("params")
                 .and_then(Value::as_object)
@@ -1333,6 +1355,7 @@ mod preview_responds_to_color_test {
     //! 1. 前端没发请求（`hasColorGrade` 判断漏了）
     //! 2. 后端没应用调色（`render_frame` 漏了 color::apply）
     //! 3. 缓存键没带调色（键没变 → 复用旧图）
+    //!
     //! 这里覆盖 2 和 3。
 
     use super::*;
@@ -1383,7 +1406,10 @@ mod preview_responds_to_color_test {
                 .map(str::to_string)
         };
         let (Some(a), Some(b)) = (path_of(&plain), path_of(&bright)) else {
-            panic!("预览没返回 preview_path：plain={:?} bright={:?}", plain.error, bright.error);
+            panic!(
+                "预览没返回 preview_path：plain={:?} bright={:?}",
+                plain.error, bright.error
+            );
         };
 
         // 缓存键不同 → 文件不同
@@ -1451,9 +1477,16 @@ mod end_to_end_color_test {
         std::fs::create_dir_all(&bright_dir).ok();
 
         // 走真实分发：normalize + validate + 任务队列
-        for (config, dir) in [(make(0.0, &plain_dir), &plain_dir), (make(90.0, &bright_dir), &bright_dir)] {
+        for (config, _dir) in [
+            (make(0.0, &plain_dir), &plain_dir),
+            (make(90.0, &bright_dir), &bright_dir),
+        ] {
             let response = dispatch("start_job", Some(json!({ "config": config })));
-            assert!(!response.error.is_some(), "start_job 失败: {:?}", response.error);
+            assert!(
+                response.error.is_none(),
+                "start_job 失败: {:?}",
+                response.error
+            );
         }
 
         // 等任务跑完。`start_job` 是异步的（起线程），必须等到**两个**目录

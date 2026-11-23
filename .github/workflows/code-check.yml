@@ -80,3 +80,51 @@ jobs:
       - name: 生产构建
         working-directory: desktop
         run: npm run build
+
+  rust-checks:
+    # Rust 内核的格式 / lint / 单元测试。
+    # 2026-11-20 之前这里一条都没有：Rust 代码能不能合只靠本地自觉 ——
+    # 结果「特效预览支持清单」跟实现脱节了很久都没人发现（详见当日提交）。
+    runs-on: windows-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust（含 rustfmt 与 clippy）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 缓存 Rust 构建产物
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - name: 准备内置 ffmpeg
+        # `engine/embedded_ffmpeg.rs` 用 `include_bytes!` 把 ffmpeg.exe 编进二进制，
+        # 缺文件连 cargo check 都过不去。ffmpeg.exe 有 84MB 不进 git，这里现装现拷。
+        # 同时把目录塞进 PATH —— 一部分单元测试会真的调 ffmpeg。
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          $real = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg' -Recurse -Filter 'ffmpeg.exe' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Length -gt 10MB } | Select-Object -First 1
+          if (-not $real) { throw 'CI 里找不到真正的 ffmpeg.exe（choco shim 不能直接拷走）' }
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/resources | Out-Null
+          Copy-Item $real.FullName desktop/src-tauri/resources/ffmpeg.exe -Force
+          Add-Content $env:GITHUB_PATH (Split-Path $real.FullName)
+          Write-Host "ffmpeg 已就位: $((Get-Item desktop/src-tauri/resources/ffmpeg.exe).Length / 1MB) MB"
+
+      - name: 格式检查
+        working-directory: desktop/src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（警告即失败）
+        # 新增 clippy 规则让 CI 变红时，正确做法是修掉、或就地 allow 并写明理由，
+        # 不要把这一步删掉 —— 那等于把刚补上的门又拆了。
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Rust 单元测试
+        working-directory: desktop/src-tauri
+        run: cargo test --lib

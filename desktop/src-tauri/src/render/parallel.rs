@@ -93,16 +93,20 @@ mod tests {
                 (0..height as usize).map(|_| AtomicUsize::new(0)).collect();
             par_rows_mut(&mut frame, |start, rows, chunk| {
                 assert_eq!(chunk.len(), rows * 4 * 3, "切片长度与行数不符");
-                for row in start..start + rows {
+                for (row, counter) in bitmask.iter().enumerate().skip(start).take(rows) {
                     assert_eq!(
-                        bitmask[row].fetch_add(1, Ordering::Relaxed),
+                        counter.fetch_add(1, Ordering::Relaxed),
                         0,
                         "第 {row} 行被处理了两次"
                     );
                 }
             });
             for (row, counter) in bitmask.iter().enumerate() {
-                assert_eq!(counter.load(Ordering::Relaxed), 1, "height={height} 时第 {row} 行漏掉了");
+                assert_eq!(
+                    counter.load(Ordering::Relaxed),
+                    1,
+                    "height={height} 时第 {row} 行漏掉了"
+                );
             }
         }
     }
@@ -114,7 +118,10 @@ mod tests {
         par_rows_mut(&mut frame, |_start, _rows, chunk| {
             chunk.fill(0xFF);
         });
-        assert!(frame.data.iter().all(|byte| *byte == 0xFF), "存在没被写到的字节");
+        assert!(
+            frame.data.iter().all(|byte| *byte == 0xFF),
+            "存在没被写到的字节"
+        );
     }
 
     /// 空帧不能 panic。

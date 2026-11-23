@@ -75,3 +75,7 @@ releases/
 app_screenshot.png
 screen_shot.png
 temp_*.mp4
+
+# 本地备份 / 清理记录（含大体积旧 exe，不入库）
+.backup-*/
+.cleanup-*/

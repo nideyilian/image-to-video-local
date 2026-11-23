@@ -38,7 +38,8 @@ pub fn compute_video_frame_plan(
         transition_frames = 0;
         display_frames_per_img = frames_per_img;
     }
-    let total_frames = total_images.max(py_round(total_images as f64 * duration * fps as f64) as i64);
+    let total_frames =
+        total_images.max(py_round(total_images as f64 * duration * fps as f64) as i64);
     let mut last_img_frames = total_frames - (total_images - 1) * frames_per_img;
     if last_img_frames < 1 {
         last_img_frames = 1;

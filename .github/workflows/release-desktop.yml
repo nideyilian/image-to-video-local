@@ -98,6 +98,53 @@ jobs:
           uploadUpdaterJson: true
           args: --bundles nsis
 
+      - name: 生成应用内更新清单 update.json
+        # 新方案（2026-11-20 起）只读这个文件：{version, url} 两个字段。
+        # 客户端只做「比版本号 + 打开链接」，下载交给系统浏览器。
+        #
+        # 为什么不复用 tauri-action 生成的 latest.json：
+        #   1. 它的下载地址是 `api.github.com/repos/.../assets/ID`，要求
+        #      `Accept: application/octet-stream`，多数公共镜像对这种 API 地址直接 403 ——
+        #      这正是「更新经常失败」的根因之一；
+        #   2. 它带 platforms 嵌套 + minisign 签名链，客户端要跟着 tauri-plugin-updater
+        #      的解析规则走，任何一个端点超时都要等满超时。
+        # 这里改用 `releases/download/<文件名>` 静态直链（任何 gh 镜像都支持）。
+        #
+        # ⚠️ latest.json 仍然保留上传：老版本（≤ 3.0.0-local.24）读的是它，
+        # 删掉等于让所有老用户彻底收不到更新。两份清单并存、互不干扰。
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (Get-Content -Raw desktop/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $repo = $env:GITHUB_REPOSITORY
+
+          # 找到刚上传的 NSIS 安装包（tauri-action 传的是 release 资产）
+          $release = gh release view "v$version" --repo $repo --json assets | ConvertFrom-Json
+          $installer = $release.assets |
+            Where-Object { $_.name -like "*setup.exe" } |
+            Select-Object -First 1
+          if (-not $installer) { throw "Release v$version 里找不到 *setup.exe，无法生成 update.json" }
+          Write-Host "安装包: $($installer.name)  $([math]::Round($installer.size/1MB,1)) MB"
+
+          # 静态直链：任何 gh 镜像（gh-proxy / ghproxy 系）都能代理。
+          # ⚠️ 安装包文件名含中文，必须做 URL 编码 —— 否则浏览器/curl 拿到的地址
+          # 里是裸 UTF-8，部分镜像会返回 404（实测过）。
+          $encoded = [System.Uri]::EscapeDataString($installer.name)
+          $url = "https://github.com/$repo/releases/download/v$version/$encoded"
+
+          $manifest = [ordered]@{
+            version = $version
+            url     = $url
+          }
+          $out = Join-Path $env:RUNNER_TEMP "update.json"
+          $json = $manifest | ConvertTo-Json -Compress
+          [System.IO.File]::WriteAllText($out, $json, [System.Text.UTF8Encoding]::new($false))
+          Write-Host "update.json: $json"
+
+          gh release upload "v$version" $out --repo $repo --clobber
+          Write-Host "已上传 update.json（新方案清单）到 v$version —— latest.json 保留给老版本"
+
       - name: 写入具体发布说明
         # 从 RELEASE_NOTES.md 中提取当前版本小节，替换自动生成的发布说明
         shell: pwsh

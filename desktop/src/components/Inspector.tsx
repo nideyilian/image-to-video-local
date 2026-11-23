@@ -579,7 +579,10 @@ export function Inspector({
                 itemId={config.video_effect_type}
                 schema={paramSchema}
                 values={currentParamValues(config, config.video_effect_type, paramSchema)}
-                disabled={effectMode === "off"}
+                // 专属参数挂在「当前特效」这个 id 上。随机模式下抽中的是池里任意一个，
+                // 这个 id 不参与渲染 —— 控件仍可拖就是骗人（拖了没反应）。
+                // 转场那侧一直用的是同一个判定，这里对齐。
+                disabled={effectMode !== "fixed"}
                 onChange={(key, value) => onParamChange(config.video_effect_type, key, value)}
               />
             </div>

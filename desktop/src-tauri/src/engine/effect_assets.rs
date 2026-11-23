@@ -73,10 +73,8 @@ fn resolve_user_asset(dir: &Path, entry: Option<&Value>) -> Option<PathBuf> {
     let user_file = dir.join(file);
     if !user_file.is_file() {
         let source = PathBuf::from(entry.get("source").and_then(Value::as_str).unwrap_or(""));
-        if source.is_file() {
-            if std::fs::copy(&source, &user_file).is_err() {
-                return None;
-            }
+        if source.is_file() && std::fs::copy(&source, &user_file).is_err() {
+            return None;
         }
     }
     if user_file.is_file() {
@@ -96,7 +94,12 @@ fn lerp_channel(top: u8, bottom: u8, ratio: f64) -> u8 {
 ///
 /// 与 Python 的 `draw_demo` 对应，但**不画那行中文标签**：PIL 用的是内置位图字体，
 /// Rust 侧没有等价字体且这行字对功能没有影响。画面主体（渐变、圆/三角、内部小圆）一致。
-fn draw_demo(path: &Path, top: (u8, u8, u8), bottom: (u8, u8, u8), shape: &str) -> Result<(), String> {
+fn draw_demo(
+    path: &Path,
+    top: (u8, u8, u8),
+    bottom: (u8, u8, u8),
+    shape: &str,
+) -> Result<(), String> {
     let mut image = image::RgbImage::new(WIDTH, HEIGHT);
 
     // 垂直渐变：Python 是逐行 line()，行内颜色相同
@@ -137,14 +140,7 @@ fn draw_demo(path: &Path, top: (u8, u8, u8), bottom: (u8, u8, u8), shape: &str) 
 }
 
 /// 用椭圆方程填充（包住边界的像素都填）。
-fn fill_ellipse(
-    image: &mut image::RgbImage,
-    x0: i64,
-    y0: i64,
-    x1: i64,
-    y1: i64,
-    color: [u8; 3],
-) {
+fn fill_ellipse(image: &mut image::RgbImage, x0: i64, y0: i64, x1: i64, y1: i64, color: [u8; 3]) {
     let cx = (x0 + x1) as f64 / 2.0;
     let cy = (y0 + y1) as f64 / 2.0;
     let rx = ((x1 - x0) as f64 / 2.0).max(0.5);
@@ -232,12 +228,7 @@ fn fill_polygon(image: &mut image::RgbImage, points: &[(i64, i64)], color: [u8; 
 }
 
 /// 多边形描边：逐条边按粗线画圆点。
-fn stroke_polygon(
-    image: &mut image::RgbImage,
-    points: &[(i64, i64)],
-    color: [u8; 3],
-    width: i64,
-) {
+fn stroke_polygon(image: &mut image::RgbImage, points: &[(i64, i64)], color: [u8; 3], width: i64) {
     let radius = width as f64 / 2.0;
     for index in 0..points.len() {
         let (x0, y0) = points[index];
@@ -350,12 +341,17 @@ pub fn set_asset(params: &Map<String, Value>) -> Result<Value, String> {
         .and_then(Value::as_str)
         .map(str::to_string);
     if let Some(previous) = previous {
-        if previous != user_file.file_name().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default() {
+        if previous
+            != user_file
+                .file_name()
+                .map(|v| v.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        {
             let _ = std::fs::remove_file(dir.join(&previous));
         }
     }
-    let same_path = crate::engine::paths::absolute(&source_path)
-        == crate::engine::paths::absolute(&user_file);
+    let same_path =
+        crate::engine::paths::absolute(&source_path) == crate::engine::paths::absolute(&user_file);
     if !same_path {
         std::fs::copy(&source_path, &user_file).map_err(|error| error.to_string())?;
     }
@@ -409,13 +405,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("itv-effect-manifest-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut manifest = Map::new();
-        manifest.insert("a".into(), json!({ "file": "user-a.png", "source": "C:/x.png" }));
+        manifest.insert(
+            "a".into(),
+            json!({ "file": "user-a.png", "source": "C:/x.png" }),
+        );
         manifest.insert("bad".into(), json!({ "file": 1 }));
         save_user_assets(&dir, &manifest).unwrap();
         let loaded = load_user_assets(&dir);
         assert_eq!(loaded.len(), 1, "只保留 a：{loaded:?}");
         assert_eq!(
-            loaded.get("a").and_then(|v| v.get("file")).and_then(Value::as_str),
+            loaded
+                .get("a")
+                .and_then(|v| v.get("file"))
+                .and_then(Value::as_str),
             Some("user-a.png")
         );
         let _ = std::fs::remove_dir_all(&dir);

@@ -96,6 +96,9 @@ mod tests {
             strip_verbatim(PathBuf::from("\\\\?\\UNC\\server\\share\\a")),
             PathBuf::from("\\\\server\\share\\a")
         );
-        assert_eq!(strip_verbatim(PathBuf::from("D:\\AAA")), PathBuf::from("D:\\AAA"));
+        assert_eq!(
+            strip_verbatim(PathBuf::from("D:\\AAA")),
+            PathBuf::from("D:\\AAA")
+        );
     }
 }

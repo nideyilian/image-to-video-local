@@ -185,7 +185,10 @@ pub fn probe_duration(ffprobe: Option<&Path>, path: &Path) -> Option<f64> {
     if !output.status.success() {
         return None;
     }
-    String::from_utf8_lossy(&output.stdout).trim().parse::<f64>().ok()
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<f64>()
+        .ok()
 }
 
 #[cfg(test)]

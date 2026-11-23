@@ -99,7 +99,11 @@ fn write_png(frame: &BgrFrame, path: &std::path::Path) -> std::io::Result<()> {
         for (index, entry) in table.iter_mut().enumerate() {
             let mut value = index as u32;
             for _ in 0..8 {
-                value = if value & 1 == 1 { 0xEDB88320 ^ (value >> 1) } else { value >> 1 };
+                value = if value & 1 == 1 {
+                    0xEDB88320 ^ (value >> 1)
+                } else {
+                    value >> 1
+                };
             }
             *entry = value;
         }
@@ -168,7 +172,12 @@ fn write_png(frame: &BgrFrame, path: &std::path::Path) -> std::io::Result<()> {
 /// 默认档位：低 / 声明默认值 / 高。
 fn default_values(spec: &catalog::ParamSpec) -> Vec<f64> {
     if spec.kind == catalog::ParamKind::Choice {
-        return spec.choices.iter().enumerate().map(|(i, _)| i as f64).collect();
+        return spec
+            .choices
+            .iter()
+            .enumerate()
+            .map(|(i, _)| i as f64)
+            .collect();
     }
     let span = (spec.max - spec.min).max(1.0);
     vec![

@@ -16,10 +16,16 @@ use super::color;
 use super::effect_params;
 use super::effects;
 use super::encoder::{self, EncodeOptions};
-use super::pixels::{self, BgrFrame};
 use super::frame_script;
+use super::pixels::{self, BgrFrame};
 use super::plan;
 use super::transitions;
+
+/// 「逐图装饰」回调：给定当前帧与图片序号，返回替换后的帧（`None` = 不改）。
+///
+/// 「跟随水印」这类需要逐张图做像素处理的场景用它。原先这个类型在三个签名里
+/// 各写一遍完整形态，改动时容易漏掉一处。
+pub type Decorate<'a> = Option<&'a mut dyn FnMut(&BgrFrame, usize) -> Option<BgrFrame>>;
 
 /// 合成参数（对应 `create_video()` 的形参）。
 #[derive(Debug, Clone)]
@@ -94,12 +100,7 @@ pub struct ComposeResult {
 ///
 /// 跟随水印（`follow_layers`）需要在像素层做 alpha 合成，属于 `watermark` 模块的
 /// 像素部分，这里先留出钩子：`decorate` 会在缩放后、写帧前调用。
-pub fn load_frame(
-    path: &str,
-    width: u32,
-    height: u32,
-    resize_mode: &str,
-) -> Option<BgrFrame> {
+pub fn load_frame(path: &str, width: u32, height: u32, resize_mode: &str) -> Option<BgrFrame> {
     let frame = pixels::read_image_bgr(Path::new(path))?;
     let resized = pixels::resize_image(&frame, width, height, resize_mode);
     Some(pixels::ensure_even_frame(&resized))
@@ -114,7 +115,7 @@ pub fn create_video(
     config: &dyn RenderConfig,
     ffmpeg: &str,
     hooks: &mut dyn ComposeHooks,
-    mut decorate: Option<&mut dyn FnMut(&BgrFrame, usize) -> Option<BgrFrame>>,
+    mut decorate: Decorate<'_>,
 ) -> Result<ComposeResult, ComposeError> {
     if options.images.is_empty() || options.output_path.is_empty() {
         return Err(ComposeError::NoImages);
@@ -159,16 +160,16 @@ pub fn create_video(
         fps: options.fps,
         target_bitrate: options.target_bitrate,
     };
-    let mut session = encoder::EncodeSession::open(&encode_options, ffmpeg).map_err(|error| {
-        match error {
-            encoder::EncodeError::IncompatibleCodec { selected, extension } => {
-                ComposeError::IncompatibleCodec(format!(
-                    "编码器与容器不兼容: codec={selected}, ext={extension}"
-                ))
-            }
+    let mut session =
+        encoder::EncodeSession::open(&encode_options, ffmpeg).map_err(|error| match error {
+            encoder::EncodeError::IncompatibleCodec {
+                selected,
+                extension,
+            } => ComposeError::IncompatibleCodec(format!(
+                "编码器与容器不兼容: codec={selected}, ext={extension}"
+            )),
             other => ComposeError::Encode(other.to_string()),
-        }
-    })?;
+        })?;
     hooks.log(&format!(
         "统一编排：主渲染使用FFmpeg，编码器={}，目标码率={} kbps",
         session.strict_codec, options.target_bitrate
@@ -245,7 +246,10 @@ pub fn create_video(
                     image_index,
                     step: in_step,
                     total,
-                } => format!("{}\tTransition\t{image_index}\t{in_step}\t{total}", step.index),
+                } => format!(
+                    "{}\tTransition\t{image_index}\t{in_step}\t{total}",
+                    step.index
+                ),
             })
             .collect();
         let _ = std::fs::write(path, lines.join("\n"));
@@ -428,7 +432,7 @@ pub fn create_video(
 }
 
 fn make_even(value: u32) -> u32 {
-    if value % 2 == 0 {
+    if value.is_multiple_of(2) {
         value
     } else {
         value + 1
@@ -445,7 +449,7 @@ fn decode_next(
     out_w: u32,
     out_h: u32,
     resize_mode: &str,
-    decorate: &mut Option<&mut dyn FnMut(&BgrFrame, usize) -> Option<BgrFrame>>,
+    decorate: &mut Decorate<'_>,
     index: usize,
     fallback: &BgrFrame,
     cache_index: &mut Option<usize>,
@@ -489,7 +493,7 @@ pub fn create_video_and_postprocess(
     ffprobe: Option<&Path>,
     watermark_position: &str,
     hooks: &mut dyn ComposeHooks,
-    decorate: Option<&mut dyn FnMut(&BgrFrame, usize) -> Option<BgrFrame>>,
+    decorate: Decorate<'_>,
 ) -> Result<ComposeResult, ComposeError> {
     let result = create_video(options, config, ffmpeg, hooks, decorate)?;
     // 后处理失败不视为致命（Python 版也是「回退兼容链路，不中断任务」）

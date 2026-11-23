@@ -107,9 +107,13 @@ fn alias(effect: &str) -> String {
 
 /// 与 `parse_resolution()` 等价：匹配 `<宽>x<高>`，否则退回 1280x720；最小 2。
 pub fn parse_resolution(value: Option<&Value>) -> (i64, i64) {
-    let raw = if is_truthy(value) { py_str(value) } else { String::new() };
+    let raw = if is_truthy(value) {
+        py_str(value)
+    } else {
+        String::new()
+    };
     let text = raw.trim();
-    let mut parts = text.split(|ch| ch == 'x' || ch == 'X' || ch == '×');
+    let mut parts = text.split(['x', 'X', '×']);
     let (Some(left), Some(right), None) = (parts.next(), parts.next(), parts.next()) else {
         return (1280, 720);
     };
@@ -214,7 +218,10 @@ fn issue(field: &str, section: &str, message: &str) -> Value {
 }
 
 /// 与 `timeline_slot_count()` 等价；`Ok(None)` 表示总时长为 0（自动）。
-pub fn timeline_slot_count(image_duration: f64, total_duration: f64) -> Result<Option<i64>, String> {
+pub fn timeline_slot_count(
+    image_duration: f64,
+    total_duration: f64,
+) -> Result<Option<i64>, String> {
     if image_duration <= 0.0 {
         return Err("每图时长必须大于 0".to_string());
     }
@@ -272,7 +279,11 @@ pub fn validate_config_detailed(raw: Option<&Value>, check_files: bool) -> Vec<V
         ));
     }
     if output_dir.is_empty() {
-        issues.push(issue("output_dir", "basic", "请先选择「输出目录」（视频保存位置）。"));
+        issues.push(issue(
+            "output_dir",
+            "basic",
+            "请先选择「输出目录」（视频保存位置）。",
+        ));
     }
 
     if check_files && is_truthy(config.get("use_bgm")) {
@@ -289,10 +300,7 @@ pub fn validate_config_detailed(raw: Option<&Value>, check_files: bool) -> Vec<V
                 })
                 .unwrap_or_default();
             if !bgm_files.is_empty() {
-                if let Some(first) = bgm_files
-                    .iter()
-                    .find(|path| !Path::new(path).is_file())
-                {
+                if let Some(first) = bgm_files.iter().find(|path| !Path::new(path).is_file()) {
                     issues.push(issue(
                         "bgm_files",
                         "basic",
@@ -397,7 +405,11 @@ pub fn validate_config_detailed(raw: Option<&Value>, check_files: bool) -> Vec<V
 pub fn validate_config(raw: Option<&Value>, check_files: bool) -> Vec<String> {
     validate_config_detailed(raw, check_files)
         .iter()
-        .filter_map(|item| item.get("message").and_then(Value::as_str).map(str::to_string))
+        .filter_map(|item| {
+            item.get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .collect()
 }
 
@@ -429,10 +441,7 @@ mod tests {
             "effect_params": { "色调分离": { "steps": 3.0 } },
         });
         let normalized = normalize_config(Some(&raw));
-        assert_eq!(
-            normalized["effect_params"]["色调分离"]["steps"],
-            json!(3.0)
-        );
+        assert_eq!(normalized["effect_params"]["色调分离"]["steps"], json!(3.0));
     }
 
     /// 端到端：从「界面会发出的 JSON」走完整 normalize，确认字段没丢。
@@ -504,7 +513,10 @@ mod tests {
         assert_eq!(config["height"], 1920);
         assert_eq!(config["watermark_type"], "视频");
         assert_eq!(config["video_effect_type"], "心跳跳动");
-        assert_eq!(config["enabled_video_effects"], json!(["心跳跳动", "轻微摇摆"]));
+        assert_eq!(
+            config["enabled_video_effects"],
+            json!(["心跳跳动", "轻微摇摆"])
+        );
         assert_eq!(config["custom_prefix"], "前缀");
         assert_eq!(config["bgm_files"], json!(["C:/a.mp3"]));
     }
@@ -563,7 +575,10 @@ mod tests {
             })),
             true,
         );
-        let fields: Vec<&str> = issues.iter().filter_map(|item| item["field"].as_str()).collect();
+        let fields: Vec<&str> = issues
+            .iter()
+            .filter_map(|item| item["field"].as_str())
+            .collect();
         assert!(fields.contains(&"bgm_dir"), "应当校验 BGM 目录：{issues:?}");
     }
 }

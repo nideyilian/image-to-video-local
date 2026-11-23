@@ -35,7 +35,9 @@ fn smoke_all_interfaces() {
     let check = |report: &mut Report, label: &str, method: &str, params: Value| {
         let response = dispatch(method, Some(params));
         if !response.handled {
-            report.failed.push(format!("{label}: handled=false（未接管）"));
+            report
+                .failed
+                .push(format!("{label}: handled=false（未接管）"));
             return;
         }
         if let Some(error) = response.error {
@@ -59,18 +61,24 @@ fn smoke_all_interfaces() {
         |report: &mut Report, label: &str, method: &str, params: Value, expect: &str| {
             let response = dispatch(method, Some(params));
             if !response.handled {
-                report.failed.push(format!("{label}: handled=false（未接管）"));
+                report
+                    .failed
+                    .push(format!("{label}: handled=false（未接管）"));
                 return;
             }
             match response.error {
                 Some(error) if error.contains(expect) => {
-                    report.expected.push(format!("{label}: 已按预期拒绝（{error}）"));
+                    report
+                        .expected
+                        .push(format!("{label}: 已按预期拒绝（{error}）"));
                     println!("REJ {label:38} {error}");
                 }
                 Some(error) => report.failed.push(format!(
                     "{label}: 报错但信息不符，期望含「{expect}」，实际「{error}」"
                 )),
-                None => report.failed.push(format!("{label}: 期望被拒绝，却返回了成功")),
+                None => report
+                    .failed
+                    .push(format!("{label}: 期望被拒绝，却返回了成功")),
             }
         };
 
@@ -97,7 +105,12 @@ fn smoke_all_interfaces() {
     );
 
     // ---- 扫描 ----
-    check(&mut report, "scan_images", "scan_images", json!({ "input_dir": images_dir }));
+    check(
+        &mut report,
+        "scan_images",
+        "scan_images",
+        json!({ "input_dir": images_dir }),
+    );
     check(
         &mut report,
         "scan_images(limit)",
@@ -110,7 +123,12 @@ fn smoke_all_interfaces() {
         "scan_images",
         json!({ "input_dir": images_dir, "limit": 3, "preview_sequence": 2 }),
     );
-    check(&mut report, "scan_subfolders", "scan_subfolders", json!({ "input_dir": images_dir }));
+    check(
+        &mut report,
+        "scan_subfolders",
+        "scan_subfolders",
+        json!({ "input_dir": images_dir }),
+    );
     check(
         &mut report,
         "scan_subfolder_groups",
@@ -131,7 +149,12 @@ fn smoke_all_interfaces() {
     );
 
     // ---- 系统 ----
-    check(&mut report, "system_snapshot", "system_snapshot", json!({ "output_dir": base }));
+    check(
+        &mut report,
+        "system_snapshot",
+        "system_snapshot",
+        json!({ "output_dir": base }),
+    );
     check(&mut report, "optimize_memory", "optimize_memory", json!({}));
 
     // ---- 素材库 只读 ----
@@ -185,7 +208,10 @@ fn smoke_all_interfaces() {
     );
     // 查重接口要有「重复组」才会走非空分支。`library_import` 会在入口拦下重复件，
     // 所以这里直接往库里塞一份同内容的副本，模拟「历史遗留的两条重复」。
-    let _ = std::fs::copy(format!("{lib_bgm}/bgm1.wav"), format!("{lib_bgm}/bgm1-副本.wav"));
+    let _ = std::fs::copy(
+        format!("{lib_bgm}/bgm1.wav"),
+        format!("{lib_bgm}/bgm1-副本.wav"),
+    );
     check(
         &mut report,
         "library_find_duplicates",
@@ -319,7 +345,12 @@ fn smoke_all_interfaces() {
     );
 
     // ---- 特效预览 ----
-    check(&mut report, "effect_library_assets", "effect_library_assets", json!({}));
+    check(
+        &mut report,
+        "effect_library_assets",
+        "effect_library_assets",
+        json!({}),
+    );
     let eff_cfg = json!({
         "input_dir": images_dir,
         "output_dir": format!("{base}/out"),
@@ -373,12 +404,21 @@ fn smoke_all_interfaces() {
         "拆 BGM 任务不存在",
     );
 
-    println!("\n===== 冒烟结果：通过 {} / 预期拒绝 {} / 异常 {} =====", report.ok, report.expected.len(), report.failed.len());
+    println!(
+        "\n===== 冒烟结果：通过 {} / 预期拒绝 {} / 异常 {} =====",
+        report.ok,
+        report.expected.len(),
+        report.failed.len()
+    );
     for item in &report.expected {
         println!("REJ  {item}");
     }
     for item in &report.failed {
         println!("FAIL {item}");
     }
-    assert!(report.failed.is_empty(), "存在未通过的接口：{:#?}", report.failed);
+    assert!(
+        report.failed.is_empty(),
+        "存在未通过的接口：{:#?}",
+        report.failed
+    );
 }

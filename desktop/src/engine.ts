@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { FALLBACK_CONFIG } from "./constants";
 import type { EngineEvent, EngineHealth, ValidationIssue, VideoConfig } from "./types";
 
-/** 已由 Rust 原生接管（不碰像素、纯文件扫描）的接口；其余继续走 Python 引擎。 */
+/** 已由 Rust 原生接管的接口。sidecar 已移除，白名单漏一个就等于该功能直接报错。 */
 const NATIVE_METHODS = new Set([
   "library_dirs",
   "library_snapshot",
@@ -44,22 +44,22 @@ const NATIVE_METHODS = new Set([
   "library_preview_audio",
   "library_preview_video",
   "library_audio_cover",
-  // 特效演示图资产（渲染类 preview_effect_frame / effect_preview_animation 仍走旧引擎）
+  // 特效演示图资产（渲染类 preview_effect_frame / effect_preview_animation 见下）
   "effect_library_assets",
   "effect_library_set_asset",
   "effect_library_reset_assets",
   // 拆 BGM（后台任务，进度走 engine-event：library.extract.progress / .done）
   "library_extract_bgm",
   "library_extract_cancel",
-  // 特效预览：只接管「无两类水印 + 已实现的 9 种转场 / 11 种特效」，
-  // 其余由原生侧返回 handled=false 交回旧引擎
+  // 特效预览：能力边界由 `render/catalog.rs` 决定（目录里有的就能画）。
+  // 名字不在目录里时才返回 handled=false —— 那种情况只有旧预设才会碰到。
   "preview_effect_frame",
   "effect_preview_animation",
   // 特效/转场的参数元信息：界面据此生成专属控件（见 render/catalog.rs）
   "effect_param_schema",
 ]);
 
-/** `handled: false` = Rust 不接这个请求（未迁移 / 需要旧引擎的语义），交给 sidecar。 */
+/** `handled: false` = Rust 不接这个请求。sidecar 已移除，走到这里就是错误。 */
 type NativeResponse<T> = { handled: boolean; result?: T; error?: string };
 
 const NOT_NATIVE = Symbol("not-native");
@@ -106,9 +106,9 @@ export class EngineBridge {
   }
 
   /**
-   * 已迁移到 Rust 的接口走 Tauri command，省掉一次 Python 进程往返。
-   * 未迁移、或原生侧明确表示「这个请求我不接」（handled=false）时返回 NOT_NATIVE，
-   * 由调用方继续走旧引擎；原生实现抛异常也回落，保证迁移期间功能不退化。
+   * 所有已接管的接口走 Tauri command，省掉一次进程往返。
+   * 返回 NOT_NATIVE 只有一种可能：方法不在白名单，或 Rust 明确不接（`handled=false`）。
+   * 两者都意味着 bug —— `call()` 会直接报错，不再有旧引擎兜底。
    */
   private async callNative<T>(method: string, params: Record<string, unknown>): Promise<T | typeof NOT_NATIVE> {
     if (!NATIVE_METHODS.has(method)) return NOT_NATIVE;
@@ -116,7 +116,7 @@ export class EngineBridge {
     try {
       response = await invoke<NativeResponse<T>>("engine_dispatch", { method, params });
     } catch (error) {
-      console.warn(`[engine] ${method} 的原生实现不可用，回落旧引擎`, error);
+      console.warn(`[engine] ${method} 的原生调用失败`, error);
       return NOT_NATIVE;
     }
     if (!response.handled) return NOT_NATIVE;

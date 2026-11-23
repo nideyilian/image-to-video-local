@@ -19,6 +19,11 @@ use super::paths;
 use super::snapshot;
 use super::system;
 
+/// 跨文件夹查重时的一条索引记录：
+/// `(文件夹相对路径, 文件名, SHA-256, 指纹曲线, 时长秒)`。
+/// 原先是以五元组字面量写在签名里，读起来得数括号。
+type FolderEntry = (String, String, Option<String>, Vec<f64>, f64);
+
 const DURATION_TOLERANCE: f64 = 2.5;
 const SHIFT_TOLERANCE: i32 = 1;
 const DUP_MAE_THRESHOLD: f64 = 0.07;
@@ -128,7 +133,8 @@ fn overlap_mae(first: &[f64], second: &[f64], shift: i32) -> Option<f64> {
     }
     let mut total = 0.0f64;
     for index in 0..overlap as usize {
-        total += (first[first_start as usize + index] - second[second_start as usize + index]).abs();
+        total +=
+            (first[first_start as usize + index] - second[second_start as usize + index]).abs();
     }
     Some(total / overlap as f64)
 }
@@ -155,7 +161,8 @@ pub fn fingerprints_duplicate(
             }
         }
     }
-    best.map(|value| value <= DUP_MAE_THRESHOLD).unwrap_or(false)
+    best.map(|value| value <= DUP_MAE_THRESHOLD)
+        .unwrap_or(false)
 }
 
 // ---------- 索引扫描 ----------
@@ -205,7 +212,11 @@ fn collect_index_files(directory: &Path, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             collect_index_files(&path, out);
-        } else if path.file_name().map(|name| name == snapshot::INDEX_FILE_NAME).unwrap_or(false) {
+        } else if path
+            .file_name()
+            .map(|name| name == snapshot::INDEX_FILE_NAME)
+            .unwrap_or(false)
+        {
             out.push(path);
         }
     }
@@ -242,7 +253,11 @@ fn is_supported(kind: &str, path: &Path) -> bool {
 }
 
 /// 与 `_unique_path()` 等价：重名且内容不同就加 `(2)`、`(3)`；内容相同直接复用。
-pub(crate) fn unique_path(directory: &Path, name: &str, existing: &BTreeMap<String, String>) -> PathBuf {
+pub(crate) fn unique_path(
+    directory: &Path,
+    name: &str,
+    existing: &BTreeMap<String, String>,
+) -> PathBuf {
     let target = directory.join(name);
     if !target.exists() {
         return target;
@@ -295,10 +310,13 @@ pub fn import_files(params: &Map<String, Value>) -> Result<Value, String> {
     };
     fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
 
-    let mut global: Vec<(String, String, Option<String>, Vec<f64>, f64)> = all_index_entries(&base)
+    let mut global: Vec<FolderEntry> = all_index_entries(&base)
         .into_iter()
         .map(|(folder, name, entry)| {
-            let sha = entry.get("sha256").and_then(Value::as_str).map(str::to_string);
+            let sha = entry
+                .get("sha256")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             let signature = entry
                 .get("signature")
                 .and_then(Value::as_array)
@@ -420,7 +438,9 @@ pub fn import_files(params: &Map<String, Value>) -> Result<Value, String> {
             }));
             continue;
         }
-        let target_size = fs::metadata(&target).map(|value| value.len()).unwrap_or(size);
+        let target_size = fs::metadata(&target)
+            .map(|value| value.len())
+            .unwrap_or(size);
         let target_mtime = fs::metadata(&target)
             .map(|value| snapshot::modified_ns(&value))
             .unwrap_or(0);
@@ -446,15 +466,26 @@ pub fn import_files(params: &Map<String, Value>) -> Result<Value, String> {
             }
         }
 
-        index
-            .entries
-            .insert(target.file_name().unwrap_or_default().to_string_lossy().into_owned(), entry);
+        index.entries.insert(
+            target
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            entry,
+        );
         let target_name = target
             .file_name()
             .map(|value| value.to_string_lossy().into_owned())
             .unwrap_or_default();
         local_hashes.insert(target_name.clone(), sha256.clone());
-        global.push((relative.clone(), target_name.clone(), Some(sha256), signature.unwrap_or_default(), duration.unwrap_or(0.0)));
+        global.push((
+            relative.clone(),
+            target_name.clone(),
+            Some(sha256),
+            signature.unwrap_or_default(),
+            duration.unwrap_or(0.0),
+        ));
 
         results.push(json!({
             "name": target_name,
@@ -482,7 +513,12 @@ pub fn rename_item(params: &Map<String, Value>) -> Result<Value, String> {
     if !target.is_file() || !inside(&base, &target) {
         return Err("只能重命名素材库内的文件".to_string());
     }
-    if new_name.is_empty() || new_name == "." || new_name == ".." || new_name.contains('/') || new_name.contains('\\') {
+    if new_name.is_empty()
+        || new_name == "."
+        || new_name == ".."
+        || new_name.contains('/')
+        || new_name.contains('\\')
+    {
         return Err("请输入合法的文件名".to_string());
     }
     if new_name.chars().any(|ch| "<>:\"|?*".contains(ch)) {
@@ -501,7 +537,10 @@ pub fn rename_item(params: &Map<String, Value>) -> Result<Value, String> {
         return Err("请输入文件名".to_string());
     }
     let final_name = format!("{stem}{suffix}");
-    let parent = target.parent().map(Path::to_path_buf).unwrap_or_else(|| base.clone());
+    let parent = target
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| base.clone());
     let new_target = parent.join(&final_name);
 
     if new_target == target {
@@ -548,7 +587,10 @@ pub fn set_metadata(params: &Map<String, Value>) -> Result<Value, String> {
         return Err("只能编辑素材库内的素材".to_string());
     }
 
-    let parent = target.parent().map(Path::to_path_buf).unwrap_or_else(|| base.clone());
+    let parent = target
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| base.clone());
     let name = target
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
@@ -572,7 +614,9 @@ pub fn set_metadata(params: &Map<String, Value>) -> Result<Value, String> {
     let mut changed = false;
     if let Some(entry) = index.entries.get_mut(&name) {
         if let Some(raw) = params.get("tags") {
-            let items = raw.as_array().ok_or_else(|| "tags 必须是字符串列表".to_string())?;
+            let items = raw
+                .as_array()
+                .ok_or_else(|| "tags 必须是字符串列表".to_string())?;
             let mut tags: Vec<String> = Vec::new();
             for item in items {
                 let cleaned = item.as_str().unwrap_or_default().trim().to_string();
@@ -682,11 +726,7 @@ pub fn rename_batch(params: &Map<String, Value>) -> Result<Value, String> {
             .map(|value| format!(".{}", value.to_string_lossy()))
             .unwrap_or_default();
         let number = (start_index + offset as i64).to_string();
-        let number = format!(
-            "{}{}",
-            "0".repeat(pad.saturating_sub(number.len())),
-            number
-        );
+        let number = format!("{}{}", "0".repeat(pad.saturating_sub(number.len())), number);
         let new_stem = pattern
             .replace("{name}", &stem)
             .replace("{n}", &number)
@@ -704,7 +744,10 @@ pub fn rename_batch(params: &Map<String, Value>) -> Result<Value, String> {
             results.push(result);
             continue;
         }
-        let parent = source.parent().map(Path::to_path_buf).unwrap_or_else(|| base.clone());
+        let parent = source
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| base.clone());
         let new_target = parent.join(&new_name);
         if new_target.exists() && new_target != source {
             result["reason"] = json!(format!("目标文件已存在：{new_name}"));
@@ -1150,7 +1193,9 @@ pub fn get_tags(params: &Map<String, Value>) -> Result<Value, String> {
 // ---------- 智能文件夹 ----------
 
 const SMART_FOLDERS_FILE_NAME: &str = ".smart_folders.json";
-const SMART_FIELDS: [&str; 7] = ["type", "duration", "size", "folder", "name", "tag", "starred"];
+const SMART_FIELDS: [&str; 7] = [
+    "type", "duration", "size", "folder", "name", "tag", "starred",
+];
 const SMART_OPS: [&str; 6] = ["eq", "ne", "gt", "lt", "contains", "exists"];
 
 fn now_millis() -> u128 {
@@ -1164,10 +1209,7 @@ fn now_millis() -> u128 {
 fn smart_file(params: &Map<String, Value>) -> PathBuf {
     let base = base_of("bgm", params);
     let resolved = paths::resolve(&base).unwrap_or_else(|_| paths::absolute(&base));
-    let parent = resolved
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or(resolved);
+    let parent = resolved.parent().map(Path::to_path_buf).unwrap_or(resolved);
     let _ = fs::create_dir_all(&parent);
     parent.join(SMART_FOLDERS_FILE_NAME)
 }
@@ -1268,8 +1310,14 @@ pub fn smart_folders_save(params: &Map<String, Value>) -> Result<Value, String> 
         ".{SMART_FOLDERS_FILE_NAME}.{}.tmp",
         std::process::id()
     ));
-    fs::write(&temporary, format!("{}\n", serde_json::to_string_pretty(&payload).map_err(|error| error.to_string())?))
-        .map_err(|error| error.to_string())?;
+    fs::write(
+        &temporary,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&payload).map_err(|error| error.to_string())?
+        ),
+    )
+    .map_err(|error| error.to_string())?;
     if fs::rename(&temporary, &path).is_err() {
         let _ = fs::remove_file(&path);
         fs::rename(&temporary, &path).map_err(|error| error.to_string())?;

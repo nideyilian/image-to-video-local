@@ -31,7 +31,8 @@ fn probe_frame(width: u32, height: u32) -> BgrFrame {
             // 深色底 + 中间一个亮方块 + 右上斜线 + 左半渐变。
             // 必须保证有强对比边缘：「边缘闪烁」这类特效靠 canny 找边，
             // 纯渐变+低对比条纹可能一条边都检测不到，看起来就像「完全不动」。
-            let in_block = x > width / 4 && x < width * 3 / 4 && y > height / 4 && y < height * 3 / 4;
+            let in_block =
+                x > width / 4 && x < width * 3 / 4 && y > height / 4 && y < height * 3 / 4;
             let on_diag = (x as i64 - y as i64 * 2).abs() < 3;
             let base = if in_block { 230u8 } else { 30 };
             let value = if on_diag { 250 } else { base };
@@ -81,7 +82,13 @@ fn mean_diff(a: &BgrFrame, b: &BgrFrame) -> f64 {
 
 /// 声明里没有任何参数的特效，用它跑通用断言。
 /// 有独有参数的特效先跳过（参数体系还没接进渲染，见 catalog 注释）。
-const GENERIC_CHECKS: [&str; 5] = ["尺寸不变", "不至于全黑", "不至于全白", "真的在动", "强度为0接近原图"];
+const GENERIC_CHECKS: [&str; 5] = [
+    "尺寸不变",
+    "不至于全黑",
+    "不至于全白",
+    "真的在动",
+    "强度为0接近原图",
+];
 
 #[test]
 fn every_effect_keeps_frame_size() {
@@ -271,7 +278,9 @@ fn declared_params_change_pixels() {
     // 故障抖动的「错位幅度」：拉到最小和最大，画面必须不同
     let base = EffectParams::new("故障抖动", 0.37, 3.0, 100.0, 1.0);
     let mut strong = base.clone();
-    strong.extra.insert("shift".into(), serde_json::json!(200.0));
+    strong
+        .extra
+        .insert("shift".into(), serde_json::json!(200.0));
     let weak = base.clone();
     let at_weak = apply_single_image_effect(&frame, &weak);
     let at_strong = apply_single_image_effect(&frame, &strong);
@@ -307,7 +316,9 @@ fn missing_params_match_explicit_defaults() {
         let explicit = match effect {
             "故障抖动" => {
                 let mut params = bare.clone();
-                params.extra.insert("shift".into(), serde_json::json!(100.0));
+                params
+                    .extra
+                    .insert("shift".into(), serde_json::json!(100.0));
                 params.extra.insert("freq".into(), serde_json::json!(3.0));
                 params
             }
@@ -336,10 +347,8 @@ fn declared_param_keys_are_exercised_by_implementations() {
 
     // 效现在特效和转场都可能有专属参数，两边都要查。
     // 只查 effects.rs 会漏掉转场 —— 上一轮的「假控件」正是这么漏的。
-    let cases: [(&str, &[super::catalog::ItemSpec]); 2] = [
-        ("effects.rs", EFFECTS),
-        ("transitions.rs", TRANSITIONS),
-    ];
+    let cases: [(&str, &[super::catalog::ItemSpec]); 2] =
+        [("effects.rs", EFFECTS), ("transitions.rs", TRANSITIONS)];
 
     for (file, items) in cases {
         let source = match file {
